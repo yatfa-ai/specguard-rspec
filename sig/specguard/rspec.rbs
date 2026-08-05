@@ -1,0 +1,5 @@
+module SpecGuard
+  module RSpec
+    VERSION: String
+  end
+end
