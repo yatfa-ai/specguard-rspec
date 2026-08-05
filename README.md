@@ -41,5 +41,4 @@ RSpec.configure do |config|
 end
 ```
 
-**Status:** specification stage. Built by yatfa agents from the
-[master spec](https://github.com/yatfa-ai/specguard/blob/main/docs/06-client-gem.md).
+**Status:** specification stage.
