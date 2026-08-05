@@ -15,7 +15,12 @@ Gem::Specification.new do |spec|
                      "*_spec.rb files. Telemetry never blocks CI; the linter blocks only on " \
                      "malformed annotations. This release contains the buildable gem skeleton."
   spec.homepage = "https://github.com/yatfa-ai/specguard-rspec"
-  spec.license = "MIT"
+  # NOTE: no `spec.license` is declared. The project has not chosen a license
+  # yet (no LICENSE file exists in any SpecGuard repo, and neither the README
+  # nor the Client Gem spec names one). Declaring a license here without
+  # shipping the corresponding license text would advertise a rights grant
+  # that does not exist. Set this — and add the matching LICENSE file — once
+  # licensing is decided.
   spec.required_ruby_version = ">= 3.2.0"
 
   spec.metadata["homepage_uri"] = spec.homepage

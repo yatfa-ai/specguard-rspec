@@ -1,5 +1,8 @@
 module SpecGuard
   module RSpec
     VERSION: String
+
+    class Error < StandardError
+    end
   end
 end
