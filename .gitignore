@@ -8,3 +8,6 @@
 /tmp/
 /.rspec_status
 /Gemfile.lock
+# The formatter's default sink (log/test_results.jsonl). Telemetry about a
+# local run is never a repository artifact — see lib/specguard/rspec/formatter.rb.
+/log/

@@ -12,8 +12,14 @@ module SpecGuard
     # vendored OpenTestIntent schema, and reports violations in the reference
     # tool's own grammar under the 0/1/2 exit contract (see {CLI}).
     #
-    # The RSpec formatter (`SpecGuard::RSpecFormatter`) is a separate piece of
-    # work and has no home here yet.
+    # The RSpec formatter (`SpecGuard::RSpecFormatter`) is the other half of
+    # the client, and it is deliberately **not** required from here: `rspec` is
+    # a development dependency of this gem, not a runtime one, and
+    # `bin/specguard-lint` loads this file on machines that may have no RSpec
+    # at all. Requiring `rspec/core` from this chain would turn a missing test
+    # framework into a broken linter. Load it by its own path when you want it
+    # — `require "specguard/rspec/formatter"` — and see that file for the
+    # opt-in wiring.
     class Error < StandardError; end
 
     # A source line could not be scanned (unterminated string or object
