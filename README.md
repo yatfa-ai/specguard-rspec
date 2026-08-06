@@ -27,18 +27,40 @@ bundle exec specguard-lint             # one-off audit: every *_spec.rb
 
 ## The formatter — `SpecGuard::RSpecFormatter`
 
-An **additive** RSpec formatter that collects every example's `@intent` at end-of-run and POSTs it
-to SpecGuard's `/api/v1/ingest`. It runs alongside your usual formatter (`progress`,
-`documentation`, …) and **never blocks CI** — on any failure (network, bad key, timeout) it logs
-to stderr and exits silently. When no API key is set, it writes `log/test_results.jsonl` locally
-instead of POSTing.
+An **additive** RSpec formatter: it runs alongside your usual one (`progress`, `documentation`, …)
+rather than replacing it, and records every example that finished — annotated or not — as one JSON
+object per run in `log/test_results.jsonl`.
 
 ```ruby
 # spec/spec_helper.rb
-require "specguard/rspec_formatter"
+require "specguard/rspec/formatter"
 RSpec.configure do |config|
   config.add_formatter(SpecGuard::RSpecFormatter)
 end
 ```
 
-**Status:** specification stage.
+```
+# ...or in .rspec — the --require is not optional, RSpec cannot guess this path
+--require specguard/rspec/formatter
+--format SpecGuard::RSpecFormatter
+--format progress
+```
+
+Each example contributes its `file_path`, `line_number`, `name` (the composed
+`describe`/`context`/`it` string), `duration` and `outcome`; the run envelope carries `commit_sha`,
+`branch` and `duration_seconds`.
+
+```ruby
+# optional — the defaults read GITHUB_SHA / GITHUB_REF_NAME, or SPECGUARD_COMMIT_SHA /
+# SPECGUARD_BRANCH / SPECGUARD_OUTPUT_PATH
+SpecGuard::RSpec.configure do |config|
+  config.commit_sha = `git rev-parse HEAD`.strip
+end
+```
+
+It **never blocks CI.** RSpec does not sandbox formatters — an exception raised in one escapes the
+runner and takes RSpec's own exit code with it — so every hook rescues, warns once on stderr, and
+leaves the exit status to your suite alone.
+
+**Status:** captures to the local JSONL sink. Annotation discovery and the POST to SpecGuard's
+`/api/v1/ingest` are still to come.
