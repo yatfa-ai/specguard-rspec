@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://specguard.dev/schemas/open-test-intent.v1.json",
+  "title": "OpenTestIntent v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "entity":        { "type": "string", "minLength": 2 },
+    "action":        { "type": "string", "minLength": 2 },
+    "behavior":      { "type": "string", "minLength": 15 },
+    "layer":         { "type": "string", "enum": ["unit", "integration", "request", "system"] },
+    "preconditions": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["entity", "action", "behavior", "layer"]
+}
