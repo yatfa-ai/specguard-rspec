@@ -197,8 +197,22 @@ module SpecGuard
 
         failures.each { |result| report_failure(result) }
 
-        @stdout.puts "specguard-lint: checked #{results.length} @intent annotation" \
-                     "#{'s' unless results.length == 1}, #{failures.length} malformed"
+        @stdout.puts summary_line(*results.partition { |result| result.kind != Finding::KIND_READ })
+      end
+
+      # The summary line exists for one reason — so "checked nothing" can never
+      # read as "all clean" — which makes overstating what was inspected its
+      # own kind of lie. A file that could not be opened contributed no
+      # annotation, so counting its Result as one would report "checked 12
+      # @intent annotations, 12 malformed" having read none of them. Unread
+      # files get their own clause: neither folded into the annotation count
+      # nor dropped from the report.
+      def summary_line(annotations, unread)
+        line = "specguard-lint: checked #{annotations.length} @intent annotation" \
+               "#{'s' unless annotations.length == 1}, #{annotations.count(&:failed?)} malformed"
+        return line if unread.empty?
+
+        "#{line}; #{unread.length} file#{'s' unless unread.length == 1} could not be read"
       end
 
       def report_failure(result)

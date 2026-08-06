@@ -91,6 +91,30 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
       expect(render(nested, "meta" => { "oops" => 1 }))
         .to eq(["meta: additional property 'oops' is not allowed"])
     end
+
+    # The disguise is broader than the name: json_schemer reports type "schema"
+    # for ANY subschema that rejected the instance without a more specific
+    # keyword — a literal `false` schema, an unmatched `not` — not only
+    # `additionalProperties: false`. Today that is safe because the v1 schema
+    # contains exactly one such subschema, but this contract is the oracle the
+    # Go binary is graded against, so the guard is narrowed on the
+    # schema_pointer. A DECLARED property rejected by a `false` schema is not
+    # an "additional property", and saying so would blame the wrong node with
+    # the wrong words.
+    it "does not call a non-additionalProperties subschema an additional property" do
+      falsey = { "type" => "object", "properties" => { "a" => false } }
+      payload = { "a" => 1 }
+      raw = JSONSchemer.schema(falsey).validate(payload).to_a
+
+      expect(raw.first["type"]).to eq("schema") # same disguise, different cause
+      expect(raw.first["schema_pointer"]).to eq("/properties/a")
+
+      violations = render(falsey, "a" => 1)
+
+      expect(violations.length).to eq(1)
+      expect(violations.first).to start_with("a: ")
+      expect(violations.first).not_to include("additional property")
+    end
   end
 
   describe "a type mismatch silences the rest of its node" do

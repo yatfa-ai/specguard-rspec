@@ -57,8 +57,17 @@ module SpecGuard
           !ok?
         end
 
+        # A read failure is not line-scoped: nothing in the file was ever seen,
+        # and slice 1's `line` is a 0 sentinel rather than a location. The
+        # reference drops the line for exactly these findings
+        # (`bin/validate-intent:521` — "when a finding is not line-scoped ...
+        # kind is null"), and `:0` is not somewhere a reader can go: anything
+        # parsing `file:line` — CI annotations, editor quickfix, review
+        # comments — would point at a line that does not exist.
+        #
+        # This is what makes `kind` load-bearing rather than decorative.
         def location
-          "#{file}:#{line}"
+          kind == Finding::KIND_READ ? file : "#{file}:#{line}"
         end
       end
 

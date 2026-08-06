@@ -86,5 +86,47 @@ RSpec.describe SpecGuard::RSpec::Schema do
     it "reports a non-object payload rather than accepting it" do
       expect(schema.violations(["not", "an", "object"])).to eq(["<root>: expected type object, got array"])
     end
+
+    # The verdict must come from the VALIDATOR, never from whether the renderer
+    # managed to phrase a sentence. If those two are the same state, a violation
+    # this renderer cannot word reads as a clean annotation, the CLI exits 0,
+    # and a malformed annotation ships — the exact false green (KB SPGD-78)
+    # that rendering from structured fields exists to prevent, arriving through
+    # the back door.
+    #
+    # This is not theoretical maintenance: the gemspec pins `~> 2.5`, which
+    # admits 2.6 and beyond, and the whole stated reason for not passing
+    # json_schemer's sentence through is to survive that bump. Everywhere else
+    # a bump degrades to wrong-looking text; without this it degrades to
+    # silence. The renderer is stubbed mute here because that is precisely the
+    # future being defended against.
+    context "when the renderer cannot phrase the violation" do
+      subject(:schema) do
+        described_class.new(document: JSON.parse(File.read(SpecGuard::RSpec::SCHEMA_PATH)),
+                            renderer: mute_renderer)
+      end
+
+      let(:mute_renderer) { instance_double(SpecGuard::RSpec::ViolationRenderer, render: []) }
+
+      it "still reports the annotation as violating" do
+        expect(schema.violations({})).not_to be_empty
+      end
+
+      it "falls back to json_schemer's own sentence rather than to silence" do
+        expect(schema.violations({}).join("\n")).to include("required")
+      end
+
+      it "still leaves a valid annotation clean, without consulting the renderer" do
+        expect(schema.violations(payload_fixture("unit-order-total.json"))).to be_empty
+      end
+
+      # The unit above is only half the risk: what matters is that the Linter's
+      # verdict — and therefore the exit code — moves with it.
+      it "fails the annotation through the Linter, so the run cannot exit 0" do
+        finding = SpecGuard::RSpec::Finding.new(file: "a_spec.rb", line: 1, intent: {})
+
+        expect(SpecGuard::RSpec::Linter.new(schema).check_one(finding)).to be_failed
+      end
+    end
   end
 end

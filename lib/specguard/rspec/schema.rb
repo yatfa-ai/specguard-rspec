@@ -67,15 +67,33 @@ module SpecGuard
       # @param intent [Object] one parsed annotation
       # @return [Array<String>] reason lines in the reference tool's grammar
       #   and order; empty means the annotation is valid
+      #
+      # The **validator** decides the verdict; the renderer only decides the
+      # wording. Deriving "is this annotation valid?" from "could we phrase a
+      # sentence about it?" would make an unphrasable violation and a clean
+      # annotation the same state — and under {Linter} that state is a green
+      # run, which is this project's signature vacuous green (KB SPGD-78)
+      # arriving through the one door the whole rendering strategy exists to
+      # close. The gemspec pins `~> 2.5`, which admits 2.6 and beyond; the
+      # renderer is built from structured fields precisely so a bump degrades
+      # to *wrong-looking text* rather than to silence, and this is what keeps
+      # that promise true for error shapes it has never seen.
       def violations(intent)
-        @renderer.render(@schemer.validate(intent).to_a, intent)
-      end
+        errors = @schemer.validate(intent).to_a
+        return [] if errors.empty?
 
-      def valid?(intent)
-        @schemer.valid?(intent)
+        rendered = @renderer.render(errors, intent)
+        rendered.empty? ? errors.map { |error| unrenderable_reason(error) } : rendered
       end
 
       private
+
+      # Last resort: json_schemer's own sentence, and failing even that, the
+      # error's structure. Both are worse output than the reference grammar.
+      # Both are enormously better than reporting the annotation as clean.
+      def unrenderable_reason(error)
+        error["error"] || "does not match the schema at #{error['schema_pointer']}"
+      end
 
       # Checks the vendored document against draft-07's own meta-schema before
       # anything is validated against it.

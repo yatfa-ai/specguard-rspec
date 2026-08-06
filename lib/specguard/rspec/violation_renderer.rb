@@ -79,8 +79,16 @@ module SpecGuard
 
       TYPE_KEYWORD = "type"
       REQUIRED_KEYWORD = "required"
-      # json_schemer's name for an `additionalProperties: false` violation.
-      ADDITIONAL_PROPERTIES_KEYWORD = "schema"
+      # json_schemer's error `type` for a subschema that rejected the instance
+      # without a more specific keyword to blame. `additionalProperties: false`
+      # is one such subschema — and the only one the v1 schema contains — but
+      # a literal `false` schema or an unmatched `not` reports identically.
+      # The name is deliberately the general one; {#additional_properties?} is
+      # what narrows it, so a schema revision that grows a `not` renders
+      # json_schemer's sentence instead of a nonsense "additional property"
+      # line about a property that was declared.
+      SUBSCHEMA_KEYWORD = "schema"
+      ADDITIONAL_PROPERTIES_POINTER = "/additionalProperties"
 
       # One rendered line, plus where it came from and where it sorts.
       #
@@ -108,7 +116,7 @@ module SpecGuard
 
         case keyword
         when REQUIRED_KEYWORD then required_entries(error, pointer, instance, seq)
-        when ADDITIONAL_PROPERTIES_KEYWORD then [additional_property_entry(pointer, instance, seq)]
+        when SUBSCHEMA_KEYWORD then [subschema_entry(error, pointer, instance, seq)]
         when "enum" then [enum_entry(error, pointer, instance, seq)]
         when "minLength", "maxLength" then [length_entry(error, keyword, pointer, instance, seq)]
         when "pattern" then [pattern_entry(error, pointer, instance, seq)]
@@ -142,6 +150,21 @@ module SpecGuard
 
       # Re-attributed to the parent: json_schemer points at the property, the
       # reference blames the object that disallowed it.
+      #
+      # Only a violation of `additionalProperties` itself gets that treatment.
+      # Any other rejecting subschema is about the property the pointer names,
+      # so re-attributing it would move the blame to the wrong node *and*
+      # phrase it as something it is not.
+      def subschema_entry(error, pointer, instance, seq)
+        return unknown_entry(error, pointer, instance, seq) unless additional_properties?(error)
+
+        additional_property_entry(pointer, instance, seq)
+      end
+
+      def additional_properties?(error)
+        error["schema_pointer"].to_s.end_with?(ADDITIONAL_PROPERTIES_POINTER)
+      end
+
       def additional_property_entry(pointer, instance, seq)
         parent, name = split_pointer(pointer)
 

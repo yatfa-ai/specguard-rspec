@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "open3"
+require "digest"
 require "rubygems/package"
 
 # The vendored schema is now load-bearing: {SpecGuard::RSpec::Schema.load}
@@ -24,8 +25,14 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     expect(tracked.strip).not_to be_empty
   end
 
+  # The digest of open-test-intent's schemas/open-test-intent.v1.json at
+  # c8f5b6d, the copy this file was vendored from. A byte count would not say
+  # this: any same-length edit — swapping an enum member, moving a digit of
+  # `minLength` — passes a size check while changing what the linter enforces.
+  CANONICAL_V1_SHA256 = "6535d9ba11b0936374d43e32a8bbc859f0adcf63d343a31df35f467113992924"
+
   it "is the canonical v1 schema, byte-for-byte" do
-    expect(File.size(SpecGuard::RSpec::SCHEMA_PATH)).to eq(638)
+    expect(Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest).to eq(CANONICAL_V1_SHA256)
     expect(schema["$id"]).to eq("https://specguard.dev/schemas/open-test-intent.v1.json")
     expect(schema["$schema"]).to eq("http://json-schema.org/draft-07/schema#")
   end

@@ -116,6 +116,30 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # A read failure is not line-scoped — no line of the file was ever seen —
+    # and slice 1 carries `line: 0` as the sentinel for that. Printing it as
+    # `file:0` leaks the sentinel into the product: `:0` is not somewhere a
+    # reader can go, and anything parsing `file:line` (CI annotations, editor
+    # quickfix, review comments) would point at a line that does not exist.
+    # The reference drops the line for exactly these findings
+    # (bin/validate-intent:521), and this is the one output shape the suite
+    # did not pin to the byte, which is how `:0` shipped.
+    it "names the file WITHOUT a line number, which it does not have" do
+      Dir.mktmpdir do |dir|
+        missing = File.join(dir, "gone_spec.rb")
+        cli.run([missing])
+
+        expect(out).to include("FAIL  #{missing} — could not read file")
+        expect(out).not_to include("#{missing}:0")
+      end
+    end
+
+    it "keeps the line number for findings that DO have one" do
+      cli.run([fixture_path("broken_intent_spec.rb")])
+
+      expect(out).to match(/^FAIL  \S+broken_intent_spec\.rb:9$/)
+    end
+
     # Slice 1 classified an unreadable file as KIND_EXTRACTION, which under the
     # exit contract would read as a claim about an annotation. It is now
     # KIND_READ — the reference tool's own name for it — so the decision to
@@ -129,6 +153,26 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # The summary count exists to keep the totals honest, so it must not
+    # overstate what was inspected. A file that could not be opened contributed
+    # no annotation: counting its Result as one turns "12 files, none of them
+    # read" into "checked 12 @intent annotations, 12 malformed".
+    it "does not count an unread file as an annotation it checked" do
+      Dir.mktmpdir do |dir|
+        cli.run([File.join(dir, "a_spec.rb"), File.join(dir, "b_spec.rb")])
+
+        expect(out).to include("checked 0 @intent annotations, 0 malformed; 2 files could not be read")
+      end
+    end
+
+    it "still counts the annotations it did check alongside the unread file" do
+      Dir.mktmpdir do |dir|
+        cli.run([fixture_path("broken_intent_spec.rb"), File.join(dir, "gone_spec.rb")])
+
+        expect(out).to include("checked 5 @intent annotations, 5 malformed; 1 file could not be read")
+      end
+    end
+
     it "does not let invalid UTF-8 reach the shell as an exception" do
       Dir.mktmpdir do |dir|
         path = File.join(dir, "bad_spec.rb")
@@ -136,6 +180,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
         expect { cli.run([path]) }.not_to raise_error
         expect(out).to include("invalid UTF-8 byte sequence")
+        expect(out).to include("FAIL  #{path} — could not read file")
       end
     end
   end
