@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# specguard-lint — the SpecGuard annotation linter entrypoint.
+#
+# Phase 0 (this skeleton): prints the gem name and version and exits 0, wiring
+# the entrypoint the README advertises so it is discoverable from day one. The
+# actual @intent validation against the OpenTestIntent JSON Schema is Phase 5
+# (see SPGD-12 §1); do not implement that here.
+
+# Allow running from a source checkout without bundler by putting the local
+# lib/ on the load path. When the gem is installed (or run under
+# `bundle exec`), specguard/rspec resolves through the normal load path.
+source_lib = File.expand_path("../lib", __dir__)
+$LOAD_PATH.unshift(source_lib) unless $LOAD_PATH.include?(source_lib)
+
+require "specguard/rspec"
+
+puts "specguard-rspec #{SpecGuard::RSpec::VERSION}"
