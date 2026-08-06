@@ -41,6 +41,8 @@ RSpec.describe "the gem's load boundary" do
         puts(defined?(::RSpec::Core) ? "rspec-core DEFINED" : "rspec-core absent")
         puts "loaded_features=\#{$LOADED_FEATURES.grep(%r{/rspec/core}).length}"
         puts "linter=\#{SpecGuard::RSpec::CLI.name}"
+        puts(defined?(SpecGuard::RSpec::Transport) ? "transport DEFINED" : "transport absent")
+        puts(defined?(SpecGuard::RSpec::Configuration) ? "configuration DEFINED" : "configuration absent")
       RUBY
     end
 
@@ -63,6 +65,44 @@ RSpec.describe "the gem's load boundary" do
     it "still gives the linter everything it needs" do
       expect(stdout).to include("linter=SpecGuard::RSpec::CLI")
     end
+
+    # Criterion 8. The transport chain belongs to the formatter half and must
+    # stay there. `transport.rb` requires `configuration.rb`, so a stray
+    # `require_relative "transport"` in lib/specguard/rspec.rb would drag both
+    # onto the linter's load path — and every other spec would keep passing,
+    # because in *this* repo everything is present anyway. What the linter must
+    # not gain is a reason to fail: it is installed on machines with no test
+    # framework, and every file it does not need is a file that can be missing.
+    it "does not bring the formatter's transport with it" do
+      expect(stdout).to include("transport absent")
+      expect(stdout).to include("configuration absent")
+    end
+  end
+
+  # Criterion 8, end to end rather than by constant: the linter's real
+  # entrypoint, in an interpreter that has never heard of RSpec, still returning
+  # the exit code the 0/1/2 contract promises. `--version` is used because it is
+  # the one invocation that needs no fixture on disk, and it still exercises the
+  # whole `require "specguard/rspec"` → `CLI#run` chain that the bin is.
+  describe "bin/specguard-lint, on a machine with no RSpec" do
+    subject(:result) do
+      stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby, File.expand_path("../../../bin/specguard-lint", __dir__), "--version"
+      )
+      [stdout, stderr, status.exitstatus]
+    end
+
+    it "runs and exits 0" do
+      expect(result[2]).to eq(0), "stderr was: #{result[1]}"
+    end
+
+    it "reports the gem's version, so it really reached the CLI" do
+      expect(result[0]).to include(SpecGuard::RSpec::VERSION)
+    end
+
+    it "does not warn about anything on the way" do
+      expect(result[1]).to be_empty
+    end
   end
 
   describe "require \"specguard/rspec/formatter\" — the opt-in half" do
@@ -72,6 +112,8 @@ RSpec.describe "the gem's load boundary" do
         puts "formatter=\#{SpecGuard::RSpecFormatter.name}"
         puts "superclass=\#{SpecGuard::RSpecFormatter.superclass.name}"
         puts "configurable=\#{SpecGuard::RSpec.configuration.output_path}"
+        puts "transport=\#{SpecGuard::RSpec::Transport.name}"
+        puts "path=\#{SpecGuard::RSpec::Transport::PATH}"
       RUBY
     end
 
@@ -94,6 +136,15 @@ RSpec.describe "the gem's load boundary" do
 
     it "brings the configuration with it" do
       expect(stdout).to include("configurable=log/test_results.jsonl")
+    end
+
+    # The other side of the boundary: the formatter half must arrive complete.
+    # `--require specguard/rspec/formatter` in a project's `.rspec` is the whole
+    # of the documented opt-in, so anything the run needs at `close` has to be
+    # on this one chain.
+    it "brings the transport with it, so close has something to POST with" do
+      expect(stdout).to include("transport=SpecGuard::RSpec::Transport")
+      expect(stdout).to include("path=/api/v1/ingest")
     end
   end
 end

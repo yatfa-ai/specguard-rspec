@@ -3,6 +3,8 @@
 require "tmpdir"
 require "open3"
 
+require_relative "../../support/stub_ingest_endpoint"
+
 # Everything the out-of-process examples need, in a namespace of its own —
 # a bare `LIB_DIR = ...` inside an `RSpec.describe` block assigns at the
 # *lexical* scope, which is top level, so it would define `::LIB_DIR` and
@@ -124,6 +126,18 @@ module FormatterRunHelpers
     def payload = JSON.parse(lines.last)
   end
 
+  # Unset in every child unless an example asks for them. The formatter's
+  # configuration seeds from the *real* ENV, so a developer or a CI job that
+  # exported `SPECGUARD_API_KEY` for its own reasons would otherwise turn every
+  # run below into an HTTP delivery — and each of these examples asserts on a
+  # local file that would then never be written. `nil` deletes the variable in
+  # the child (`Process.spawn`'s env contract).
+  HERMETIC_ENV = {
+    "SPECGUARD_API_KEY" => nil,
+    "SPECGUARD_ENDPOINT" => nil,
+    "SPECGUARD_TIMEOUT" => nil
+  }.freeze
+
   # Runs `rspec` as its own process in a throwaway project root, and reads back
   # everything an example might want to assert on before the root is removed.
   #
@@ -141,7 +155,7 @@ module FormatterRunHelpers
   def run_rspec(suite, prepare: nil, sabotage: false)
     Dir.mktmpdir do |root|
       File.write(File.join(root, "sample_spec.rb"), suite)
-      env = prepare ? prepare.call(root) : {}
+      env = HERMETIC_ENV.merge(prepare ? prepare.call(root) : {})
 
       requires = ["--require", "specguard/rspec/formatter"]
       if sabotage
@@ -158,11 +172,25 @@ module FormatterRunHelpers
         chdir: root
       )
 
-      sink = File.join(root, env.fetch("SPECGUARD_OUTPUT_PATH", DEFAULT_SINK))
+      sink = File.join(root, env.fetch("SPECGUARD_OUTPUT_PATH", DEFAULT_SINK) || DEFAULT_SINK)
       lines = File.exist?(sink) ? File.readlines(sink, chomp: true) : []
 
       Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines)
     end
+  end
+
+  # Everything a child needs to POST to the stub. `commit_sha` is supplied
+  # because the throwaway project root is not a git checkout — which is what
+  # makes omitting it a *test case* rather than an accident (see "when the
+  # commit cannot be determined").
+  def transport_env(server, **overrides)
+    {
+      "SPECGUARD_ENDPOINT" => server.endpoint,
+      "SPECGUARD_API_KEY" => "sgk_abc123",
+      "SPECGUARD_COMMIT_SHA" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
+      "SPECGUARD_BRANCH" => "main",
+      "SPECGUARD_TIMEOUT" => "5"
+    }.merge(overrides.transform_keys(&:to_s))
   end
 
   # A regular file where a directory has to go. Chosen over `chmod` on purpose:
@@ -532,6 +560,242 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     it "writes nothing at all rather than a partial line somewhere else" do
       expect(@green.lines).to be_empty
+    end
+  end
+
+  # Criteria 1, 3, 4 and 5, at the only level where the promise they are all
+  # variations on can actually be observed: the number the shell reads back.
+  #
+  # In-process assertions cannot see it. A telemetry failure that escapes a
+  # formatter hook takes `RSpec::Core::Runner.run`'s exit code with it, and
+  # "the process still exited 0" is a claim about a process. So these run a
+  # real `rspec` against a real socket, and check the exit status every time —
+  # including in the cases where SpecGuard is the thing that is broken.
+  describe "delivering the run to a real endpoint" do
+    describe "when the endpoint accepts it" do
+      before(:context) do
+        StubIngestEndpoint.run(status: 202) do |server|
+          @run = run_rspec(FormatterRunHelpers::MIXED_SUITE,
+                           prepare: ->(_root) { transport_env(server) })
+          @requests = server.requests
+        end
+      end
+
+      let(:run) { @run }
+      let(:request) { @requests.first }
+
+      # Criterion 1.
+      it "POSTs the run exactly once" do
+        expect(@requests.length).to eq(1)
+      end
+
+      it "posts to the platform's path, with a Bearer key and a JSON body" do
+        expect(request.path).to eq("/api/v1/ingest")
+        expect(request.headers["authorization"]).to eq("Bearer sgk_abc123")
+        expect(request.headers["content-type"]).to eq("application/json")
+      end
+
+      it "sends the whole run, envelope and every example" do
+        expect(request.json).to include("commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
+                                        "branch" => "main")
+        expect(request.json["specs"].length).to eq(3)
+        expect(request.json["duration_seconds"]).to be_a(Float).and be > 0
+      end
+
+      # The delivered body is the *whole* claim of this slice: it is what
+      # produces a 202 rather than a 400, and it is transcribed from the
+      # platform's own validator (see {IngestContract}) rather than assumed.
+      it "sends a body the platform's ingest contract accepts" do
+        violations = request.json["specs"].each_with_index.flat_map do |spec, index|
+          IngestContract.errors_for(spec, index)
+        end
+
+        expect(violations).to be_empty
+      end
+
+      # Criterion 7, on the envelope rather than the specs. These four rules
+      # are `Ingest::Payload`'s own (`validate_commit_sha`, `validate_branch`,
+      # `validate_duration_seconds`, `validate_specs`), and every one of them
+      # rejects the *whole run* rather than one row.
+      it "sends an envelope the platform's ingest contract accepts" do
+        body = request.json
+
+        expect(body["commit_sha"]).to be_a(String).and satisfy { |v| !v.strip.empty? }
+        expect(body["branch"]).to be_a(String).or be_nil
+        expect(body["duration_seconds"]).to be_a(Numeric).and be >= 0
+        expect(body["specs"]).to be_an(Array)
+      end
+
+      # The local file is the fallback, not a second copy: writing both would
+      # double a shared CI sink's contents on every successful run.
+      it "writes no local file when the run was delivered" do
+        expect(run.lines).to be_empty
+      end
+
+      it "says nothing on stderr" do
+        expect(run.stderr).to be_empty
+      end
+
+      it "leaves the suite's own exit status alone" do
+        expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
+        expect(run.exit_status).to eq(1)
+      end
+    end
+
+    # Criterion 3. The whole reason this slice exists: `Net::HTTP` returns
+    # these as ordinary values, so the formatter's `rescue` sees nothing at all
+    # and a naive implementation loses the run in complete silence.
+    {
+      400 => "a payload the endpoint refuses",
+      401 => "a key the endpoint does not accept",
+      500 => "an endpoint that is having a bad day"
+    }.each do |status, description|
+      describe "when the endpoint answers #{status} — #{description}" do
+        before(:context) do
+          StubIngestEndpoint.run(status: status) do |server|
+            @green = run_rspec(FormatterRunHelpers::GREEN_SUITE,
+                               prepare: ->(_root) { transport_env(server) })
+            @red = run_rspec(FormatterRunHelpers::MIXED_SUITE,
+                             prepare: ->(_root) { transport_env(server) })
+          end
+        end
+
+        it "still exits 0 for a green suite" do
+          expect(@green.stdout).to include("1 example, 0 failures")
+          expect(@green.exit_status).to eq(0)
+        end
+
+        it "still exits 1 for a failing suite" do
+          expect(@red.stdout).to include("3 examples, 1 failure, 1 pending")
+          expect(@red.exit_status).to eq(1)
+        end
+
+        # Naming the status is the requirement, not decoration: a 401 means
+        # "rotate the key" and a 400 means "this gem built a body the platform
+        # refused". Those are different people's problems.
+        it "warns once on stderr, naming the status code" do
+          expect(@green.stderr.scan(/SpecGuard:/).length).to eq(1)
+          expect(@green.stderr).to include("HTTP #{status}")
+        end
+
+        it "leaves stdout to the human formatter" do
+          expect(@green.stdout).not_to include("SpecGuard:")
+        end
+
+        # Silent loss becomes recoverable loss. The suite is over by the time
+        # anyone reads the warning, so a run discarded here cannot be re-run.
+        it "writes the payload to the local fallback rather than dropping it" do
+          expect(@green.lines.length).to eq(1)
+          expect(@red.payload["specs"].length).to eq(3)
+        end
+      end
+    end
+
+    # Criterion 4. A raised exception takes the same path as a refused
+    # response — the caller has one outcome to handle, not two.
+    describe "when the request cannot be made at all" do
+      before(:context) do
+        # Port 1 is privileged and nothing is on it, so the connection is
+        # refused immediately; `.invalid` is reserved by RFC 2606 and can never
+        # resolve, so no test can accidentally depend on a real host.
+        @refused = run_rspec(FormatterRunHelpers::GREEN_SUITE, prepare: lambda { |_root|
+          { "SPECGUARD_ENDPOINT" => "http://127.0.0.1:1", "SPECGUARD_API_KEY" => "sgk_abc123",
+            "SPECGUARD_COMMIT_SHA" => "abc123", "SPECGUARD_TIMEOUT" => "5" }
+        })
+        @unresolvable = run_rspec(FormatterRunHelpers::MIXED_SUITE, prepare: lambda { |_root|
+          { "SPECGUARD_ENDPOINT" => "http://specguard.invalid", "SPECGUARD_API_KEY" => "sgk_abc123",
+            "SPECGUARD_COMMIT_SHA" => "abc123", "SPECGUARD_TIMEOUT" => "5" }
+        })
+      end
+
+      it "still exits 0 for a green suite when the connection is refused" do
+        expect(@refused.stdout).to include("1 example, 0 failures")
+        expect(@refused.exit_status).to eq(0)
+      end
+
+      it "still exits 1 for a failing suite when the host does not resolve" do
+        expect(@unresolvable.stdout).to include("3 examples, 1 failure, 1 pending")
+        expect(@unresolvable.exit_status).to eq(1)
+      end
+
+      it "warns once and names the underlying error" do
+        expect(@refused.stderr.scan(/SpecGuard:/).length).to eq(1)
+        expect(@refused.stderr).to match(/Errno::|SocketError/)
+      end
+
+      it "falls back to the local file, for both of them" do
+        expect(@refused.lines.length).to eq(1)
+        expect(@unresolvable.payload["specs"].length).to eq(3)
+      end
+    end
+
+    # Criterion 6. `Net::HTTP`'s stock 60s open + 60s read is up to two minutes
+    # added to every CI run against a hung endpoint, which is squarely against
+    # "a 20,000-example run must not be meaningfully slowed". The budget is
+    # asserted as wall clock, because that is the thing being promised.
+    it "gives up on an endpoint that never answers, within the configured budget" do
+      StubIngestEndpoint.run(hang: true) do |server|
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        run = run_rspec(FormatterRunHelpers::GREEN_SUITE,
+                        prepare: ->(_root) { transport_env(server, SPECGUARD_TIMEOUT: "1") })
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+        expect(run.exit_status).to eq(0)
+        expect(run.stderr).to include("Net::ReadTimeout")
+        expect(run.lines.length).to eq(1)
+        # Generous against a loaded CI box, and still an order of magnitude
+        # under the 120s a default-configured Net::HTTP would have spent.
+        expect(elapsed).to be < 30
+      end
+    end
+
+    # Criterion 5. The throwaway project root is not a git checkout and no
+    # provider variable is set, so `commit_sha` really is blank — and
+    # `Ingest::Payload#validate_commit_sha` rejects that outright, discarding
+    # every example rather than the one empty field. Ten seconds of CI time to
+    # be told so is pure loss.
+    describe "when the commit cannot be determined" do
+      before(:context) do
+        StubIngestEndpoint.run(status: 202) do |server|
+          @run = run_rspec(FormatterRunHelpers::GREEN_SUITE, prepare: lambda { |_root|
+            { "SPECGUARD_ENDPOINT" => server.endpoint, "SPECGUARD_API_KEY" => "sgk_abc123" }
+          })
+          @requests = server.requests
+        end
+      end
+
+      it "issues no POST at all" do
+        expect(@requests).to be_empty
+      end
+
+      it "takes the fallback sink instead" do
+        expect(@run.lines.length).to eq(1)
+        expect(@run.payload["commit_sha"]).to be_nil
+      end
+
+      it "says why, rather than leaving the operator to guess" do
+        expect(@run.stderr).to include("the commit could not be determined")
+      end
+
+      it "still exits on the suite's own terms" do
+        expect(@run.exit_status).to eq(0)
+      end
+    end
+
+    # Criterion 2, at the process level: no key means no network, full stop.
+    # Asserted against a live stub rather than by stubbing `Transport`, because
+    # "nothing arrived at a real socket" is the claim, and a subprocess is not
+    # somewhere a double can reach anyway.
+    it "attempts no HTTP call when there is no API key, and writes the file as before" do
+      StubIngestEndpoint.run(status: 202) do |server|
+        run = run_rspec(FormatterRunHelpers::GREEN_SUITE,
+                        prepare: ->(_root) { { "SPECGUARD_ENDPOINT" => server.endpoint } })
+
+        expect(server.requests).to be_empty
+        expect(run.lines.length).to eq(1)
+        expect(run.stderr).to be_empty
+        expect(run.exit_status).to eq(0)
+      end
     end
   end
 

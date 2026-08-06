@@ -29,7 +29,8 @@ bundle exec specguard-lint             # one-off audit: every *_spec.rb
 
 An **additive** RSpec formatter: it runs alongside your usual one (`progress`, `documentation`, …)
 rather than replacing it, and records every example that finished — annotated or not — as one JSON
-object per run in `log/test_results.jsonl`.
+object per run, POSTed to SpecGuard (or written to `log/test_results.jsonl` when there is no API
+key).
 
 ```ruby
 # spec/spec_helper.rb
@@ -72,16 +73,59 @@ the one on the next line.
 > formatter never has anything to hide.
 
 ```ruby
-# optional — the defaults read GITHUB_SHA / GITHUB_REF_NAME, or SPECGUARD_COMMIT_SHA /
-# SPECGUARD_BRANCH / SPECGUARD_OUTPUT_PATH
+# optional — the defaults read the commit and branch from whichever CI provider
+# is running you (GitHub Actions, GitLab CI, CircleCI, Buildkite, Jenkins), and
+# fall back to `git rev-parse HEAD`. SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH /
+# SPECGUARD_OUTPUT_PATH override any of it.
 SpecGuard::RSpec.configure do |config|
   config.commit_sha = `git rev-parse HEAD`.strip
 end
 ```
 
-It **never blocks CI.** RSpec does not sandbox formatters — an exception raised in one escapes the
-runner and takes RSpec's own exit code with it — so every hook rescues, warns once on stderr, and
-leaves the exit status to your suite alone.
+## Shipping the run to SpecGuard
 
-**Status:** captures every example to the local JSONL sink, with its annotation resolved. The POST
-to SpecGuard's `/api/v1/ingest` is still to come.
+Set an API key and an endpoint and the run is POSTed to
+`<endpoint>/api/v1/ingest` — once per run, as a single request:
+
+```bash
+export SPECGUARD_ENDPOINT=https://specguard.example.com
+export SPECGUARD_API_KEY=…          # from your repository's settings
+export SPECGUARD_TIMEOUT=10         # optional; seconds, applied to connect and read
+```
+
+```ruby
+# ...or in Ruby, if you would rather not use the environment
+SpecGuard::RSpec.configure do |config|
+  config.endpoint = "https://specguard.example.com"
+  config.api_key  = ENV["SPECGUARD_API_KEY"]
+  config.timeout  = 10
+end
+```
+
+**The API key is the switch.** With no key nothing is sent anywhere and the run
+is written to `log/test_results.jsonl` exactly as before — so local development
+needs no opt-out, and a fork with no secret configured behaves like a laptop
+rather than like a broken build.
+
+**A failed delivery is never silent, and never lost.** If the endpoint refuses
+the run (a `401` from a rotated key, a `400`, a `500`) or cannot be reached at
+all (connection refused, DNS failure, timeout), the formatter prints **one**
+line to stderr naming the status or the error, and writes the payload to
+`log/test_results.jsonl` so the run can be replayed later:
+
+```
+SpecGuard: could not deliver test telemetry (HTTP 401 — the API key was not
+accepted). Falling back to log/test_results.jsonl; the test run is unaffected.
+```
+
+There are **no retries**, and the whole delivery is bounded by `timeout`
+(10 seconds by default, against `Net::HTTP`'s own 60): telemetry is explicitly
+allowed to be lost, and a retry would only double what a hung endpoint can cost
+your CI run.
+
+It **never blocks CI.** RSpec does not sandbox formatters — an exception raised
+in one escapes the runner and takes RSpec's own exit code with it — so every
+hook rescues, warns once on stderr, and leaves the exit status to your suite
+alone. A non-2xx response gets the same treatment: `Net::HTTP` returns those as
+ordinary values rather than raising, so they are checked for explicitly instead
+of being left to a `rescue` that would never see them.
