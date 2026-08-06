@@ -13,32 +13,16 @@ RSpec.describe SpecGuard::RSpec::CLI do
   def out = stdout.string
   def err = stderr.string
 
-  describe "the exit contract is NOT this slice" do
-    # Nothing here validates anything yet, so a non-zero exit would be a lie.
-    # These pin criterion 7: bin/specguard-lint exits 0 in every case.
-    it "exits 0 on a clean file" do
-      expect(cli.run([fixture_path("order_spec.rb")])).to eq(0)
-    end
-
-    it "exits 0 on a file full of schema violations and malformed annotations" do
-      expect(cli.run([fixture_path("broken_intent_spec.rb")])).to eq(0)
-    end
-
-    it "exits 0 on a misuse that will later be a 2" do
-      Dir.mktmpdir do |dir|
-        Dir.chdir(dir) { expect(cli.run(["--changed"])).to eq(0) }
-      end
-    end
-
-    it "exits 0 on an unparseable command line" do
-      expect(cli.run(["--no-such-flag"])).to eq(0)
-    end
-
-    it "exits 0 when nothing at all is selected" do
-      Dir.mktmpdir { |dir| Dir.chdir(dir) { expect(cli.run([])).to eq(0) } }
-    end
-  end
-
+  # The exit contract itself lives in spec/specguard/rspec/exit_contract_spec.rb.
+  # What is left here is the CLI's *reporting*: which stream each kind of
+  # message goes to, and whether it tells the truth about what was checked.
+  #
+  # NOTE for anyone diffing against slice 1: findings moved from stderr to
+  # stdout when validation landed. They are the tool's product, they are where
+  # the reference validator puts them, and lint findings conventionally go
+  # there. Diagnostics *about the linter* — the empty-selection warning, misuse,
+  # a schema that would not load — stay on stderr, and the exit code rather
+  # than the stream is now the machine-readable signal.
   describe "honest reporting of what was checked" do
     # "checked 12 files, found no annotations" must never be confusable with
     # "checked 0 files". Reporting the count is what makes them distinguishable.
@@ -70,23 +54,36 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(err).to include("--changed requires a git repository")
     end
 
-    it "summarises the annotations it found" do
+    it "summarises how many annotations it checked and how many failed" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
-      expect(out).to include("found 5 @intent annotations (3 extracted, 2 malformed)")
+      expect(out).to include("checked 5 @intent annotations, 5 malformed")
     end
 
-    it "prints each malformed annotation at its own file:line on stderr" do
+    # An annotation-free run states its zero explicitly. Silence would be
+    # indistinguishable from "the linter never ran".
+    it "states the zero when a checked file carries no annotations" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "bare_spec.rb")
+        File.write(path, "RSpec.describe(Order) { it('works') {} }\n")
+        cli.run([path])
+      end
+
+      expect(out).to include("checked 0 @intent annotations, 0 malformed")
+    end
+
+    it "prints each malformed annotation at its own file:line" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
-      expect(err).to include(":28: unterminated object literal")
-      expect(err).to include(":34: no '{...}' object literal")
+      expect(out).to include(":28 — unterminated object literal")
+      expect(out).to include(":34 — no '{...}' object literal")
     end
 
-    it "prints each extracted annotation as strict JSON" do
+    it "prints nothing per-annotation when every annotation is valid" do
       cli.run([fixture_path("order_spec.rb")])
 
-      expect(out).to include(':10: {"entity":"Order","action":"checkout"')
+      expect(out).not_to include("FAIL")
+      expect(out).to include("checked 7 @intent annotations, 0 malformed")
     end
   end
 
@@ -115,7 +112,30 @@ RSpec.describe SpecGuard::RSpec::CLI do
         missing = File.join(dir, "gone_spec.rb")
 
         expect { cli.run([missing]) }.not_to raise_error
-        expect(err).to include("could not read file")
+        expect(out).to include("could not read file")
+      end
+    end
+
+    # Slice 1 classified an unreadable file as KIND_EXTRACTION, which under the
+    # exit contract would read as a claim about an annotation. It is now
+    # KIND_READ — the reference tool's own name for it — so the decision to
+    # nonetheless fail the run (reference parity: `FAIL ... — could not read
+    # file`, exit 1) is visible and reversible in one place.
+    it "classifies it as a read failure, not as a malformed annotation" do
+      Dir.mktmpdir do |dir|
+        finding = SpecGuard::RSpec::Scanner.scan_file(File.join(dir, "gone_spec.rb")).first
+
+        expect(finding.kind).to eq(SpecGuard::RSpec::Finding::KIND_READ)
+      end
+    end
+
+    it "does not let invalid UTF-8 reach the shell as an exception" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "bad_spec.rb")
+        File.binwrite(path, "# @intent: {entity:\"Order\"}\n# \xff\xfe\n")
+
+        expect { cli.run([path]) }.not_to raise_error
+        expect(out).to include("invalid UTF-8 byte sequence")
       end
     end
   end
@@ -136,8 +156,8 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).not_to include("checked")
     end
 
-    it "still exits 0, since the exit contract is the next slice" do
-      expect(cli.run(["--changed", fixture_path("order_spec.rb")])).to eq(0)
+    it "exits 2, the misuse code, rather than accusing an annotation" do
+      expect(cli.run(["--changed", fixture_path("order_spec.rb")])).to eq(2)
     end
   end
 

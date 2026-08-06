@@ -1,0 +1,6 @@
+{
+  "entity": "Order",
+  "action": "checkout",
+  "behavior": "works",
+  "layer": "unit"
+}

@@ -32,7 +32,7 @@ module SpecGuard
           text = File.read(path, encoding: "UTF-8")
         rescue SystemCallError, IOError => e
           return [Finding.new(file: path, line: 0, problem: "could not read file: #{e.message}",
-                              kind: Finding::KIND_EXTRACTION)]
+                              kind: Finding::KIND_READ)]
         end
 
         scan_text(text, file: path)
@@ -46,7 +46,7 @@ module SpecGuard
         # from deep inside the scanner. Report it as this file's one problem.
         unless text.valid_encoding?
           return [Finding.new(file: file, line: 0, problem: "could not read file: invalid UTF-8 byte sequence",
-                              kind: Finding::KIND_EXTRACTION)]
+                              kind: Finding::KIND_READ)]
         end
 
         AnnotationScanner.each_intent(text).map do |line_no, raw, problem|

@@ -39,8 +39,13 @@ Gem::Specification.new do |spec|
   spec.executables = ["specguard-lint"]
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of the gem.
-  # spec.add_dependency "example-gem", "~> 1.0"
+  # The linter validates each @intent payload against the vendored
+  # OpenTestIntent v1 schema. Pinned to 2.5 on purpose: the linter renders its
+  # own reason lines from json_schemer's *structured* error fields (`type`,
+  # `data_pointer`, `details.missing_keys`) precisely so a gem bump cannot
+  # silently drift the wording — but the set of `type` values it dispatches on
+  # is still 2.x API surface, so a major bump wants a look.
+  spec.add_dependency "json_schemer", "~> 2.5"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

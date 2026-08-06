@@ -1,0 +1,6 @@
+{
+  "entity": "Order",
+  "action": "total",
+  "behavior": "sums line item prices after applying the active discount",
+  "layer": "unit"
+}

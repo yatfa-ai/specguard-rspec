@@ -6,12 +6,11 @@ module SpecGuard
   module RSpec
     # The Ruby client for SpecGuard.
     #
-    # This slice ships the linter's *input pipeline*: it finds `@intent:`
-    # annotations in spec files, captures each payload string-aware, normalizes
-    # PROTOCOL.md §1's permissive syntax into strict JSON, and parses it into a
-    # Hash. It stops there deliberately — loading the vendored schema, applying
-    # it, and the `0`/`1`/`2` exit contract are the next slice, and
-    # `bin/specguard-lint` still exits 0 in every case until then.
+    # The linter is complete end to end: it finds `@intent:` annotations in
+    # spec files, captures each payload string-aware, normalizes PROTOCOL.md
+    # §1's permissive syntax into strict JSON, validates the result against the
+    # vendored OpenTestIntent schema, and reports violations in the reference
+    # tool's own grammar under the 0/1/2 exit contract (see {CLI}).
     #
     # The RSpec formatter (`SpecGuard::RSpecFormatter`) is a separate piece of
     # work and has no home here yet.
@@ -34,8 +33,9 @@ module SpecGuard
     # the spec fixtures deliberately do not, so nothing here may be
     # load-bearing at runtime.
     #
-    # Nothing reads it yet — applying it is the next slice. It is vendored now
-    # so that slice is purely additive.
+    # {Schema.load} reads it, and treats every way that can fail as exit 2 —
+    # if a packaging accident leaves it out of the gem, the linter must say so
+    # rather than blame someone's annotations.
     SCHEMA_PATH = File.expand_path("rspec/schemas/open-test-intent.v1.json", __dir__).freeze
   end
 end
@@ -45,4 +45,7 @@ require_relative "rspec/annotation_scanner"
 require_relative "rspec/payload_normalizer"
 require_relative "rspec/scanner"
 require_relative "rspec/file_selector"
+require_relative "rspec/violation_renderer"
+require_relative "rspec/schema"
+require_relative "rspec/linter"
 require_relative "rspec/cli"
