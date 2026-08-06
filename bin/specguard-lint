@@ -3,10 +3,11 @@
 
 # specguard-lint — the SpecGuard annotation linter entrypoint.
 #
-# Phase 0 (this skeleton): prints the gem name and version and exits 0, wiring
-# the entrypoint the README advertises so it is discoverable from day one. The
-# actual @intent validation against the OpenTestIntent JSON Schema is Phase 5
-# (see SPGD-12 §1); do not implement that here.
+# This slice wires the *discovery* half: it selects spec files, finds every
+# `@intent:` annotation in them, and reports what it extracted. It does not
+# validate against the OpenTestIntent schema, and it **always exits 0** — the
+# 0/1/2 exit contract (SPGD-12 §1) is the next slice, and exiting non-zero
+# before anything is actually validated would be a lie.
 
 # Allow running from a source checkout without bundler by putting the local
 # lib/ on the load path. When the gem is installed (or run under
@@ -16,4 +17,4 @@ $LOAD_PATH.unshift(source_lib) unless $LOAD_PATH.include?(source_lib)
 
 require "specguard/rspec"
 
-puts "specguard-rspec #{SpecGuard::RSpec::VERSION}"
+exit SpecGuard::RSpec::CLI.new.run(ARGV)
