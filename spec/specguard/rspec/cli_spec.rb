@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "tmpdir"
+require "fileutils"
+require "open3"
 
 RSpec.describe SpecGuard::RSpec::CLI do
   subject(:cli) { described_class.new(stdout: stdout, stderr: stderr) }
@@ -115,6 +117,76 @@ RSpec.describe SpecGuard::RSpec::CLI do
         expect { cli.run([missing]) }.not_to raise_error
         expect(err).to include("could not read file")
       end
+    end
+  end
+
+  describe "--changed with explicit files" do
+    # Honouring the files and dropping --changed without a word is the same
+    # class of quiet no-op the slice exists to remove: --changed appears to have
+    # been applied when it was not.
+    it "refuses the combination rather than silently ignoring --changed" do
+      cli.run(["--changed", fixture_path("order_spec.rb")])
+
+      expect(err).to include("--changed cannot be combined with explicit files")
+    end
+
+    it "checks nothing when it refuses" do
+      cli.run(["--changed", fixture_path("order_spec.rb")])
+
+      expect(out).not_to include("checked")
+    end
+
+    it "still exits 0, since the exit contract is the next slice" do
+      expect(cli.run(["--changed", fixture_path("order_spec.rb")])).to eq(0)
+    end
+  end
+
+  describe "the reason given for an empty --changed selection" do
+    # The blocker's real sting: the warning did not just fire on an empty
+    # selection, it stated something FALSE — "nothing in the diff matched
+    # *_spec.rb" when a spec file demonstrably had changed. A confidently wrong
+    # reason is worse than a quiet one, because a human reading it stops
+    # looking.
+    def git(*args, chdir:)
+      _out, e, status = Open3.capture3("git", *args, chdir: chdir)
+      raise "git #{args.join(' ')} failed: #{e}" unless status.success?
+    end
+
+    def repo_with_nested_spec
+      dir = Dir.mktmpdir("specguard-cli")
+      git("init", "-q", "--initial-branch=main", chdir: dir)
+      git("config", "user.email", "t@example.com", chdir: dir)
+      git("config", "user.name", "T", chdir: dir)
+      File.write(File.join(dir, "README.md"), "hello\n")
+      git("add", "-A", chdir: dir)
+      git("commit", "-q", "-m", "base", chdir: dir)
+      git("checkout", "-q", "-b", "feature", chdir: dir)
+      FileUtils.mkdir_p(File.join(dir, "other/spec"))
+      File.write(File.join(dir, "other/spec/sibling_spec.rb"), "# a spec\n")
+      git("add", "-A", chdir: dir)
+      git("commit", "-q", "-m", "add a spec", chdir: dir)
+      FileUtils.mkdir_p(File.join(dir, "sub"))
+      yield dir
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    it "does not claim nothing matched when a spec changed elsewhere in the repo" do
+      repo_with_nested_spec do |dir|
+        Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
+      end
+
+      expect(err).to include("selected 0 spec files")
+      expect(err).not_to include("none matching *_spec.rb")
+      expect(err).to include("outside")
+    end
+
+    it "says how many changed spec files were excluded for being outside the directory" do
+      repo_with_nested_spec do |dir|
+        Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
+      end
+
+      expect(err).to include("1 changed spec file")
     end
   end
 end

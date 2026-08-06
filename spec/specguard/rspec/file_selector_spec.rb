@@ -195,5 +195,158 @@ RSpec.describe SpecGuard::RSpec::FileSelector do
       expect { described_class.select(changed: true, root: root) }
         .to raise_error(SpecGuard::RSpec::UsageError, /could not determine a diff base/)
     end
+
+    # Every --changed example above passes root: = the repository top level,
+    # which is exactly why the two path-handling defects below survived an
+    # otherwise thorough suite. `git diff` reports paths relative to the
+    # REPOSITORY ROOT; this class returns them relative to `root`. Those are the
+    # same string only when you happen to stand at the top level.
+    describe "resolving git's repo-root-relative paths" do
+      it "selects changed specs when run from a subdirectory of the repository" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "sub/spec/child_spec.rb")
+        commit(root, "add a nested spec")
+
+        # git says "sub/spec/child_spec.rb"; from sub/ that names nothing.
+        selection = described_class.select(changed: true, root: File.join(root, "sub"))
+
+        expect(selection.files).to eq(["spec/child_spec.rb"])
+      end
+
+      it "returns paths that actually resolve from the root they were selected against" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "sub/spec/child_spec.rb")
+        commit(root, "add a nested spec")
+
+        sub = File.join(root, "sub")
+        files = described_class.select(changed: true, root: sub).files
+
+        expect(files.map { |f| File.file?(File.join(sub, f)) }).to eq([true])
+      end
+
+      # The scoping decision, pinned: --changed is cwd-scoped to match the
+      # default mode. A changed spec elsewhere in the repo is excluded — but
+      # COUNTED, so the caller can say "outside this directory" instead of the
+      # falsehood "nothing in the diff matched".
+      it "excludes changed specs outside the selection root, and counts them" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "sub/spec/child_spec.rb")
+        write(root, "other/spec/sibling_spec.rb")
+        commit(root, "add two specs")
+
+        selection = described_class.select(changed: true, root: File.join(root, "sub"))
+
+        expect(selection.files).to eq(["spec/child_spec.rb"])
+        expect(selection.stats.spec_matches).to eq(2)
+        expect(selection.stats.outside_root).to eq(1)
+      end
+
+      it "does not confuse a sibling directory sharing a name prefix with the root" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "sub/one_spec.rb")
+        write(root, "subterranean/two_spec.rb")
+        commit(root, "add two specs")
+
+        selection = described_class.select(changed: true, root: File.join(root, "sub"))
+
+        expect(selection.files).to eq(["one_spec.rb"])
+        expect(selection.stats.outside_root).to eq(1)
+      end
+
+      # core.quotePath is on by default, so without `-z` git renders
+      # spec/café_spec.rb as the literal characters "spec/caf\303\251_spec.rb"
+      # — a string that names no file. It was dropped, then misreported as
+      # "nothing in the diff matched *_spec.rb".
+      it "selects a changed spec whose path git would quote" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "spec/café_spec.rb")
+        commit(root, "add an accented spec")
+
+        # Precondition: git really does quote it without -z.
+        quoted, = Open3.capture2("git", "diff", "--name-only", "main", "--", chdir: root)
+        expect(quoted).to include('"spec/caf')
+
+        expect(described_class.select(changed: true, root: root).files).to eq(["spec/café_spec.rb"])
+      end
+
+      it "does not let a path with a space split into two selections" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "spec/two words_spec.rb")
+        commit(root, "add a spaced spec")
+
+        expect(described_class.select(changed: true, root: root).files).to eq(["spec/two words_spec.rb"])
+      end
+    end
+
+    describe "explaining a thin selection" do
+      # Both fallbacks leave the base at HEAD, and they are NOT the same thing:
+      # one is a normal default-branch build, the other means --changed has
+      # quietly degraded to `git diff HEAD` — the working-tree-vs-HEAD no-op
+      # this class exists to avoid. Reporting the first when the second is true
+      # is a confidently wrong explanation.
+      it "says the default branch is missing, not that this is a default-branch build" do
+        init_repo(root)
+        git("checkout", "-q", "-b", "wip", chdir: root)
+        write(root, "spec/order_spec.rb")
+        commit(root, "base")
+
+        selection = described_class.select(changed: true, root: root)
+
+        expect(selection.note).to include("no default-branch ref")
+        expect(selection.note).not_to include("default-branch build")
+      end
+
+      it "does not claim a missing default branch when the merge base simply is HEAD" do
+        init_repo(root)
+        write(root, "spec/order_spec.rb")
+        commit(root, "base")
+
+        expect(described_class.select(changed: true, root: root).note)
+          .not_to include("no default-branch ref")
+      end
+
+      it "does not annotate an ordinary feature-branch selection" do
+        init_repo(root)
+        write(root, "spec/existing_spec.rb")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "spec/added_spec.rb")
+        commit(root, "add a spec")
+
+        expect(described_class.select(changed: true, root: root).note).to be_nil
+      end
+
+      it "distinguishes 'nothing changed' from 'nothing that changed was a spec'" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "app/models/order.rb", "class Order; end\n")
+        commit(root, "change a non-spec")
+
+        stats = described_class.select(changed: true, root: root).stats
+
+        expect(stats.changed).to eq(1)
+        expect(stats.spec_matches).to eq(0)
+      end
+    end
   end
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "optparse"
+require "json"
 
 module SpecGuard
   module RSpec
@@ -46,8 +47,21 @@ module SpecGuard
 
       private
 
+      # Naming files and asking for the diff are contradictory instructions,
+      # and honouring the first while dropping the second silently is the same
+      # class of quiet-no-op this slice exists to remove: `--changed` would
+      # appear to have been applied. Per the exit-code contract that is a
+      # misuse (2); typed here, mapped in the next slice.
       def select(options)
-        return FileSelector::Selection.new(files: options[:files], mode: :explicit) if options[:files].any?
+        if options[:files].any?
+          if options[:changed]
+            raise UsageError,
+                  "--changed cannot be combined with explicit files; drop one " \
+                  "(named files are checked as given, --changed derives them from the diff)"
+          end
+
+          return FileSelector::Selection.new(files: options[:files], mode: :explicit)
+        end
 
         FileSelector.select(changed: options[:changed], base: options[:base], root: options[:root])
       end
@@ -66,11 +80,37 @@ module SpecGuard
         end
       end
 
+      # `:explicit` is absent by construction — an explicit Selection is only
+      # built from a non-empty file list, so it can never be empty.
       def empty_reason(selection)
         case selection.mode
-        when :changed then "nothing in the diff against #{selection.base} matched *_spec.rb"
-        when :explicit then "no files were given"
+        when :changed then changed_empty_reason(selection)
         else "no *_spec.rb found under #{Dir.pwd}"
+        end
+      end
+
+      # Names the filter that actually emptied the selection. Saying "nothing in
+      # the diff matched *_spec.rb" when a spec file demonstrably changed —
+      # just not under this directory — is worse than saying nothing: it reads
+      # as a conclusion and stops the reader looking.
+      def changed_empty_reason(selection)
+        stats = selection.stats
+        base = selection.base
+
+        return "nothing in the diff against #{base} matched *_spec.rb" if stats.nil?
+
+        if stats.changed.zero?
+          "nothing changed against #{base}"
+        elsif stats.spec_matches.zero?
+          "#{stats.changed} file#{'s' unless stats.changed == 1} changed against #{base}, " \
+            "none matching *_spec.rb"
+        elsif stats.outside_root.positive?
+          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base}, " \
+            "but #{stats.outside_root} #{stats.outside_root == 1 ? 'is' : 'are'} outside #{Dir.pwd} " \
+            "(--changed selects only files under the current directory)"
+        else
+          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base} " \
+            "could not be read"
         end
       end
 

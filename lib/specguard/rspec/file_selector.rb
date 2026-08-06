@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "open3"
+
 module SpecGuard
   module RSpec
     # Chooses which spec files the linter reads.
@@ -37,8 +39,35 @@ module SpecGuard
     # That is why the load-bearing requirement is the **loud empty selection**,
     # not the base. The caller must never be unable to tell "checked 12 files,
     # found no annotations" from "checked 0 files" — {Selection} carries the
-    # count and the emptiness so the CLI can say so on stderr. The exit code is
-    # not the lever: the spec fixes 0 for "no annotations".
+    # count, the emptiness, and {Stats} explaining *which* filter emptied it, so
+    # the CLI can say so on stderr, accurately. A confidently wrong reason is
+    # worse than a quiet one: a human who reads "nothing in the diff matched
+    # *_spec.rb" stops looking. The exit code is not the lever: the spec fixes 0
+    # for "no annotations".
+    #
+    # == Scope: `--changed` selects changed specs **under `root`**
+    #
+    # The second explicit decision. `git diff --name-only` emits paths relative
+    # to the **repository root**, not to the process's working directory, so the
+    # two are only the same when you happen to stand at the top level. Selecting
+    # by raw git output would make `--changed` repo-scoped while the default
+    # mode is cwd-scoped (`Dir.glob` under `root`) — the same invocation would
+    # mean different things in the two modes.
+    #
+    # `--changed` is therefore **cwd-scoped, to match the default mode**: git's
+    # repo-relative paths are resolved against `git rev-parse --show-toplevel`,
+    # anything outside `root` is dropped, and what survives is returned relative
+    # to `root` — exactly the shape {select_all} returns. Running from
+    # `<repo>/sub` selects the changed specs under `sub`, and *counts the ones
+    # it dropped* (`stats.outside_root`) so an empty selection can say "3
+    # changed spec files, all outside this directory" instead of the falsehood
+    # "nothing in the diff matched".
+    #
+    # Paths come back from `git diff -z`: NUL-separated, and therefore never
+    # quoted. Without `-z`, `core.quotePath` (on by default) renders
+    # `spec/café_spec.rb` as the literal characters `"spec/caf\303\251_spec.rb"`,
+    # quotes and all, which no longer names a file — an accented spec file would
+    # be silently dropped and then misreported as "nothing changed".
     #
     # Known limitation: `git diff` cannot see **untracked** files, so a brand
     # new spec file that has not been `git add`ed is not selected. In CI (a
@@ -50,9 +79,18 @@ module SpecGuard
       # Ordered probes for the default branch when no explicit base is given.
       DEFAULT_BRANCH_REFS = %w[origin/HEAD origin/main origin/master main master].freeze
 
+      # Why an empty `--changed` selection is empty. Every count is a filter
+      # this class applied, in the order it applied them, so the CLI can name
+      # the real cause instead of guessing at the last one.
+      Stats = Data.define(:changed, :spec_matches, :outside_root, :unreadable) do
+        def initialize(changed: 0, spec_matches: 0, outside_root: 0, unreadable: 0)
+          super
+        end
+      end
+
       # What a selection produced, plus enough context to report it honestly.
-      Selection = Data.define(:files, :mode, :base, :note) do
-        def initialize(files:, mode:, base: nil, note: nil)
+      Selection = Data.define(:files, :mode, :base, :note, :stats) do
+        def initialize(files:, mode:, base: nil, note: nil, stats: nil)
           super
         end
 
@@ -90,32 +128,73 @@ module SpecGuard
           raise UsageError, "--changed requires a git repository; #{root} is not inside one"
         end
 
-        resolved = base || default_base(root)
+        resolved, base_kind = base ? [base, :explicit] : default_base(root)
         unless resolved
           raise UsageError,
                 "--changed could not determine a diff base (no #{DEFAULT_BRANCH_REFS.join(', ')} " \
                 "and no HEAD commit); pass --changed=<base> explicitly"
         end
 
-        files = diff_names(resolved, root)
-                .select { |f| File.fnmatch?("*_spec.rb", f) }
-                .select { |f| File.file?(File.join(root, f)) }
-                .sort
+        files, stats = changed_files(resolved, root)
 
-        Selection.new(files: files, mode: :changed, base: resolved, note: base ? nil : base_note(resolved, root))
+        Selection.new(files: files, mode: :changed, base: resolved,
+                      note: base_note(resolved, base_kind, root), stats: stats)
+      end
+
+      # Resolves git's repo-root-relative output into paths relative to `root`,
+      # dropping (and counting) everything the two scoping rules exclude.
+      # @return [[Array<String>, Stats]]
+      def changed_files(base, root)
+        names = diff_names(base, root)
+        specs = names.select { |name| File.fnmatch?("*_spec.rb", name) }
+
+        top = toplevel(root)
+        prefix = directory_prefix(top.empty? ? root : top)
+        root_prefix = directory_prefix(real_path(root))
+
+        files = []
+        outside = 0
+        unreadable = 0
+        specs.each do |name|
+          absolute = prefix + name
+          relative = strip_prefix(absolute, root_prefix)
+          if relative.nil?
+            outside += 1
+          elsif !File.file?(absolute)
+            unreadable += 1
+          else
+            files << relative
+          end
+        end
+
+        [files.sort,
+         Stats.new(changed: names.length, spec_matches: specs.length,
+                   outside_root: outside, unreadable: unreadable)]
       end
 
       # `--diff-filter=d` drops deleted paths — `git diff --name-only` lists
-      # them, and they then fail to open.
+      # them, and they then fail to open. `-z` makes the output machine-readable:
+      # NUL-separated and never `core.quotePath`-quoted, so a non-ASCII path
+      # survives intact and a path containing a newline cannot split a record.
       def diff_names(base, root)
-        out, ok = git(%W[diff --name-only --diff-filter=d #{base} --], root)
+        out, ok = git(%W[diff -z --name-only --diff-filter=d #{base} --], root)
         raise UsageError, "--changed could not diff against #{base.inspect}" unless ok
 
-        out.split("\n").reject(&:empty?)
+        out.split("\0").reject(&:empty?)
       end
 
-      # The merge base of HEAD with the default branch, or nil when there is no
-      # usable branch or no HEAD (a repository with no commits yet).
+      # The repository's top level — what `git diff`'s paths are relative to.
+      # Empty when git cannot say, in which case the caller falls back to `root`
+      # (the top level *is* root for the common case of running from there).
+      def toplevel(root)
+        out, ok = git(%w[rev-parse --show-toplevel], root)
+        ok ? real_path(out.strip) : ""
+      end
+
+      # The merge base of HEAD with the default branch.
+      # @return [[String, Symbol], nil] the base and how it was arrived at
+      #   (`:merge_base`, or `:head_fallback` when no default-branch ref exists),
+      #   or nil when there is no HEAD at all (a repository with no commits).
       def default_base(root)
         head, ok = git(%w[rev-parse --verify --quiet HEAD], root)
         return nil unless ok && !head.strip.empty?
@@ -125,22 +204,33 @@ module SpecGuard
           next unless found && !resolved.strip.empty?
 
           merge_base, ok = git(%W[merge-base HEAD #{ref}], root)
-          return merge_base.strip if ok && !merge_base.strip.empty?
+          return [merge_base.strip, :merge_base] if ok && !merge_base.strip.empty?
         end
 
         # Detached from any known default branch: fall back to HEAD, which
         # selects uncommitted work only. Better than selecting everything.
-        head.strip
+        [head.strip, :head_fallback]
       end
 
-      # Names the default-branch case explicitly so an empty selection reads as
-      # "nothing changed here", not "the tool is broken".
-      def base_note(resolved, root)
-        head, ok = git(%w[rev-parse HEAD], root)
-        return nil unless ok && head.strip == resolved
+      # Explains a base that can only produce a thin selection, and — the point
+      # of `base_kind` — distinguishes the two ways that happens. Both leave the
+      # base at HEAD, but "this is a default-branch build" is normal and "no
+      # default branch could be found" means `--changed` has quietly degraded to
+      # `git diff HEAD`, i.e. the working-tree-vs-HEAD no-op this class exists
+      # to avoid. Reporting the first when the second is true would be a
+      # confidently wrong explanation.
+      def base_note(resolved, base_kind, root)
+        case base_kind
+        when :head_fallback
+          "no default-branch ref (#{DEFAULT_BRANCH_REFS.join(', ')}) could be found, so the diff base " \
+            "fell back to HEAD; --changed can only select uncommitted changes here"
+        when :merge_base
+          head, ok = git(%w[rev-parse HEAD], root)
+          return nil unless ok && head.strip == resolved
 
-        "the diff base is HEAD itself (this looks like a default-branch build), " \
-          "so only uncommitted changes can be selected"
+          "the diff base is HEAD itself (this looks like a default-branch build), " \
+            "so only uncommitted changes can be selected"
+        end
       end
 
       def git_repository?(root)
@@ -151,12 +241,35 @@ module SpecGuard
       # Runs git without a shell and without inheriting stderr into our output.
       # @return [[String, Boolean]] stdout and whether git exited 0
       def git(args, root)
-        require "open3"
         out, _err, status = Open3.capture3("git", *args, chdir: root)
         [out, status.success?]
       rescue SystemCallError
         # git not installed / not executable.
         ["", false]
+      end
+
+      # Symlink-resolved, so a `root` reached through a symlink still compares
+      # equal to the physical path git reports.
+      def real_path(path)
+        File.realpath(path)
+      rescue SystemCallError
+        File.expand_path(path)
+      end
+
+      def directory_prefix(path)
+        path.end_with?(File::SEPARATOR) ? path : path + File::SEPARATOR
+      end
+
+      # Byte-wise, so a path git returned that is not valid in the prefix's
+      # encoding cannot raise Encoding::CompatibilityError mid-selection. The
+      # result is handed back in the path's own encoding.
+      # @return [String, nil] `absolute` relative to `prefix`, or nil if outside
+      def strip_prefix(absolute, prefix)
+        bytes = absolute.b
+        head = prefix.b
+        return nil unless bytes.start_with?(head)
+
+        bytes[head.bytesize..].force_encoding(absolute.encoding)
       end
     end
   end
