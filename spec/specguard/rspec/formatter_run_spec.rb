@@ -94,6 +94,21 @@ module FormatterRunHelpers
     end
   RUBY
 
+  # The shape that separates "one line of lookback" from "one line of lookback,
+  # comment form only". Line 4 carries a trailing annotation *and* an example;
+  # line 5 carries a different example and no annotation at all. `it { ... }`
+  # one-liners are idiomatic RSpec, so nothing here is contrived — a lookback
+  # that ignored the form would report both as annotated, with the same intent,
+  # and inflate the platform's annotated ratio with a purpose nobody declared.
+  ONE_LINER_SUITE = <<~RUBY
+    RSpec.describe "Order" do
+      subject { 1 }
+
+      it { is_expected.to eq(1) } # @intent: { entity: "Order", action: "checkout", behavior: "returns 402 payment required on expired card", layer: "request" }
+      it { is_expected.to be_positive }
+    end
+  RUBY
+
   # Makes the annotation lookup's one external dependency blow up, from inside
   # the child process, without touching lib/. Stands in for the family the
   # lookup cannot control: an unreadable spec file, a spec file that is not
@@ -101,7 +116,7 @@ module FormatterRunHelpers
   SABOTAGE = <<~RUBY
     require "specguard/rspec"
     module SpecGuard::RSpec::Scanner
-      def self.scan_file(_path) = raise(IOError, "sabotaged scanner")
+      def self.scan_text(_text, file:) = raise(IOError, "sabotaged scanner")
     end
   RUBY
 
@@ -220,12 +235,20 @@ module IngestContract
 
       # payload.rb:134 — the platform re-validates every annotated intent
       # against the same OpenTestIntent schema this gem vendors.
-      SpecGuard::RSpec::Schema.load.violations(intent).map { |reason| "#{label}: intent is invalid — #{reason}" }
+      schema.violations(intent).map { |reason| "#{label}: intent is invalid — #{reason}" }
     when "unannotated"
       intent.nil? ? [] : ["#{label}: intent must be null when status is \"unannotated\""]
     else
       []
     end
+  end
+
+  # Memoized because {#errors_for} is called once per spec entry, and
+  # `Schema.load` reads, parses and compiles the vendored document every time.
+  # Paying that per entry would make this fixture's own cost O(specs) — the
+  # shape the code it is checking exists to avoid.
+  def schema
+    @schema ||= SpecGuard::RSpec::Schema.load
   end
 end
 
@@ -420,6 +443,46 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(annotated).to eq(3)
         expect(annotated).to be < specs.length
       end
+    end
+  end
+
+  # A trailing annotation belongs to the example it was written on, and to no
+  # other. The lookback window is one line wide either way; what this run pins
+  # is that the *form* decides who may look through it.
+  describe "a suite of one-liner examples with a trailing annotation" do
+    before(:context) { @run = run_rspec(FormatterRunHelpers::ONE_LINER_SUITE) }
+
+    let(:run) { @run }
+    let(:specs) { run.payload["specs"] }
+    let(:by_name) { specs.to_h { |spec| [spec["name"], spec] } }
+
+    it "runs both examples" do
+      expect(run.stdout).to include("2 examples, 0 failures")
+      expect(specs.length).to eq(2)
+    end
+
+    it "annotates the example the annotation was written on" do
+      expect(by_name.fetch("Order is expected to eq 1"))
+        .to include("status" => "annotated", "line_number" => 4)
+    end
+
+    # The defect this fixture exists for: line 5 declared nothing, and a payload
+    # that says otherwise is not a gap in the data, it is wrong data.
+    it "does not lend that annotation to the example on the next line" do
+      expect(by_name.fetch("Order is expected to be positive"))
+        .to include("status" => "unannotated", "intent" => nil, "line_number" => 5)
+    end
+
+    # Stated as the number the dashboard reads, because that is where the
+    # inflation would show up: 2 of 2 annotated for a file with one annotation.
+    it "reports one annotated example, not two" do
+      expect(specs.count { |spec| spec["status"] == "annotated" }).to eq(1)
+    end
+
+    it "still produces a spec entry the platform accepts, for both examples" do
+      violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
+
+      expect(violations).to be_empty
     end
   end
 

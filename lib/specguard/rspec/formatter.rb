@@ -226,7 +226,7 @@ module SpecGuard
         # A Symbol here would serialize fine but would compare unequal to the
         # string every consumer reads back out of JSON.
         "outcome" => result&.status&.to_s,
-        "status" => intent ? STATUS_ANNOTATED : STATUS_UNANNOTATED,
+        "status" => intent.nil? ? STATUS_UNANNOTATED : STATUS_ANNOTATED,
         # Written explicitly rather than omitted. `Ingest::Payload` accepts
         # either for an unannotated spec (`payload.rb:138` — nil is nil whether
         # the key was absent or null), and a present null is the difference

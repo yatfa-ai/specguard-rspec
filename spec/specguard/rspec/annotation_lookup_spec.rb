@@ -125,6 +125,59 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
     end
   end
 
+  # The asymmetry between the two forms, and the reason it exists.
+  #
+  # A comment-only line hosts no example, so its annotation has exactly one
+  # possible claimant. A trailing annotation is on a line that already *is* an
+  # example's, so lookback that ignored the difference would hand it to a second
+  # example as well — and one-liner `it { ... }` specs make that pair adjacent in
+  # ordinary, idiomatic RSpec rather than in some contrived fixture.
+  #
+  # Reporting the second example as unannotated is the honest answer. Reporting
+  # it as annotated would store a purpose nobody declared and count it in the
+  # platform's `annotated_specs_count` — a wrong annotation is worse than a
+  # missing one, because a gap is visible and an invention is not.
+  describe "who may claim a trailing annotation" do
+    def one_liner_pair
+      <<~RUBY
+        it { is_expected.to eq(1) } # @intent: #{valid_annotation}
+        it { is_expected.to be_positive }
+      RUBY
+    end
+
+    it "gives it to the example it was written on" do
+      expect(intent_at(one_liner_pair, 1)).to include("entity" => "Order")
+    end
+
+    it "does not lend it to the example on the next line" do
+      expect(intent_at(one_liner_pair, 2)).to be_nil
+    end
+
+    # Not only `it`: any line carrying code carries its annotation alone. An
+    # author who annotated a `let` did not thereby annotate the example below it.
+    it "does not lend an annotation on any other line of code to the line below" do
+      intent = intent_at(<<~RUBY, 2)
+        let(:order) { build(:order) } # @intent: #{valid_annotation}
+        it "rejects checkout" do
+      RUBY
+
+      expect(intent).to be_nil
+    end
+
+    # The comment form is claimable from below however deeply it is indented —
+    # annotations sit with the examples they describe, not in column 1.
+    it "still lends an indented comment-form annotation to the line below" do
+      intent = intent_at(<<~RUBY, 4)
+        RSpec.describe "Order" do
+          context "when signed in" do
+            # @intent: #{valid_annotation}
+            it "rejects checkout" do
+      RUBY
+
+      expect(intent).to include("entity" => "Order")
+    end
+  end
+
   # `each_intent` resumes scanning after each captured payload, so trailing
   # prose containing a second `@intent:` yields a second Finding on the same
   # line. Which one wins is pinned here rather than left to Hash-insertion
@@ -227,7 +280,7 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
   # nobody pinned is one refactor away from being reachable and wrong.
   describe "guards against a Finding shape discovery does not currently produce" do
     def stub_scanner(finding)
-      allow(SpecGuard::RSpec::Scanner).to receive(:scan_file).and_return([finding])
+      allow(SpecGuard::RSpec::Scanner).to receive(:scan_text).and_return([finding])
     end
 
     def finding(**attributes)
@@ -279,12 +332,12 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
     end
 
     it "scans each spec file once" do
-      allow(SpecGuard::RSpec::Scanner).to receive(:scan_file).and_call_original
+      allow(SpecGuard::RSpec::Scanner).to receive(:scan_text).and_call_original
       path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\nit 'b' do\n")
 
       3.times { |i| lookup.intent_for(file: path, line: i + 1) }
 
-      expect(SpecGuard::RSpec::Scanner).to have_received(:scan_file).with(path).once
+      expect(SpecGuard::RSpec::Scanner).to have_received(:scan_text).with(anything, file: path).once
     end
 
     # The schema is a JSON document that has to be read, parsed and compiled.
@@ -297,6 +350,28 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       2.times { |i| lookup.intent_for(file: path, line: i + 2) }
 
       expect(counts[SpecGuard::RSpec::SCHEMA_PATH]).to eq(1)
+    end
+
+    # Compiling an intent against the schema is json_schemer work, and a suite
+    # repeats annotations — the same `@intent` on twenty examples of the same
+    # behavior is normal. Validating per *example* would be a second O(examples)
+    # cost hiding behind the one the index removes.
+    it "validates a repeated annotation once, not once per example carrying it" do
+      real = SpecGuard::RSpec::Schema.load
+      counting = instance_double(SpecGuard::RSpec::Schema)
+      allow(counting).to receive(:violations) { |intent| real.violations(intent) }
+      allow(SpecGuard::RSpec::Schema).to receive(:load).and_return(counting)
+
+      path = write_spec(<<~RUBY)
+        # @intent: #{valid_annotation}
+        it "a" do
+        # @intent: #{valid_annotation}
+        it "b" do
+      RUBY
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 4)).to eq(valid_intent)
+      expect(counting).to have_received(:violations).once
     end
   end
 
@@ -349,12 +424,12 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
     end
 
     it "does not rescan a file whose scan blew up" do
-      allow(SpecGuard::RSpec::Scanner).to receive(:scan_file).and_raise(NotImplementedError, "nope")
+      allow(SpecGuard::RSpec::Scanner).to receive(:scan_text).and_raise(NotImplementedError, "nope")
       path = write_spec("it 'a' do\nit 'b' do\n")
 
       expect { lookup.intent_for(file: path, line: 1) }.to raise_error(NotImplementedError)
       expect(lookup.intent_for(file: path, line: 2)).to be_nil
-      expect(SpecGuard::RSpec::Scanner).to have_received(:scan_file).once
+      expect(SpecGuard::RSpec::Scanner).to have_received(:scan_text).once
     end
   end
 end
