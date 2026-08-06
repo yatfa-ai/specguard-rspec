@@ -14,11 +14,23 @@ require "specguard/rspec/formatter"
 # The process-level half of that proof (real exit codes from a real subprocess)
 # lives in formatter_run_spec.rb.
 RSpec.describe SpecGuard::RSpecFormatter do
-  subject(:formatter) { described_class.new(output, error_stream: errors) }
+  subject(:formatter) { described_class.new(output, error_stream: errors, annotations: annotations) }
 
   let(:output) { StringIO.new }
   let(:errors) { StringIO.new }
   let(:sink) { File.join(tmpdir, "log", "test_results.jsonl") }
+
+  # Injected rather than real: what an annotation *is* belongs to
+  # annotation_lookup_spec.rb, and resolving one here would make every example
+  # below depend on a spec file existing at the path the double reports.
+  # Answering nil is "unannotated", which is what every example that does not
+  # say otherwise expects.
+  let(:annotations) { instance_double(SpecGuard::RSpec::AnnotationLookup, intent_for: nil) }
+
+  let(:intent) do
+    { "entity" => "Order", "action" => "checkout",
+      "behavior" => "returns 402 payment required on expired card", "layer" => "request" }
+  end
 
   attr_reader :tmpdir
 
@@ -160,6 +172,54 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # Criterion 1. `status` is the field whose absence made slice 1's payload a
+  # guaranteed 400: `Ingest::Payload#validate_status` appends an error for every
+  # spec that lacks it (`payload.rb:115`), and `valid?` requires the error list
+  # to be empty (`payload.rb:28`), so the run is rejected whole.
+  describe "#payload — status and intent" do
+    it "reports an example the lookup resolved as annotated, carrying the intent" do
+      allow(annotations).to receive(:intent_for).and_return(intent)
+      finish(build_example)
+
+      expect(formatter.payload["specs"].first).to include("status" => "annotated", "intent" => intent)
+    end
+
+    it "reports an example the lookup could not resolve as unannotated" do
+      finish(build_example)
+
+      expect(formatter.payload["specs"].first).to include("status" => "unannotated", "intent" => nil)
+    end
+
+    # `Ingest::Payload` reads intent by key, so a present null and an absent key
+    # are equivalent to it (`payload.rb:138`). Writing it is for the human and
+    # the archive: it is the difference between "we looked and found nothing"
+    # and "this producer does not report annotations" — exactly the ambiguity
+    # slice 1's payload could not resolve.
+    it "writes the intent key explicitly rather than omitting it" do
+      finish(build_example)
+
+      expect(formatter.payload["specs"].first).to have_key("intent")
+    end
+
+    # The lookup reads the file off disk, so it must be handed the path the
+    # payload records and not RSpec's raw `./`-prefixed metadata — otherwise the
+    # coordinate the platform stores and the coordinate the annotation was read
+    # from are two different strings that only look alike.
+    it "asks about the same file path it records, and the example's own line" do
+      finish(build_example(file_path: "./spec/orders_spec.rb", line_number: 42))
+
+      expect(annotations).to have_received(:intent_for).with(file: "spec/orders_spec.rb", line: 42)
+    end
+
+    it "resolves each example independently" do
+      allow(annotations).to receive(:intent_for).and_return(intent, nil, intent)
+      3.times { |i| finish(build_example(line_number: i + 1)) }
+
+      expect(formatter.payload["specs"].map { |spec| spec["status"] })
+        .to eq(%w[annotated unannotated annotated])
+    end
+  end
+
   describe "the JSONL sink" do
     it "appends the run as a single JSON object on one line" do
       finish(build_example)
@@ -265,6 +325,69 @@ RSpec.describe SpecGuard::RSpecFormatter do
       allow(formatter).to receive(:monotonic_now).and_raise("no clock")
 
       expect { formatter.stop(nil) }.not_to raise_error
+    end
+
+    # Criterion 6, extended to slice 2's code path. The annotation lookup reads
+    # files off disk and compiles a JSON Schema, so it has failure modes the
+    # rest of the capture layer does not — an unreadable spec file, a spec file
+    # that is not valid UTF-8, a vendored schema that will not load.
+    #
+    # These are guarded *inside* `capture` rather than only by the envelope
+    # around `example_finished`, and the difference is the whole point: the
+    # outer envelope would drop the example entirely, so a project whose schema
+    # failed to load would report a suite with no tests in it. Here it reports
+    # a suite with no annotations in it, which is both true and recoverable.
+    describe "when the annotation lookup itself fails" do
+      before { allow(annotations).to receive(:intent_for).and_raise(broken_lookup) }
+
+      let(:broken_lookup) { SpecGuard::RSpec::SchemaError.new("could not load schema") }
+
+      it "does not raise out of example_finished" do
+        expect { finish(build_example) }.not_to raise_error
+      end
+
+      it "still records the example, as unannotated" do
+        finish(build_example(name: "can order an item"))
+
+        expect(formatter.payload["specs"].first).to include(
+          "name" => "can order an item", "status" => "unannotated", "intent" => nil
+        )
+      end
+
+      # The fields the platform actually stores a run on. Losing an annotation
+      # is a gap in one row; losing these is losing the example.
+      it "still records the example's outcome and duration" do
+        finish(build_example(run_time: 0.0109, status: :failed))
+
+        expect(formatter.payload["specs"].first).to include("duration" => 0.0109, "outcome" => "failed")
+      end
+
+      it "says so on stderr exactly once, however many examples are affected" do
+        50.times { finish(build_example) }
+
+        expect(errors.string.scan(described_class::WARNING_PREFIX).length).to eq(1)
+        expect(errors.string).to include("SchemaError")
+      end
+
+      it "records all 50 of them anyway" do
+        50.times { finish(build_example) }
+
+        expect(formatter.payload["specs"].length).to eq(50)
+      end
+
+      # A ScriptError from the lookup would sail past a bare `rescue`.
+      it "swallows a ScriptError from the lookup too" do
+        allow(annotations).to receive(:intent_for).and_raise(NotImplementedError, "nope")
+
+        expect { finish(build_example) }.not_to raise_error
+        expect(formatter.payload["specs"].first["status"]).to eq("unannotated")
+      end
+
+      it "does NOT swallow an interrupt raised from the lookup" do
+        allow(annotations).to receive(:intent_for).and_raise(Interrupt)
+
+        expect { finish(build_example) }.to raise_error(Interrupt)
+      end
     end
 
     # A warning per example would bury the failure output of the suite it is

@@ -36,6 +36,11 @@ require "json"
 require "fileutils"
 
 require_relative "configuration"
+# Brings the linter's discovery chain with it (Scanner, Finding, Schema). That
+# direction is safe — `specguard/rspec` does not require `rspec/core`, so the
+# linter stays loadable without RSpec; it is only the reverse that would break
+# packaging.
+require_relative "annotation_lookup"
 
 module SpecGuard
   # == A NOTE ON CONSTANT RESOLUTION — read this before editing
@@ -64,9 +69,17 @@ module SpecGuard
   #   name         example.full_description — the composed describe/context/it
   #   duration     example.execution_result.run_time, seconds, per example
   #   outcome      example.execution_result.status — passed / failed / pending
+  #   status       "annotated" / "unannotated" — see {AnnotationLookup}
+  #   intent       the parsed annotation when annotated, null when not
   #
-  # `status` and `intent` (the annotation itself) are the next slice's job, and
-  # HTTP transport the one after that. This slice's sink is a local JSONL file.
+  # `status` is not decoration: `Ingest::Payload` validates it against a
+  # two-value enum for *every* spec and collects the failures globally, so a
+  # payload missing the key is not a payload with a gap — it is a 400 with one
+  # error per example. HTTP transport is the next slice's job.
+  #
+  # A malformed or schema-invalid annotation is recorded as `unannotated` with a
+  # null intent rather than shipped or shouted about; {AnnotationLookup}
+  # documents why, and the linter is the half of this gem that tells the author.
   #
   # == The never-block-CI contract, and why it lives *here*
   #
@@ -101,15 +114,34 @@ module SpecGuard
     # a reader knows immediately that it is not their tests that broke.
     WARNING_PREFIX = "SpecGuard: test telemetry failed and was skipped"
 
+    # `Ingest::Payload::STATUSES`, restated. The platform validates every spec
+    # against this pair (`payload.rb:17`), so they are the contract and not a
+    # local naming choice.
+    STATUS_ANNOTATED = "annotated"
+    STATUS_UNANNOTATED = "unannotated"
+
     # @param output [IO] the stream RSpec hands every formatter. Unused — this
     #   formatter's product is a file, and writing to the shared stream is the
     #   human formatter's job. Accepted because RSpec's constructor contract
     #   says so.
     # @param error_stream [IO] where the one-shot warning goes. Injectable so a
     #   spec can read it back without reassigning `$stderr` globally.
-    def initialize(output = nil, error_stream: $stderr)
+    # @param annotations [AnnotationLookup] resolves each example's `@intent:`.
+    #   One per run: it is where the per-file scan is memoized, so sharing it
+    #   across the run is what makes the cost O(files) rather than O(examples).
+    #
+    #   Fully qualified for the same reason every `::RSpec` above is — and it is
+    #   the same trap seen from the other side. This class is a *sibling* of
+    #   `SpecGuard::RSpec`, not a member, so a bare `AnnotationLookup` here is
+    #   looked up as `SpecGuard::RSpecFormatter::AnnotationLookup` and then
+    #   `SpecGuard::AnnotationLookup`, neither of which exists — a NameError
+    #   raised from a formatter's constructor, which RSpec reports as
+    #   "No examples found".
+    def initialize(output = nil, error_stream: $stderr,
+                   annotations: SpecGuard::RSpec::AnnotationLookup.new)
       super(output)
       @error_stream = error_stream
+      @annotations = annotations
       @specs = []
       @warned = false
       # Stamped here rather than from a `start` hook on purpose. `:start` is not
@@ -175,15 +207,33 @@ module SpecGuard
     def capture(example)
       metadata = example.metadata || {}
       result = example.execution_result
+      file_path = relative_path(metadata[:file_path])
+      line_number = metadata[:line_number]
+
+      # Its own envelope, inside the one `example_finished` already provides.
+      # The outer one drops the whole example; this one drops only its
+      # annotation, so an unreadable spec file or a broken schema costs the run
+      # the intent of the examples in it and not the examples themselves. It
+      # also routes through {#warn_once}, so the operator hears about it exactly
+      # once however many examples are affected.
+      intent = never_fail_the_run { @annotations.intent_for(file: file_path, line: line_number) }
 
       {
-        "file_path" => relative_path(metadata[:file_path]),
-        "line_number" => metadata[:line_number],
+        "file_path" => file_path,
+        "line_number" => line_number,
         "name" => example.full_description,
         "duration" => result&.run_time,
         # A Symbol here would serialize fine but would compare unequal to the
         # string every consumer reads back out of JSON.
-        "outcome" => result&.status&.to_s
+        "outcome" => result&.status&.to_s,
+        "status" => intent ? STATUS_ANNOTATED : STATUS_UNANNOTATED,
+        # Written explicitly rather than omitted. `Ingest::Payload` accepts
+        # either for an unannotated spec (`payload.rb:138` — nil is nil whether
+        # the key was absent or null), and a present null is the difference
+        # between "we looked and there was no annotation" and "this producer
+        # does not report annotations", which is precisely what slice 1's
+        # payload could not say.
+        "intent" => intent
       }
     end
 
