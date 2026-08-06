@@ -1,0 +1,6 @@
+{
+  "entity": "Order",
+  "action": "checkout",
+  "behavior": "shows a payment error card and keeps the cart intact when the saved card is expired",
+  "layer": "system"
+}

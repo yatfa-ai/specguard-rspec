@@ -3,11 +3,20 @@
 
 # specguard-lint — the SpecGuard annotation linter entrypoint.
 #
-# This slice wires the *discovery* half: it selects spec files, finds every
-# `@intent:` annotation in them, and reports what it extracted. It does not
-# validate against the OpenTestIntent schema, and it **always exits 0** — the
-# 0/1/2 exit contract (SPGD-12 §1) is the next slice, and exiting non-zero
-# before anything is actually validated would be a lie.
+# Selects spec files, finds every `@intent:` annotation in them, validates each
+# against the vendored OpenTestIntent schema, and reports every violation. Exit
+# codes are the contract (SPGD-12 §1):
+#
+#   0  all annotations valid, or there were none ("lint, don't require")
+#   1  one or more annotations are malformed
+#   2  the linter could not do its job — misuse, or the tool itself broken
+#
+# SpecGuard::RSpec::CLI#run is written to *return* one of those three and never
+# to raise; see its class comment for why that takes deliberate effort in Ruby.
+# The `require` below is the one thing outside its reach, so it gets the same
+# treatment here: a gem that cannot even load is the linter being broken, which
+# is a 2. Left bare, Ruby would exit 1 and CI would report a malformed
+# annotation nobody wrote.
 
 # Allow running from a source checkout without bundler by putting the local
 # lib/ on the load path. When the gem is installed (or run under
@@ -15,6 +24,11 @@
 source_lib = File.expand_path("../lib", __dir__)
 $LOAD_PATH.unshift(source_lib) unless $LOAD_PATH.include?(source_lib)
 
-require "specguard/rspec"
+begin
+  require "specguard/rspec"
+rescue ScriptError, StandardError => e
+  warn "specguard-lint: error: could not load specguard-rspec: #{e.class}: #{e.message}"
+  exit 2
+end
 
 exit SpecGuard::RSpec::CLI.new.run(ARGV)

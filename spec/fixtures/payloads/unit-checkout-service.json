@@ -1,0 +1,6 @@
+{
+  "entity": "CheckoutService",
+  "action": "checkout",
+  "behavior": "rejects the transaction on an expired card and emits a payment_failed event",
+  "layer": "unit"
+}

@@ -1,22 +1,68 @@
 # frozen_string_literal: true
 
 require "optparse"
-require "json"
 
 module SpecGuard
   module RSpec
-    # `specguard-lint`'s command line.
+    # `specguard-lint`'s command line, and the whole of the exit contract.
     #
-    # == This slice always exits 0
+    # == The contract, and the reason it needs defending
     #
-    # The `0`/`1`/`2` exit contract (SPGD-12 §1) is the *next* slice. Until the
-    # schema is actually applied, a non-zero exit would be a lie: nothing here
-    # can tell a valid annotation from an invalid one, so there is no failure to
-    # report. {#run} therefore returns 0 unconditionally, including for the
-    # {UsageError} that will later map to 2 — the error is raised, typed, and
-    # reported on stderr today, and only its *exit code* is deferred.
+    #   0  every annotation checked is valid (including "there were none")
+    #   1  at least one annotation is malformed
+    #   2  the linter could not do its job — misuse, or the tool itself broken
+    #
+    # Ruby does not give you this for free; it actively works against it.
+    # `ruby -e 'raise "boom"'` exits **1**, and so does an uncaught
+    # `OptionParser::InvalidOption`. So on the obvious implementation, every
+    # internal failure lands on the one code the contract has already spent on
+    # "an annotation is malformed":
+    #
+    #   * `specguard-lint --chnaged` — a typo — would exit 1, and CI would
+    #     report a malformed annotation that does not exist;
+    #   * a vendored schema missing from the packaged gem would exit 1, the
+    #     same false accusation, in the field, on someone else's machine.
+    #
+    # The project has shipped this defect shape repeatedly — SPGD-35, SPGD-52,
+    # SPGD-56 — but always as **false green**: a gate reporting success having
+    # checked nothing. This is its inverse, **false red**: a tool failure
+    # wearing the costume of a content failure. Both are the same underlying
+    # bug, a gate whose failure states are indistinguishable, and for a linter
+    # the exit code *is* the product.
+    #
+    # {#run} therefore rescues in three bands and returns rather than exits:
+    # {UsageError} and {SchemaError} are named, and everything else that is not
+    # a deliberate interruption is caught by a backstop. Exit 1 is produced in
+    # exactly one place — a failed {Linter::Result} — so it means that and
+    # nothing else.
+    #
+    # `Interrupt`, `SignalException` and `SystemExit` are deliberately *not*
+    # caught. Ctrl-C must stay Ctrl-C; mapping it to "the linter is broken"
+    # would be its own small lie.
+    #
+    # == All failures, not the first
+    #
+    # SPGD-12 §1 step 4 says the linter "exits 1 on the *first* malformed
+    # annotation". Its own exit-code table, one paragraph later, says "1 | One
+    # or more annotations are malformed", and the reference tool reports every
+    # one: `bin/validate-intent --source broken_intent_spec.rb` emits 5 FAIL
+    # blocks. Stopping at the first would turn one file into five CI
+    # round-trips. Reporting all of them is the ratified behaviour (human
+    # decision recorded on SPGD-82); the "first" wording is a known spec defect
+    # with a correction filed against SPGD-12 §1 and the SPGD-73 roadmap text.
     class CLI
       BANNER = "Usage: specguard-lint [options] [files...]"
+
+      # Every annotation checked was valid — or there were none to check.
+      # "Lint, don't require": a missing annotation is never an error.
+      EXIT_OK = 0
+      # One or more annotations are malformed. The only code produced by
+      # inspecting content, and the only path that reaches it is a failed
+      # {Linter::Result}.
+      EXIT_MALFORMED = 1
+      # The linter could not do its job: bad flags, `--changed` outside a git
+      # repository, an unloadable schema, or an unexpected internal error.
+      EXIT_MISUSE = 2
 
       def initialize(stdout: $stdout, stderr: $stderr)
         @stdout = stdout
@@ -24,34 +70,45 @@ module SpecGuard
       end
 
       # @param argv [Array<String>]
-      # @return [Integer] always 0 in this slice — see the class comment.
+      # @return [Integer] 0, 1 or 2 — never anything else, and never by
+      #   letting an exception reach the shell
       def run(argv)
         options = parse_options(argv)
-        return 0 if options.nil? # --help / --version already printed
+        return EXIT_OK if options.nil? # --help / --version already printed
+
+        # Loaded before anything is selected or scanned. A schema that cannot
+        # be loaded must never produce a run that checks zero annotations and
+        # then reports itself clean.
+        schema = Schema.load
 
         selection = select(options)
         report_selection(selection)
 
-        # `selection.files` are relative to the selection root, which for the
-        # CLI is always the process's own working directory — so they are used
-        # as-is. Explicitly-named files pass straight through, absolute or not.
-        findings = Scanner.scan_files(selection.files)
-        report_findings(findings)
+        results = Linter.new(schema).check(Scanner.scan_files(selection.files))
+        report_results(results)
 
-        0
+        results.any?(&:failed?) ? EXIT_MALFORMED : EXIT_OK
       rescue UsageError => e
-        # Will be exit 2 once the exit contract lands. Loud now regardless.
-        @stderr.puts "specguard-lint: #{e.message}"
-        0
+        @stderr.puts "specguard-lint: error: #{e.message}"
+        EXIT_MISUSE
+      rescue SchemaError => e
+        # Wording and stream follow bin/validate-intent:861-862 exactly.
+        @stderr.puts "error: #{e.message}"
+        EXIT_MISUSE
+      rescue ScriptError, StandardError => e
+        # The backstop that makes exit 1 mean one thing. Anything reaching here
+        # is a bug in the linter, not a verdict about anyone's annotations, so
+        # it is a 2 and it says so in those words.
+        @stderr.puts "specguard-lint: internal error: #{e.class}: #{e.message}"
+        EXIT_MISUSE
       end
 
       private
 
       # Naming files and asking for the diff are contradictory instructions,
       # and honouring the first while dropping the second silently is the same
-      # class of quiet-no-op this slice exists to remove: `--changed` would
-      # appear to have been applied. Per the exit-code contract that is a
-      # misuse (2); typed here, mapped in the next slice.
+      # class of quiet no-op this tool exists to remove: `--changed` would
+      # appear to have been applied. That is misuse — exit 2.
       def select(options)
         if options[:files].any?
           if options[:changed]
@@ -69,7 +126,9 @@ module SpecGuard
       # The honest-reporting half of the `--changed` fix: the selected-file
       # count is always stated, and an empty selection is loud on stderr, so
       # "checked 12 files, found nothing" can never be mistaken for
-      # "checked nothing".
+      # "checked nothing". The exit code is not the lever here — the contract
+      # fixes 0 for "no annotations" — which is exactly why the warning has to
+      # carry the weight.
       def report_selection(selection)
         if selection.empty?
           @stderr.puts "specguard-lint: warning: selected 0 spec files — #{empty_reason(selection)}"
@@ -114,20 +173,55 @@ module SpecGuard
         end
       end
 
-      def report_findings(findings)
-        extracted, problems = findings.partition(&:extracted?)
+      # The FAIL block, in the shape `bin/validate-intent --source` emits: two
+      # spaces after `FAIL`, an em-dash before an extraction problem, eight
+      # spaces and `-> ` before each schema reason.
+      #
+      #   FAIL  spec/order_spec.rb:9
+      #           -> <root>: missing required property 'entity'
+      #   FAIL  spec/order_spec.rb:28 — unterminated object literal (...)
+      #
+      # Two deliberate differences from the reference's `--source` mode, which
+      # is a fixture self-test rather than a linter:
+      #
+      #   * no `PASS` line per valid annotation — a CI linter that prints a
+      #     line per healthy annotation buries the failures in a large repo.
+      #     The summary line carries the count instead, so "checked nothing"
+      #     is still impossible to mistake for "all clean".
+      #   * findings go to **stdout**, where the reference puts them and where
+      #     lint findings conventionally go. Diagnostics about the linter
+      #     itself (warnings, misuse, schema failure) stay on stderr, and the
+      #     exit code — not the stream — is the machine-readable signal.
+      def report_results(results)
+        failures = results.reject(&:ok?)
 
-        problems.each do |finding|
-          @stderr.puts "#{finding.location}: #{finding.problem}"
+        failures.each { |result| report_failure(result) }
+
+        @stdout.puts summary_line(*results.partition { |result| result.kind != Finding::KIND_READ })
+      end
+
+      # The summary line exists for one reason — so "checked nothing" can never
+      # read as "all clean" — which makes overstating what was inspected its
+      # own kind of lie. A file that could not be opened contributed no
+      # annotation, so counting its Result as one would report "checked 12
+      # @intent annotations, 12 malformed" having read none of them. Unread
+      # files get their own clause: neither folded into the annotation count
+      # nor dropped from the report.
+      def summary_line(annotations, unread)
+        line = "specguard-lint: checked #{annotations.length} @intent annotation" \
+               "#{'s' unless annotations.length == 1}, #{annotations.count(&:failed?)} malformed"
+        return line if unread.empty?
+
+        "#{line}; #{unread.length} file#{'s' unless unread.length == 1} could not be read"
+      end
+
+      def report_failure(result)
+        if result.problem
+          @stdout.puts "FAIL  #{result.location} — #{result.problem}"
+        else
+          @stdout.puts "FAIL  #{result.location}"
+          result.reasons.each { |reason| @stdout.puts "        -> #{reason}" }
         end
-
-        extracted.each do |finding|
-          @stdout.puts "#{finding.location}: #{JSON.generate(finding.intent)}"
-        end
-
-        @stdout.puts "specguard-lint: found #{findings.length} @intent annotation" \
-                     "#{'s' unless findings.length == 1} " \
-                     "(#{extracted.length} extracted, #{problems.length} malformed)"
       end
 
       def parse_options(argv)
@@ -153,6 +247,9 @@ module SpecGuard
         options[:files] = parser.parse(argv)
         options
       rescue OptionParser::ParseError => e
+        # Uncaught, this is the single likeliest way a user sees a false
+        # "malformed annotation": OptionParser raises, Ruby exits 1. Retyping
+        # it is what makes `--chnaged` a 2.
         raise UsageError, e.message
       end
     end

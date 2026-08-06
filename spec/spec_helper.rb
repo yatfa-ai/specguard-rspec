@@ -11,6 +11,13 @@ module FixtureHelpers
     File.join(FIXTURE_ROOT, name)
   end
 
+  # One of the protocol repo's `examples/` payloads, parsed. These are copies
+  # of open-test-intent's own corpus, so a spec asserting on them is asserting
+  # against the documents the reference validator was tuned on.
+  def payload_fixture(name)
+    JSON.parse(File.read(File.join(FIXTURE_ROOT, "payloads", name)))
+  end
+
   # The `@intent:` payloads in a fixture, as written. Lets a test assert on the
   # normalizer's input without hard-coding the fixture's long annotation lines.
   def raw_payloads(path)

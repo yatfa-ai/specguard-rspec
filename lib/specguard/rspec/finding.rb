@@ -30,6 +30,18 @@ module SpecGuard
       # The payload was captured but is not JSON even after normalization.
       KIND_PARSE = :parse
 
+      # The file itself could not be read (missing, unopenable, or not valid
+      # UTF-8), so no annotation in it was ever seen. Distinct from
+      # {KIND_EXTRACTION} — nothing here is a claim about an annotation — and
+      # named after the reference tool's own `KIND_READ`
+      # (`bin/validate-intent:91`) so the two classifications line up.
+      KIND_READ = :read
+
+      # The payload parsed but violates the OpenTestIntent schema. Not produced
+      # by discovery — {Linter} stamps it — but it lives here so the full set
+      # of ways an annotation can fail is written down in one place.
+      KIND_SCHEMA = :schema
+
       def initialize(file:, line:, intent: nil, problem: nil, kind: nil)
         super
       end
