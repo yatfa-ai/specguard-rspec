@@ -107,10 +107,16 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # Criterion 1's precondition. RSpec only delivers the notifications a
     # formatter registered for, so a hook implemented but not registered is
     # dead code that fails silently — the run completes, the file never appears.
-    it "is registered for the three notifications it implements" do
+    #
+    # `:seed` is the odd one out and is deliberately in the list: this formatter
+    # has nothing to say about the seed, but `:seed` is the first notification
+    # of a run and is where `#seed` restores the human formatter that
+    # registering this one suppressed (SPGD-195). Drop it from this list and
+    # that repair becomes dead code — a silent run, exactly as before.
+    it "is registered for the four notifications it implements" do
       registered = RSpec::Core::Formatters::Loader.formatters[described_class]
 
-      expect(registered).to contain_exactly(:example_finished, :stop, :close)
+      expect(registered).to contain_exactly(:example_finished, :stop, :close, :seed)
     end
 
     it "is a BaseFormatter, so RSpec accepts it as an additional --format" do
@@ -123,6 +129,57 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # in, the superclass is the first thing to go wrong.
     it "inherits from the real RSpec's BaseFormatter, not from SpecGuard::RSpec" do
       expect(described_class.superclass).to equal(::RSpec::Core::Formatters::BaseFormatter)
+    end
+  end
+
+  # The `#seed` hook restores the human formatter that registering this one
+  # suppresses (SPGD-195), and it does that by mutating `RSpec.configuration` —
+  # the *live, global* one, mid-run. Its real behaviour is pinned in
+  # formatter_run_spec.rb, in a real `rspec` process where the output can
+  # actually be observed. What these two examples pin instead is *when it
+  # declines to act*, which a subprocess cannot show.
+  #
+  # A stand-in configuration is unavoidable here. The suite running this file
+  # already has a `progress` formatter attached, so the hook's "somebody already
+  # prints a summary" check would short-circuit every time and an assertion
+  # against the real configuration would pass no matter what the guard did.
+  # It is injected through the formatter's own `rspec_configuration` rather than
+  # by stubbing `::RSpec.configuration`, because rspec-core keeps reading that
+  # singleton while the example runs and would ask the double for `dry_run?`.
+  describe "#seed" do
+    let(:elsewhere) do
+      instance_double(::RSpec::Core::Configuration, formatters: registered, default_formatter: "progress")
+    end
+
+    before do
+      allow(elsewhere).to receive(:add_formatter)
+      allow(formatter).to receive(:rspec_configuration).and_return(elsewhere)
+    end
+
+    # The guard that keeps this hook inert outside a real run. Every other
+    # example in this file drives the hooks in-process against a formatter RSpec
+    # never registered; without this check, each `seed` call would bolt a
+    # progress formatter onto the suite that is running that very example.
+    context "when this formatter is not among the configuration's formatters" do
+      let(:registered) { [] }
+
+      it "does not touch the configuration" do
+        formatter.seed(nil)
+
+        expect(elsewhere).not_to have_received(:add_formatter)
+      end
+    end
+
+    # The other side, so the guard above cannot be satisfied by a hook that
+    # simply never does anything.
+    context "when this formatter is registered and nothing will print a summary" do
+      let(:registered) { [formatter] }
+
+      it "restores the configured default formatter" do
+        formatter.seed(nil)
+
+        expect(elsewhere).to have_received(:add_formatter).with("progress")
+      end
     end
   end
 
@@ -729,6 +786,21 @@ RSpec.describe SpecGuard::RSpecFormatter do
       allow(formatter).to receive(:monotonic_now).and_raise("no clock")
 
       expect { formatter.stop(nil) }.not_to raise_error
+    end
+
+    # `seed` is the newest hook and the only one that reaches into
+    # `RSpec.configuration` mid-run, so it has a failure mode the others do not:
+    # `add_formatter` raises for a formatter name RSpec cannot resolve, which a
+    # user with `config.default_formatter = "typo"` supplies. RSpec itself never
+    # hits that line — it only adds the default when no formatter was registered
+    # at all — so this repair is where such a typo first becomes an exception,
+    # and `:seed` is dispatched from `Reporter#start`, before a single example
+    # has run. Unguarded, a one-word config typo would abort the whole suite.
+    it "swallows a failure while restoring the default formatter" do
+      allow(formatter).to receive(:restore_suppressed_default_formatter).and_raise("no such formatter")
+
+      expect { formatter.seed(nil) }.not_to raise_error
+      expect(errors.string).to include(described_class::WARNING_PREFIX)
     end
 
     # Criterion 6, extended to slice 2's code path. The annotation lookup reads

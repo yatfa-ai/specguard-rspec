@@ -55,8 +55,18 @@ end
 # ...or in .rspec — the --require is not optional, RSpec cannot guess this path
 --require specguard/rspec/formatter
 --format SpecGuard::RSpecFormatter
---format progress
 ```
+
+The two forms are equivalent, and neither needs you to name a human formatter. Additive is meant
+literally, in both directions: if you chose one, it is left alone and SpecGuard adds nothing to your
+output; if you chose none, you get RSpec's default (`progress`) exactly as you would without this
+gem — same dots, same failures, same summary, byte for byte.
+
+That second half is not free, because RSpec installs its default formatter only when *no* formatter
+was registered at all — so a gem that registers one silently suppresses it, and a failing suite
+prints nothing. SpecGuard restores it on the first notification of the run, once RSpec has finished
+deciding. If you want something other than `progress`, name it the usual way (`--format
+documentation`, or `config.default_formatter = "doc"`) and that is what you will get, on its own.
 
 Each example contributes its `id`, `spec_file_path`, `file_path`, `line_number`, `name` (the composed
 `describe`/`context`/`it` string), `duration`, `outcome`, `status` (`"annotated"` or

@@ -22,7 +22,10 @@
 #   # ...or, equivalently, in .rspec
 #   --require specguard/rspec/formatter
 #   --format SpecGuard::RSpecFormatter
-#   --format progress
+#
+# Neither form names a human formatter, and neither has to: see {#seed} for how
+# the one RSpec would have installed is kept, and why registering this class
+# would otherwise take it away.
 #
 # The `--require` is not optional in the `.rspec` form: RSpec resolves a
 # `--format` argument by constant lookup and only then guesses a file name to
@@ -154,6 +157,11 @@ module SpecGuard
   # `nil` line number, an unwritable `log/`, a full disk: each of those is
   # somebody's broken build, for tests that all passed.
   #
+  # {#seed} was added after that probe and is guarded for the same reason, with
+  # the stakes slightly higher: it is dispatched from `Reporter#start`, before
+  # any example has run, so a raise there costs the whole suite rather than its
+  # exit code.
+  #
   # So every hook body runs inside {#never_fail_the_run}, which swallows
   # `StandardError` *and* `ScriptError` (an autoload blowing up is not a
   # StandardError, and a bare rescue would miss it), warns once, and returns.
@@ -163,7 +171,10 @@ module SpecGuard
   # spec/specguard/rspec/formatter_spec.rb fails if any of those rescues is
   # removed.
   class RSpecFormatter < ::RSpec::Core::Formatters::BaseFormatter
-    ::RSpec::Core::Formatters.register self, :example_finished, :stop, :close
+    # `:seed` is not a hook this formatter has anything to say about — it is
+    # the *earliest* notification of a run, and {#seed} uses it as the moment to
+    # repair RSpec's default-formatter suppression. See {#seed}.
+    ::RSpec::Core::Formatters.register self, :example_finished, :stop, :close, :seed
 
     # Prefixed so it is obvious in a CI log which tool is talking, and worded so
     # a reader knows immediately that it is not their tests that broke.
@@ -213,6 +224,75 @@ module SpecGuard
       # "Finished in N seconds", not a contradiction of it.
       @started_at = monotonic_now
       @duration_seconds = nil
+    end
+
+    # The first notification of the run — and the one hook here that exists for
+    # the *human* half of the output rather than the telemetry half.
+    #
+    # == The defect this repairs
+    #
+    # RSpec installs its own default formatter only if the user registered no
+    # formatter at all (rspec-core 3.13.6,
+    # `lib/rspec/core/formatters.rb:127`):
+    #
+    #   add default_formatter, output_stream if @formatters.empty?
+    #
+    # Registering *this* formatter makes that list non-empty, so `progress` is
+    # never added — and since this formatter's product is a file, the run prints
+    # **nothing**. Measured on a two-example suite with one failure: 351 bytes
+    # of stdout without SpecGuard, 0 bytes with it. No dots, no failure message,
+    # no diff, no `file:line`, no re-run command, and still exit 1. The
+    # telemetry was written perfectly; the developer was left blind.
+    #
+    # It hit exactly the wrong person. The `.rspec` wiring escaped it only
+    # because the README spelled it with a second `--format progress` line, and
+    # a developer who explicitly chose `--format documentation` was unaffected —
+    # so the casualty was the reader who followed the README's first wiring
+    # block and customised nothing. (That `--format progress` line is gone from
+    # the README now: with this repair in place neither documented form needs
+    # it, which is what finally makes the two forms equivalent.)
+    #
+    # == Why here, and not in the user's `spec_helper`
+    #
+    # The obvious repair — `config.add_formatter(:progress) if
+    # config.formatters.empty?` inside `RSpec.configure` — is wrong, and
+    # silently so. `configuration_options.rb:21-25` applies `--require` (i.e.
+    # `spec_helper.rb`) *before* `--format`, so at that moment the list is `[]`
+    # no matter what the user asked for. Probed directly: with `.rspec` set to
+    # `--format documentation`, `config.formatters` still returns `[]` inside
+    # the helper. That repair gives the documentation user documentation *and*
+    # progress dots.
+    #
+    # `:seed` is the first notification `Reporter#start` sends
+    # (`reporter.rb:92`, ahead of `:start` on :93), and `Reporter#notify` runs
+    # `ensure_listeners_ready` — hence `setup_default` — before dispatching
+    # anything (`reporter.rb:207-208`). So by the time this runs, RSpec has
+    # finished deciding, and the decision can be read rather than predicted.
+    # Repairing here rather than in `start` is what keeps the output
+    # byte-identical: a formatter added during `:seed` still receives `:start`,
+    # and the only notification it misses is this one, which is re-sent at the
+    # end of the run (`reporter.rb:189`) and is forwarded below regardless.
+    #
+    # == What counts as "the human formatter is missing"
+    #
+    # Not "the list is empty" — by now `setup_default` has appended RSpec's own
+    # auxiliaries (a `DeprecationFormatter` always, and a
+    # `FallbackMessageFormatter` precisely because this formatter does not
+    # implement `message`). The question is whether anything will print a
+    # summary, so that is what is asked: does any registered formatter other
+    # than this one respond to `dump_summary`? `progress`, `documentation` and
+    # `json` all do, via `BaseTextFormatter`; the two auxiliaries and this class
+    # do not. That mirrors rspec-core's own intent — restore the default exactly
+    # when its absence would leave the run silent — while touching nothing
+    # rspec-core marks `@private`: `formatters`, `add_formatter` and
+    # `default_formatter` are all documented public API, and `dump_summary` is
+    # part of the published formatter protocol.
+    #
+    # `default_formatter` rather than a hard-coded `:progress`, for the same
+    # reason: a user who set `config.default_formatter = 'doc'` asked for that,
+    # and it is the value rspec-core's own line would have used.
+    def seed(notification)
+      never_fail_the_run { restore_suppressed_default_formatter(notification) }
     end
 
     # One example finished — passed, failed or pending. Called for every
@@ -291,6 +371,47 @@ module SpecGuard
     end
 
     private
+
+    # {#seed}'s body. Adds RSpec's default formatter when registering this one
+    # suppressed it, and hands the newcomer the notification it arrived too late
+    # to receive.
+    #
+    # The `equal?(self)` guard on the first line is not defensive padding: it is
+    # what keeps this method inert outside a real run. `spec/.../formatter_spec.rb`
+    # drives these hooks in-process against a formatter that RSpec never
+    # registered, and without the guard each of those examples would bolt a
+    # progress formatter onto the *parent* suite's live configuration. If this
+    # object is not in `RSpec.configuration.formatters`, nothing here is its
+    # business.
+    def restore_suppressed_default_formatter(notification)
+      configuration = rspec_configuration
+      registered = configuration.formatters
+      return unless registered.any? { |formatter| formatter.equal?(self) }
+      return if registered.any? { |formatter| prints_a_summary?(formatter) }
+
+      configuration.add_formatter(configuration.default_formatter)
+      configuration.formatters.each do |formatter|
+        next if registered.any? { |already| already.equal?(formatter) }
+
+        formatter.seed(notification) if formatter.respond_to?(:seed)
+      end
+    end
+
+    # The live RSpec configuration, behind a method so a spec can hand this
+    # object a stand-in. Stubbing `::RSpec.configuration` itself is not an
+    # option: rspec-core reads it throughout the example it is running, so the
+    # double gets asked things like `dry_run?` and the example dies inside
+    # RSpec rather than inside this class.
+    def rspec_configuration
+      ::RSpec.configuration
+    end
+
+    # Whether `formatter` is somebody's human output — i.e. anything but this
+    # formatter that will put a summary on the stream at the end of the run.
+    # See {#seed} for why `dump_summary` is the question.
+    def prints_a_summary?(formatter)
+      !formatter.equal?(self) && formatter.respond_to?(:dump_summary)
+    end
 
     # Sink selection, and the fallback that keeps a failed delivery from being
     # a silent one.

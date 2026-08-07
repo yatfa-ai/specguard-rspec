@@ -170,6 +170,19 @@ module FormatterRunHelpers
     end
   RUBY
 
+  # The README's `RSpec.configure` wiring, copied out rather than paraphrased —
+  # this is the block a reader pastes into `spec/spec_helper.rb`, and the point
+  # of the `:ruby` wiring is that what runs here is what the README says. It
+  # registers SpecGuard's formatter and *nothing else*, which is precisely the
+  # condition SPGD-195 turned into a silent run.
+  RUBY_WIRING = <<~RUBY
+    require "specguard/rspec/formatter"
+
+    RSpec.configure do |config|
+      config.add_formatter(SpecGuard::RSpecFormatter)
+    end
+  RUBY
+
   Run = Struct.new(:exit_status, :stdout, :stderr, :lines, keyword_init: true) do
     def payload = JSON.parse(lines.last)
   end
@@ -192,10 +205,40 @@ module FormatterRunHelpers
   # `--require` is not decoration: RSpec resolves `--format <constant>` by
   # constant lookup and only then guesses a path, and the path it guesses for
   # `SpecGuard::RSpecFormatter` is `spec_guard/r_spec_formatter`. RSpec
-  # processes requires before it loads formatters, so this is also exactly the
-  # `.rspec` incantation the README documents.
+  # processes requires before it loads formatters, so this is the `.rspec`
+  # incantation the README documents.
+  #
+  # == Why `wiring:` exists
+  #
+  # The README documents two ways to install this formatter, and for a long time
+  # only one of them was ever run here. The default `:rspec_flags` wiring adds
+  # `--format progress` on top of the `.rspec` block — which meant every example
+  # in this file was *supplied* the human formatter by the harness, and the
+  # "runs alongside progress rather than replacing it" guard below could not
+  # fail no matter how badly the other wiring behaved. It did behave badly:
+  # SPGD-195, where the README's Ruby form printed zero bytes for a failing
+  # suite. (The README carried that same `--format progress` line at the time,
+  # which is why the two documented wirings behaved differently at all; it is
+  # gone from the README now that neither form needs it.)
+  #
+  # `:rspec_flags` keeps the explicit `--format progress` on purpose. It is the
+  # "developer who named their own formatter" case, and it is what the other
+  # ninety-odd examples in this file want: a run whose human output does not
+  # depend on the repair being present.
+  #
+  # `:ruby` is the other documented form, written out verbatim — a
+  # `spec_helper.rb` carrying nothing but
+  # `config.add_formatter(SpecGuard::RSpecFormatter)`, with **no `--format`
+  # argument at all**, so SpecGuard's is genuinely the only formatter anyone
+  # registered. An assertion about human output is only worth something under
+  # this wiring.
   #
   # @param suite [String, nil] the single-file case, written to `sample_spec.rb`.
+  # @param wiring [Symbol] `:rspec_flags` (default) — the README's `.rspec`
+  #   block plus an explicit `--format progress`; `:ruby` — the README's
+  #   `RSpec.configure` block, and nothing else; or `:ruby_with_documentation` —
+  #   that same block from a developer who also asked for
+  #   `--format documentation`.
   # @param files [Hash{String=>String}] additional files, by root-relative path.
   #   Intermediate directories are created. Every key matching `*_spec.rb` is
   #   passed to `rspec` as a target; anything else is a support file, reachable
@@ -206,7 +249,7 @@ module FormatterRunHelpers
   # @param sabotage [Boolean] load {SABOTAGE} into the child before the
   #   formatter runs, so the annotation lookup's scanner raises.
   # @return [Run]
-  def run_rspec(suite = nil, files: {}, prepare: nil, sabotage: false)
+  def run_rspec(suite = nil, wiring: :rspec_flags, files: {}, prepare: nil, sabotage: false)
     Dir.mktmpdir do |root|
       sources = suite ? { "sample_spec.rb" => suite }.merge(files) : files
       sources.each do |path, contents|
@@ -217,7 +260,22 @@ module FormatterRunHelpers
       targets = sources.keys.grep(/_spec\.rb\z/)
       env = HERMETIC_ENV.merge(prepare ? prepare.call(root) : {})
 
-      requires = ["--require", "specguard/rspec/formatter"]
+      case wiring
+      when :rspec_flags
+        requires = ["--require", "specguard/rspec/formatter"]
+        formats = ["--format", "SpecGuard::RSpecFormatter", "--format", "progress"]
+      when :ruby
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = []
+      when :ruby_with_documentation
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = ["--format", "documentation"]
+      else
+        raise ArgumentError, "unknown wiring: #{wiring.inspect}"
+      end
+
       if sabotage
         File.write(File.join(root, "sabotage.rb"), SABOTAGE)
         requires += ["--require", "./sabotage.rb"]
@@ -226,8 +284,7 @@ module FormatterRunHelpers
       stdout, stderr, status = Open3.capture3(
         env, RbConfig.ruby, "-I", LIB_DIR, RSPEC_EXE,
         *requires,
-        "--format", "SpecGuard::RSpecFormatter",
-        "--format", "progress",
+        *formats,
         *targets,
         chdir: root
       )
@@ -447,6 +504,128 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     it "says nothing on stderr when everything works" do
       expect(run.stderr).to be_empty
+    end
+  end
+
+  # Criterion 1, under the wiring that can actually fail it.
+  #
+  # The block above hands its child `--format progress` on the command line, so
+  # its "runs alongside progress" guard is asserting about a formatter the
+  # *harness* supplied — correct, and unfalsifiable. SPGD-195 lived in the gap:
+  # RSpec adds its default human formatter only when no formatter was
+  # registered at all (`rspec-core-3.13.6 formatters.rb:127`), so the README's
+  # `RSpec.configure` wiring — SpecGuard's formatter and nothing else — made the
+  # list non-empty, suppressed `progress`, and printed **zero bytes** for a
+  # failing suite. Telemetry was perfect; the developer got no dots, no failure,
+  # no diff, no `file:line` and no re-run command, and still exit 1.
+  #
+  # Every example here therefore runs with `wiring: :ruby`, where SpecGuard's is
+  # the only formatter anyone asked for. Delete the repair in
+  # `RSpecFormatter#seed` and this block goes red; the block above stays green.
+  describe "a suite wired the README's Ruby way, with no other formatter" do
+    before(:context) do
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby)
+    end
+
+    let(:run) { @run }
+
+    it "still prints progress's marks, so the run is not silent" do
+      expect(run.stdout).to include(".F*")
+    end
+
+    # The four things a developer needs in order to act on a red suite. Asserted
+    # separately from the dots because a formatter that emitted marks and
+    # swallowed the failure body would satisfy the line above and still leave
+    # nobody able to fix anything.
+    it "prints the failure, its diff, its location and the re-run command" do
+      expect(run.stdout).to include("Failures:")
+      expect(run.stdout).to include("expected: :out_of_stock")
+      expect(run.stdout).to include("sample_spec.rb:10")
+      expect(run.stdout).to include("rspec ./sample_spec.rb:8")
+    end
+
+    it "prints the summary line" do
+      expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
+    end
+
+    # Criterion 5 is about stdout, and criterion 3 is what keeps the repair from
+    # being a trade: the telemetry this wiring produces is the same telemetry
+    # the `.rspec` wiring produces.
+    it "captures the same telemetry as the .rspec wiring" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.payload["specs"].first.keys).to contain_exactly(
+        "id", "spec_file_path", "file_path", "line_number", "name",
+        "duration", "outcome", "status", "intent"
+      )
+    end
+
+    # Criterion 4. The never-block-CI contract is untouched by any of this: the
+    # exit code was already correct when the output was missing.
+    it "leaves the suite's own exit status alone" do
+      expect(run.exit_status).to eq(1)
+    end
+
+    it "says nothing on stderr" do
+      expect(run.stderr).to be_empty
+    end
+  end
+
+  # Criterion 2 — the other side of the repair, and the one a careless fix
+  # breaks. A developer who named their own formatter has already been served by
+  # RSpec, so restoring the default on top of it would give them documentation
+  # *and* a row of progress dots.
+  #
+  # This is also why the repair cannot live in the user's `spec_helper` as
+  # `add_formatter(:progress) if config.formatters.empty?`:
+  # `configuration_options.rb:21-25` applies `--require` before `--format`, so
+  # the list is `[]` inside the helper even for the run below, and that version
+  # would fail here.
+  describe "a suite whose developer explicitly chose --format documentation" do
+    before(:context) do
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby_with_documentation)
+    end
+
+    let(:run) { @run }
+
+    it "prints documentation output" do
+      expect(run.stdout).to include("can order an item")
+    end
+
+    # Exactly once: a second human formatter would repeat every example name.
+    # The *passing* example is the one to count — RSpec itself reprints the
+    # failing and pending ones in its "Failures:" and "Pending:" sections, so
+    # counting those would assert about documentation's own layout rather than
+    # about how many formatters are attached.
+    it "prints each example's name exactly once" do
+      expect(run.stdout.scan("can order an item").length).to eq(1)
+      expect(run.stdout.scan("3 examples, 1 failure, 1 pending").length).to eq(1)
+    end
+
+    # Progress's marks are the signature of an unwanted second formatter, but
+    # `include(".F*")` is the wrong way to look for them and passes vacuously:
+    # progress emits one mark per example with no newline, so alongside
+    # documentation the marks are scattered one-per-line rather than contiguous.
+    # What a second formatter actually does to this output is push
+    # documentation's lines off the left margin — the mark for the *previous*
+    # example lands in front of the next one's line, turning
+    # `    cannot order an item…` into `.    cannot order an item…`.
+    #
+    # The failing example's listing line is the one to check: it is the first
+    # line printed after an example that progress would have marked, and
+    # `(FAILED - 1)` picks it out from documentation's listing without also
+    # matching the "Failures:" section's own restatement of the same name.
+    it "does not add progress dots alongside it" do
+      listing = run.stdout.lines.grep(/\(FAILED - 1\)/)
+
+      expect(listing.length).to eq(1)
+      expect(listing.first).to eq("    cannot order an item that is out of stock (FAILED - 1)\n")
+    end
+
+    it "captures its telemetry and leaves the exit status alone" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.exit_status).to eq(1)
     end
   end
 
