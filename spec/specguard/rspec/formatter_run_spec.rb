@@ -17,6 +17,12 @@ module FormatterRunHelpers
   RSPEC_EXE = Gem.bin_path("rspec-core", "rspec")
   DEFAULT_SINK = "log/test_results.jsonl"
 
+  # The seed handed to every `order: :random` child. Fixed, not drawn: a run and
+  # its control have to order their examples the same way for a whole-stream
+  # diff to mean anything, and the banner text itself is part of what is
+  # compared. The value is arbitrary.
+  FIXED_SEED = 4242
+
   # A passing, a failing and a pending example, nested two levels deep, and
   # carrying **zero** `@intent:` annotations — the roadmap's cold-start case,
   # and the one the payload must still describe completely.
@@ -292,8 +298,19 @@ module FormatterRunHelpers
   #   environment overrides for the child.
   # @param sabotage [Boolean] load {SABOTAGE} into the child before the
   #   formatter runs, so the annotation lookup's scanner raises.
+  # @param order [Symbol, nil] `nil` (default) leaves the child on RSpec's
+  #   defined ordering; `:random` runs it under `--order random --seed
+  #   #{FIXED_SEED}`.
+  #
+  #   This exists because defined ordering hides a whole output path. Under it
+  #   `seed_used?` is false and RSpec prints no seed banner, so every run this
+  #   file spawned was blind to the one notification {#seed}'s repair has to
+  #   forward by hand — see the random-ordering example in the parity block.
+  #   The seed is fixed rather than drawn so that a run and its control order
+  #   their examples identically and the whole-stream diff stays meaningful.
   # @return [Run]
-  def run_rspec(suite = nil, wiring: :rspec_flags, files: {}, prepare: nil, sabotage: false)
+  def run_rspec(suite = nil, wiring: :rspec_flags, files: {}, prepare: nil, sabotage: false,
+                order: nil)
     Dir.mktmpdir do |root|
       sources = suite ? { "sample_spec.rb" => suite }.merge(files) : files
       sources.each do |path, contents|
@@ -335,10 +352,18 @@ module FormatterRunHelpers
         requires += ["--require", "./sabotage.rb"]
       end
 
+      ordering =
+        case order
+        when nil then []
+        when :random then ["--order", "random", "--seed", FIXED_SEED.to_s]
+        else raise ArgumentError, "unknown order: #{order.inspect}"
+        end
+
       stdout, stderr, status = Open3.capture3(
         env, RbConfig.ruby, "-I", LIB_DIR, RSPEC_EXE,
         *requires,
         *formats,
+        *ordering,
         *targets,
         chdir: root
       )
@@ -692,6 +717,48 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
           expect(run.stdout.scan("An error occurred in an `after(:context)` hook.").length).to eq(1)
           expect(run.stdout).to include("TEARDOWN-BLEW-UP")
         end
+      end
+    end
+
+    # The third output path the repair touches, and the last one this file was
+    # blind to.
+    #
+    # Restoring the default formatter mid-`:seed` means the newcomer misses the
+    # `:seed` notification currently being dispatched, so
+    # `restore_suppressed_default_formatter` hands it that notification by hand.
+    # Under RSpec's *defined* ordering — which every other run in this file uses
+    # — `seed_used?` is false and the seed banner is never printed by anyone, so
+    # dropping that forwarding changes nothing observable and the whole suite
+    # stays green. Under `--order random` it is the difference between a
+    # developer being able to reproduce a flaky failure and not: 430 bytes with
+    # the head banner, 403 without it.
+    #
+    # Only `:ruby` is exercised here on purpose. Under the `.rspec` wiring
+    # `progress` is registered before the run starts, so the restore returns
+    # early and there is nothing to forward — a `:rspec_flags` copy of this
+    # example would pass no matter what the forwarding loop did, which is the
+    # exact defect shape this file exists to stop.
+    context "under the README's Ruby wiring, with randomised ordering" do
+      before(:context) do
+        @random_control = run_rspec(
+          FormatterRunHelpers::MIXED_SUITE, wiring: :none, order: :random
+        )
+      end
+
+      # Guards the diff below against passing vacuously. If a future rspec-core
+      # stopped printing the banner, or the `order:` plumbing silently failed to
+      # reach the child, both streams would lose it together and the comparison
+      # would agree about nothing. This pins that the control really does carry
+      # the thing the comparison is here to protect — head and tail.
+      it "has a control that prints the seed banner twice" do
+        expect(@random_control.stdout.scan(/Randomized with seed #{FormatterRunHelpers::FIXED_SEED}/).length)
+          .to eq(2)
+      end
+
+      it "prints a randomised run exactly as RSpec would have, banner included" do
+        run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby, order: :random)
+
+        expect(stdout_shape(run.stdout)).to eq(stdout_shape(@random_control.stdout))
       end
     end
 

@@ -212,10 +212,22 @@ module SpecGuard
       example_started example_passed example_failed example_pending dump_summary
     ].freeze
 
-    # @param output [IO] the stream RSpec hands every formatter. Unused — this
-    #   formatter's product is a file, and writing to the shared stream is the
-    #   human formatter's job. Accepted because RSpec's constructor contract
-    #   says so.
+    # @param output [IO] the stream RSpec hands every formatter. This class's
+    #   product is a file, so nothing in the capture path writes here — but the
+    #   stream is *not* unused, and a reader who is here because stdout went
+    #   wrong is in the right place. {#message} writes to it, via
+    #   {#relay_message} below: having taken over the `FallbackMessageFormatter`
+    #   RSpec would otherwise have appointed, this formatter owes that
+    #   formatter's duty, and printing a message no other registered formatter
+    #   will print is precisely its job. That is the only write.
+    #
+    #   The `nil` default is for the in-process examples, which construct this
+    #   class directly; RSpec itself always supplies a stream. It cannot reach
+    #   `output.puts`: {#relay_message} returns early unless this object is in
+    #   `RSpec.configuration.formatters`, which only RSpec puts it in, and doing
+    #   so means RSpec built it. A `nil` that somehow got there would raise
+    #   inside {#never_fail_the_run} and downgrade to a warning rather than
+    #   taking the suite with it.
     # @param error_stream [IO] where the one-shot warning goes. Injectable so a
     #   spec can read it back without reassigning `$stderr` globally.
     # @param annotations [AnnotationLookup] resolves each example's `@intent:`.
@@ -264,6 +276,12 @@ module SpecGuard
     # no diff, no `file:line`, no re-run command, and still exit 1. The
     # telemetry was written perfectly; the developer was left blind.
     #
+    # (Every byte count in this class's comments names the suite it was measured
+    # on, because they come from different ones and are not comparable across
+    # methods. This paragraph's are from that two-example failing suite;
+    # {#message}'s are from a suite whose `after(:context)` hook raises, which
+    # is `NON_EXAMPLE_ERROR_SUITE` in `formatter_run_spec.rb`.)
+    #
     # It hit exactly the wrong person. The `.rspec` wiring escaped it only
     # because the README spelled it with a second `--format progress` line, and
     # a developer who explicitly chose `--format documentation` was unaffected —
@@ -290,8 +308,22 @@ module SpecGuard
     # finished deciding, and the decision can be read rather than predicted.
     # Repairing here rather than in `start` is what keeps the output
     # byte-identical: a formatter added during `:seed` still receives `:start`,
-    # and the only *notification* it misses is this one, which is re-sent at the
-    # end of the run (`reporter.rb:189`) and is forwarded below regardless.
+    # and the only notification it misses *from `Reporter#start` onwards* is
+    # this one, which is forwarded to it by hand below. (Not "the only
+    # notification it misses" flatly — a `:message` can arrive before
+    # `Reporter#report` is ever entered, which is a real case and is {#message}'s
+    # to handle, not this method's.)
+    #
+    # The forwarding is not decoration, and it is worth knowing what goes if it
+    # goes: `:seed` is what prints `Randomized with seed N`, so without it a
+    # randomly-ordered run loses its *head* banner and keeps only the one RSpec
+    # re-sends at the end (`reporter.rb:189`). That is the line a developer
+    # needs to reproduce a flaky failure. Measured on `MIXED_SUITE` under
+    # `--order random`: banner twice both with and without this gem, and once if
+    # the forwarding loop is deleted (a 27-byte hole, the banner and its blank
+    # line). Under RSpec's *defined* ordering nothing prints a banner either
+    # way, which is why the parity example that pins this had to ask for random
+    # ordering explicitly.
     #
     # Arriving late is not the only way the restored formatter can diverge from
     # one RSpec installed itself, and the second way cost a review round. By the
