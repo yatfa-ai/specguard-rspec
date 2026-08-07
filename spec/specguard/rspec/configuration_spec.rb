@@ -6,11 +6,11 @@ require "specguard/rspec/formatter"
 # Criterion 6: the formatter's settings, their ENV defaults, and the promise
 # that nothing here can be the reason a suite fails.
 RSpec.describe SpecGuard::RSpec::Configuration do
-  # Never the real checkout. `commit_sha` now falls back to `git rev-parse
-  # HEAD`, and a spec that let that through would be asserting against whatever
-  # commit the suite happens to be running on — green on a laptop, and green for
-  # the wrong reason.
-  let(:no_git) { object_double(SpecGuard::RSpec::GitCheckout, commit_sha: nil) }
+  # Never the real checkout. `commit_sha` and `branch` both now fall back to
+  # git, and a spec that let that through would be asserting against whatever
+  # commit and branch the suite happens to be running on — green on a laptop,
+  # and green for the wrong reason.
+  let(:no_git) { object_double(SpecGuard::RSpec::GitCheckout, commit_sha: nil, branch: nil) }
 
   describe "defaults, seeded from the environment" do
     # `env:` is injected rather than mutating the process's own ENV: these
@@ -324,12 +324,18 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
   # Criterion 5's tail: the run nobody's CI provider named. Without this, a
   # laptop run, a hand-rolled container and any provider not on the list above
-  # all produce a blank `commit_sha` — which the platform rejects outright.
+  # all produce a blank `commit_sha` — which the platform rejects outright — and
+  # a blank `branch`, which it accepts and renders as "not reported" on every
+  # single row.
   describe "the git fallback" do
-    let(:git) { object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "cafebabe") }
+    let(:git) { object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "cafebabe", branch: "release/2.0") }
 
     it "asks the checkout when no variable named the commit" do
       expect(described_class.new(env: {}, git: git).commit_sha).to eq("cafebabe")
+    end
+
+    it "asks the checkout when no variable named the branch" do
+      expect(described_class.new(env: {}, git: git).branch).to eq("release/2.0")
     end
 
     # The subprocess is the expensive thing here, and it is pure loss when a CI
@@ -340,14 +346,35 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       expect(git).not_to have_received(:commit_sha)
     end
 
+    # The same, for the field this fallback was added to. Both halves of the
+    # `||` matter: the left one answers, and the right one must not even run.
+    it "does not ask for the branch when a variable already answered" do
+      described_class.new(env: { "GITHUB_REF_NAME" => "main" }, git: git)
+
+      expect(git).not_to have_received(:branch)
+    end
+
     it "reports an unknown commit when git has no answer either" do
       expect(described_class.new(env: {}, git: no_git).commit_sha).to be_nil
     end
 
+    # A detached checkout reaches here as a nil from {GitCheckout.branch}, and
+    # nil is what the envelope should carry. See the detached-HEAD example in
+    # the `GitCheckout` block below for why that is not the string "HEAD".
+    it "reports an unknown branch when git has no answer either" do
+      expect(described_class.new(env: {}, git: no_git).branch).to be_nil
+    end
+
     it "treats a blank answer from git as no answer" do
-      blank = object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "  \n")
+      blank = object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "  \n", branch: "  \n")
 
       expect(described_class.new(env: {}, git: blank).commit_sha).to be_nil
+    end
+
+    it "treats a blank branch from git as no branch" do
+      blank = object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "  \n", branch: "  \n")
+
+      expect(described_class.new(env: {}, git: blank).branch).to be_nil
     end
   end
 end
@@ -379,6 +406,26 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     expect(IO).to have_received(:popen).once
   end
 
+  it "asks git once for the branch and remembers that answer too" do
+    allow(IO).to receive(:popen).and_call_original
+
+    3.times { described_class.branch }
+
+    expect(IO).to have_received(:popen).once
+  end
+
+  # The two questions need two commands and two memo slots. Sharing either
+  # would make whichever was asked first answer for both — silently, and with a
+  # value of the wrong shape.
+  it "keeps a memo per question rather than one answer standing in for both" do
+    allow(IO).to receive(:popen).and_call_original
+
+    2.times { described_class.commit_sha }
+    2.times { described_class.branch }
+
+    expect(IO).to have_received(:popen).twice
+  end
+
   it "remembers a nil answer too, rather than retrying a question that failed" do
     allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "git")
 
@@ -386,6 +433,31 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
 
     expect(described_class.commit_sha).to be_nil
     expect(IO).to have_received(:popen).once
+  end
+
+  it "remembers a nil branch too, rather than retrying a question that failed" do
+    allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "git")
+
+    3.times { described_class.branch }
+
+    expect(described_class.branch).to be_nil
+    expect(IO).to have_received(:popen).once
+  end
+
+  # `reset!` clearing only one of the two memos is the leak this pins: the
+  # examples below chdir into a directory that is not a checkout, and a branch
+  # memoized inside *this* repository would survive the move and be asserted
+  # against there.
+  it "clears both memos, so a reset really does re-ask" do
+    allow(IO).to receive(:popen).and_call_original
+    described_class.commit_sha
+    described_class.branch
+
+    described_class.reset!
+    described_class.commit_sha
+    described_class.branch
+
+    expect(IO).to have_received(:popen).exactly(4).times
   end
 
   describe "outside a git checkout" do
@@ -399,12 +471,91 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
       expect(described_class.commit_sha).to be_nil
     end
 
+    it "answers nil for the branch rather than raising" do
+      expect(described_class.branch).to be_nil
+    end
+
     # "fatal: not a git repository (or any of the parent directories): .git" is
     # git's, and a telemetry tool that graffitis somebody's CI log with it has
     # already failed. Captured at the file-descriptor level because the child
     # process writes to fd 2 directly — reassigning `$stderr` would not see it.
     it "says nothing at all on stderr while failing" do
       expect { described_class.commit_sha }.not_to output.to_stderr_from_any_process
+    end
+
+    it "says nothing at all on stderr while failing to name a branch" do
+      expect { described_class.branch }.not_to output.to_stderr_from_any_process
+    end
+  end
+
+  # Criteria 1 and 2, against the real `git` binary — the only place the
+  # detached-HEAD answer can actually be observed, because it is the *command*
+  # that is on trial and a double would just agree with whichever one was
+  # written.
+  #
+  # A fixture checkout, never this one: the suite's own repository is on
+  # whatever branch a developer or CI left it on, and under `actions/checkout`
+  # that is a detached HEAD — precisely the case below. Asserting against it
+  # would be green for the wrong reason on a laptop and red for one in CI.
+  describe "in a checkout of its own" do
+    around do |example|
+      Dir.mktmpdir { |dir| Dir.chdir(dir) { example.run } }
+    end
+
+    before do
+      git!("init", "--quiet", ".")
+      git!("config", "user.email", "spec@example.com")
+      git!("config", "user.name", "SpecGuard Spec")
+      git!("config", "commit.gpgsign", "false")
+      File.write("README", "fixture\n")
+      git!("add", "README")
+      git!("commit", "--quiet", "--message", "the one commit")
+      git!("branch", "--move", "release/2.0")
+      described_class.reset!
+    end
+
+    # Whatever `git init` chose to call the initial branch is renamed above, so
+    # this asserts a name the example itself set rather than a default that
+    # moved from `master` to `main` between git versions.
+    it "reports the branch the checkout is on" do
+      expect(described_class.branch).to eq("release/2.0")
+    end
+
+    it "still reports the commit, which is asked with a different command" do
+      expect(described_class.commit_sha).to match(/\A[0-9a-f]{40}\z/)
+    end
+
+    # ⭐ The whole reason `symbolic-ref` is the command and `rev-parse
+    # --abbrev-ref` is not. `--abbrev-ref` exits **0** on a detached HEAD and
+    # prints the literal string "HEAD", which the platform would store, render
+    # in its Branch column and group by — indistinguishable from a repository
+    # that genuinely has a branch called `HEAD`. `actions/checkout` detaches by
+    # default, so that wrong answer would be the *common* one.
+    #
+    # nil is the honest answer, and the platform already renders it as "not
+    # reported".
+    context "when the checkout is detached, as actions/checkout leaves it by default" do
+      before do
+        git!("checkout", "--quiet", "--detach", "HEAD")
+        described_class.reset!
+      end
+
+      it "reports no branch at all, rather than the literal string \"HEAD\"" do
+        expect(described_class.branch).to be_nil
+      end
+
+      # Guards the assertion above against passing vacuously: it would also read
+      # `nil` if the fixture were not a checkout at all, or if `git` were
+      # missing — in which case it would be pinning nothing.
+      it "is genuinely a detached checkout that still knows its commit" do
+        expect(described_class.commit_sha).to match(/\A[0-9a-f]{40}\z/)
+      end
+    end
+
+    def git!(*args)
+      return if system("git", *args, out: File::NULL, err: File::NULL)
+
+      raise "fixture setup failed: git #{args.join(' ')}"
     end
   end
 
@@ -416,10 +567,22 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     expect(described_class.commit_sha).to be_nil
   end
 
+  it "answers nil for the branch when there is no git binary at all" do
+    allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "No such file or directory - git")
+
+    expect(described_class.branch).to be_nil
+  end
+
   it "answers nil when the lookup blows up in a way a bare rescue would miss" do
     allow(IO).to receive(:popen).and_raise(NotImplementedError, "nope")
 
     expect(described_class.commit_sha).to be_nil
+  end
+
+  it "answers nil for the branch when the lookup blows up in a way a bare rescue would miss" do
+    allow(IO).to receive(:popen).and_raise(NotImplementedError, "nope")
+
+    expect(described_class.branch).to be_nil
   end
 end
 
