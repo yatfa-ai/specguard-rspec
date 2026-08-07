@@ -93,10 +93,11 @@ module SpecGuard
   #     appears nowhere at all.
   #
   # Measured on a probe suite of a 3-case loop plus a 2-example shared group
-  # included by two files: 7 examples, 3 distinct coordinates. A key that folds three examples onto one row cannot carry a per-example
-  # duration, cannot follow one test's outcome across runs, and hands the
-  # duplicate-cluster surface rows that look identical because the *key*
-  # collapsed them — a manufactured duplicate in the product's headline answer.
+  # included by two files: 7 examples, 3 distinct coordinates. A key that folds
+  # three examples onto one row cannot carry a per-example duration, cannot
+  # follow one test's outcome across runs, and hands the duplicate-cluster
+  # surface rows that look identical because the *key* collapsed them — a
+  # manufactured duplicate in the product's headline answer.
   #
   # RSpec already ships the fix. `Example#id` is
   # `"#{metadata[:rerun_file_path]}[#{metadata[:scoped_id]}]"`
