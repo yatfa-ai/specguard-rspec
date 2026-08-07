@@ -52,15 +52,25 @@ who already build or vendor the validator and would rather run one implementatio
 value counts as unset.
 
 What it does *not* change: the selection, the report format, the summary line, or the exit
-codes. Output is byte-identical to the Ruby path except for three read-failure messages, which are
-enumerated and asserted in `spec/specguard/rspec/validator_backend_spec.rb` and in the parity
-harness above:
+codes. Every finding is reported against the same file, at the same line, with the same
+classification, the same counts and the same exit code on both backends. **Four messages differ in
+their trailing text only**, and they are enumerated and asserted — in both directions, so closing
+one fails the suite rather than leaving a stale claim here — in
+`spec/specguard/rspec/validator_backend_spec.rb` and in the parity harness above:
 
 | input | Ruby path | Go backend |
 |---|---|---|
+| a payload that is still not JSON after normalisation | `unexpected character: 'unit' at line 1 column 102` | `Expecting value: line 1 column 102 (char 101)` |
 | a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
+
+The first row is the one you are most likely to actually see: `parse` is one of the three things
+the linter reports, and **every** malformed-JSON annotation renders differently under the backend.
+The Ruby path interpolates Ruby's `JSON::ParserError`; the validator reproduces CPython's `json`
+diagnostic, and the backend passes that through unaltered rather than inventing a third spelling.
+Both agree on which annotation broke, and on the line and column — only the prose moves. The other
+three rows are read failures and need an unreadable path to reach at all.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do

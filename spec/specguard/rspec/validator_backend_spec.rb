@@ -28,6 +28,10 @@ require "json"
 #   * that a recorded document renders BYTE FOR BYTE what the Ruby path renders
 #     for the same corpus — the ticket's first success criterion, asserted
 #     rather than assumed;
+#   * that the one residual difference in an ANNOTATION-level message — the
+#     parse-failure tail, Ruby's `JSON::ParserError` against the port's
+#     CPython-shaped diagnostic — is enumerated and asserted from BOTH sides,
+#     so closing it fails this file rather than leaving a stale claim;
 #   * that every way the backend can fail is exit 2 and never exit 1.
 RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   subject(:backend) { described_class }
@@ -345,11 +349,20 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(result.kind).to eq(SpecGuard::RSpec::Finding::KIND_EXTRACTION)
     end
 
+    # The wording here is RECORDED, not invented, and that distinction has
+    # already cost this file once: it previously read `could not parse
+    # annotation: unexpected token` — a string spelled the way RUBY spells it,
+    # which the port cannot emit. That spelling is what hid the parse-text
+    # divergence between the two backends until it was found by hand. Anything
+    # asserted about a `parse` message must come from the binary; see
+    # "the parse-failure text is the port's, not Ruby's" below.
     it "maps a parse finding onto `problem`" do
       result = only_result(file: "a_spec.rb", line: 4, ok: false, kind: "parse",
-                           errors: ["could not parse annotation: unexpected token"])
+                           errors: ["could not parse annotation: Expecting property name enclosed " \
+                                    "in double quotes: line 1 column 2 (char 1)"])
 
-      expect(result.problem).to eq("could not parse annotation: unexpected token")
+      expect(result.problem).to eq("could not parse annotation: Expecting property name enclosed " \
+                                   "in double quotes: line 1 column 2 (char 1)")
       expect(result.kind).to eq(SpecGuard::RSpec::Finding::KIND_PARSE)
     end
 
@@ -654,6 +667,139 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       expect(go_stdout).to include("checked 12 @intent annotations, 5 malformed")
       expect(go_stdout.lines.count { |line| line.start_with?("FAIL  ") }).to eq(5)
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # THE ONE ENUMERATED DIFFERENCE THAT IS NOT A READ FAILURE.
+  #
+  # The corpus above is byte-identical on both backends, and that is a true
+  # statement about THAT corpus rather than about the linter: its findings are
+  # `schema` and `extraction` only. It contains no `parse` finding at all, and
+  # a `parse` finding is the one annotation-level shape whose text moves.
+  #
+  # PayloadNormalizer rescues PROTOCOL.md §1's permissive syntax on both sides,
+  # so every hazard that goes THROUGH normalisation successfully compares
+  # equal. Only a payload that survives normalisation and still fails
+  # `JSON.parse` diverges — the Ruby path interpolates Ruby's
+  # `JSON::ParserError#message`, the port reproduces CPython's — and neither
+  # the corpus above nor the gem's hazard fixtures contained one.
+  #
+  # So it is enumerated here, in the two-sided shape run_ruby_parity.sh uses
+  # for its ratifications: the shared half is asserted, AND the texts are
+  # asserted to still differ, so making them converge fails this file and
+  # forces the entry to be retired rather than left to rot.
+  #
+  # spec/fixtures/validator/parse-divergence.json is RECORDED from
+  # `validate-intent-go --source --json spec/fixtures/parse_divergence_spec.rb`,
+  # run from the gem root. See `Scanner#parse` for the ratification itself.
+  describe "the parse-failure text is the port's, not Ruby's" do
+    let(:paths) { %w[spec/fixtures/parse_divergence_spec.rb] }
+    let(:recorded) { File.read("spec/fixtures/validator/parse-divergence.json") }
+
+    def run_cli(env)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+      [stdout.string, stderr.string, code]
+    end
+
+    def both_ways
+      ruby = run_cli({})
+      go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+      [ruby, go]
+    end
+
+    def fail_lines(stdout)
+      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+    end
+
+    def parse_prefix
+      "could not parse annotation: "
+    end
+
+    it "is running where the recorded path resolves" do
+      expect(paths).to all(satisfy { |path| File.file?(path) })
+    end
+
+    # Non-vacuity first: if the fixture stopped producing parse failures, every
+    # "they differ" assertion below would pass over an empty list.
+    it "compared two parse findings on each side" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(fail_lines(ruby_stdout).length).to eq(2)
+      expect(fail_lines(go_stdout).length).to eq(2)
+      expect(fail_lines(go_stdout)).to all(include(parse_prefix))
+      expect(fail_lines(ruby_stdout)).to all(include(parse_prefix))
+    end
+
+    # The shared half. Same classification, same file, same LINE — unlike a
+    # read failure, a parse failure is line-scoped and both backends agree on
+    # which annotation broke — and the same prefix.
+    it "reports the same annotations, at the same locations, under the same prefix" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
+
+      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
+      expect(locations.call(go_stdout))
+        .to eq(["FAIL  spec/fixtures/parse_divergence_spec.rb:21",
+                "FAIL  spec/fixtures/parse_divergence_spec.rb:22"])
+    end
+
+    # The summary line is where "same classification" stops being a claim about
+    # prose: a parse failure counts as an annotation examined AND as malformed,
+    # and it must land in the same clause on both sides.
+    it "counts them identically, and as annotations rather than unread files" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
+
+      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
+      expect(summary.call(go_stdout)).to eq("specguard-lint: checked 3 @intent annotations, 2 malformed")
+    end
+
+    it "exits 1 on both — a divergent message is still a malformed annotation" do
+      (*, ruby_code), (*, go_code) = both_ways
+
+      expect(go_code).to eq(ruby_code)
+      expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+    end
+
+    it "says nothing on stderr on either backend" do
+      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+
+      expect(go_stderr).to eq(ruby_stderr)
+      expect(go_stderr).to be_empty
+    end
+
+    # The other side of the ratification. If these ever agree, the difference
+    # has been closed and this whole describe block should be deleted in favour
+    # of adding the fixture to the byte-identical corpus above.
+    it "still differs in the tail, and only in the tail" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(parse_prefix, 2).last } }
+
+      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
+      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
+        expect(ruby_tail).not_to be_empty
+        expect(go_tail).not_to be_empty
+        expect(go_tail).not_to eq(ruby_tail)
+      end
+    end
+
+    # And the tails are specifically CPython's, passed through unaltered rather
+    # than reworded by the mapping. This is what makes the difference a
+    # pass-through the port owns, not a third independent spelling this gem
+    # would then have to maintain.
+    it "passes the port's CPython-shaped wording through unaltered" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(go_stdout).to include("could not parse annotation: Expecting value: line 1 column 102 (char 101)")
+      expect(go_stdout).to include("could not parse annotation: Expecting property name enclosed " \
+                                   "in double quotes: line 1 column 2 (char 1)")
+      # Ruby's own spelling, for the same two payloads, on the same two lines.
+      expect(ruby_stdout).to include("could not parse annotation: unexpected character: 'unit' at line 1 column 102")
+      expect(ruby_stdout).to include("could not parse annotation: expected object key, got 'bad_key}' at line 1 column 2")
     end
   end
 

@@ -93,6 +93,32 @@ module SpecGuard
         end
       end
 
+      # RATIFIED DIFFERENCE from the reference tool, in the REASON TEXT only —
+      # the same shape as `scan_text`'s above, one layer up, and for the same
+      # reason.
+      #
+      # `PayloadNormalizer` rescues PROTOCOL.md §1's permissive syntax on both
+      # sides, so a payload it can fix renders identically. What reaches
+      # `JSON.parse` still broken — a bare-word VALUE, a key that is not a key
+      # — is described by whichever JSON parser is doing the parsing: this
+      # interpolates Ruby's `JSON::ParserError#message`, while
+      # `bin/validate-intent` lets CPython describe it and the Go port
+      # reproduces CPython's wording deliberately (`cmd/validate-intent/
+      # pyjson.go`). So `{bad_key}` is `expected object key, got 'bad_key}' at
+      # line 1 column 2` here and `Expecting property name enclosed in double
+      # quotes: line 1 column 2 (char 1)` there.
+      #
+      # Reproducing that tail would mean porting CPython's JSON diagnostics
+      # into a gem whose entire reason for vendoring the schema is to owe
+      # open-test-intent nothing at runtime — the argument `scan_text` makes
+      # about CPython's DECODER classification, applied verbatim to its PARSER.
+      #
+      # What is shared is asserted in `tests/parity/run_ruby_parity.sh` under
+      # "ratified difference (c)": same classification, same file, same LINE
+      # (unlike a read failure, this one is line-scoped and both agree on the
+      # line and even the column), same `could not parse annotation: ` prefix,
+      # same counts, and exit 1. Only the tail is unpinned.
+      #
       # @return [Finding]
       def parse(raw, file:, line:)
         intent = JSON.parse(PayloadNormalizer.normalize(raw))

@@ -84,12 +84,23 @@ module SpecGuard
     #     which is a statement about a *pattern* — a concept `specguard-lint`
     #     does not have, and whose text would carry the escaped form.
     #
-    # This is one of the two enumerated text differences between the backends;
-    # both are asserted in `spec/specguard/rspec/validator_backend_spec.rb` and
-    # in open-test-intent's `tests/parity/run_ruby_parity.sh` under "the Go
-    # backend". The other is the read-failure tail — see {Scanner.scan_text},
-    # which records why the gem emits a fixed string where CPython and the port
-    # emit a decoder diagnostic.
+    # This is one of the THREE enumerated text differences between the
+    # backends; all three are asserted in
+    # `spec/specguard/rspec/validator_backend_spec.rb` and in
+    # open-test-intent's `tests/parity/run_ruby_parity.sh` under "the Go
+    # backend". The other two are both cases of the backend passing the port's
+    # text straight through where the Ruby path spells it its own way:
+    #
+    #   * the read-failure tail — see {Scanner.scan_text}, which records why
+    #     the gem emits a fixed string where CPython and the port emit a
+    #     decoder diagnostic;
+    #   * the parse-failure tail — see {Scanner#parse}. A payload that survives
+    #     normalisation and still is not JSON is described by whichever JSON
+    #     parser saw it, so the Ruby path carries Ruby's
+    #     `JSON::ParserError#message` and the backend carries CPython's. This
+    #     is the only one of the three that is NOT a read failure, and it is by
+    #     far the most commonly hit: `parse` is one of the three things the
+    #     linter exists to report.
     #
     # == Everything that can go wrong here is exit 2
     #
@@ -148,11 +159,17 @@ module SpecGuard
         NON_ANNOTATION_KINDS = %w[read no-match].freeze
 
         # A full audit passes every spec file in the repository — thousands of
-        # arguments on a large suite — and `execve` fails with E2BIG somewhere
-        # north of 128 KiB on Linux, less elsewhere. Batch well under it. The
-        # batches are an implementation detail: {#check} concatenates their
-        # findings in argument order, so the caller still gets one list and
-        # {CLI} still prints one selection line and one summary line.
+        # arguments on a large suite — and an argument vector has two separate
+        # kernel limits on Linux: `ARG_MAX` caps the TOTAL vector (a quarter of
+        # the stack rlimit, so typically ~2 MiB) and `MAX_ARG_STRLEN` caps each
+        # SINGLE argument at 128 KiB. Exceeding either is `E2BIG`. This budget
+        # is for the first, and is deliberately well under the typical value
+        # rather than derived from it: the limit is not portable (it is smaller
+        # on some kernels and much smaller on other Unixes), and there is
+        # nothing to gain from crowding it. The batches are an implementation
+        # detail: {#check} concatenates their findings in argument order, so the
+        # caller still gets one list and {CLI} still prints one selection line
+        # and one summary line.
         MAX_ARG_BYTES = 96 * 1024
         # A second, independent bound. Some kernels cap the argument *count*
         # (and `MAX_ARG_BYTES` alone would allow ~90k one-character paths).
@@ -210,9 +227,16 @@ module SpecGuard
         end
 
         # Greedy, order-preserving, and never empty: a single path longer than
-        # the byte budget still gets its own batch rather than being dropped.
-        # Dropping it would be the silent-omission failure this project keeps
-        # naming — a file that was never checked, reported as clean.
+        # the byte budget still gets its own batch rather than being silently
+        # dropped from the run.
+        #
+        # That is a weaker promise than "it still gets checked", and
+        # deliberately so. A path over `MAX_ARG_STRLEN` (128 KiB) is refused by
+        # `execve` however it is batched — no grouping can make one argument
+        # smaller — so it lands in {#run}'s `SystemCallError` rescue and the run
+        # is exit 2. What batching buys is that the failure is LOUD: the file is
+        # never quietly omitted from a report that then calls itself clean,
+        # which is the silent-omission shape this project keeps naming.
         def batch(paths)
           groups = [[]]
           bytes = 0

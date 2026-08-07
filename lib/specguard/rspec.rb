@@ -44,7 +44,6 @@ module SpecGuard
     # is the same and non-negotiable: exit 2, never 1. See {ValidatorBackend}.
     class ValidatorError < Error; end
 
-
     # The vendored canonical OpenTestIntent schema, copied byte-for-byte from
     # open-test-intent so this gem has **no cross-repo runtime dependency**.
     # It ships packaged (it lives under `lib/`, which the gemspec includes);
