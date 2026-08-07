@@ -2,27 +2,50 @@
 
 module SpecGuard
   module RSpec
-    # The commit the checkout is sitting on, asked of git directly.
+    # Where the checkout is sitting — which commit, and which branch — asked of
+    # git directly.
     #
-    # This is the *last* resort, consulted only when no environment variable
-    # named the commit. It exists because `commit_sha` is the one envelope field
-    # the platform refuses a run without (`Ingest::Payload#validate_commit_sha`
-    # rejects a blank one and the whole POST comes back 400, every example
-    # discarded), so a run that cannot name its commit is a run whose telemetry
-    # is lost entirely — not one with a gap in it.
+    # This is the *last* resort for both, consulted only when no environment
+    # variable named the answer.
     #
-    # Three properties, all load-bearing:
+    # The two questions carry different stakes and the same honesty
+    # requirement. `commit_sha` is the one envelope field the platform refuses
+    # a run without (`Ingest::Payload#validate_commit_sha` rejects a blank one
+    # and the whole POST comes back 400, every example discarded), so a run
+    # that cannot name its commit is a run whose telemetry is lost entirely —
+    # not one with a gap in it. A nil `branch`, by contrast, is *accepted*: the
+    # platform stores it, and renders it as "not reported". Which is precisely
+    # why a guess is worse here than a gap — see {BRANCH_COMMAND}.
+    #
+    # Three properties, all load-bearing, and both questions have all three:
     #
     #   * It never raises. `git` may not be installed at all, in which case
     #     `IO.popen` raises `Errno::ENOENT` before a subprocess ever exists.
     #   * It never prints. `git rev-parse HEAD` outside a repository writes
     #     "fatal: not a git repository" to stderr, and a telemetry tool that
     #     graffitis somebody's CI log with a git error has already failed.
-    #   * It answers once per process. The result is memoized because a
-    #     subprocess is expensive relative to everything else here, and the
-    #     answer cannot change mid-run.
+    #   * It answers once per process. Each result is memoized *separately*
+    #     because a subprocess is expensive relative to everything else here,
+    #     and neither answer can change mid-run.
     module GitCheckout
-      COMMAND = %w[git rev-parse HEAD].freeze
+      COMMIT_SHA_COMMAND = %w[git rev-parse HEAD].freeze
+
+      # `symbolic-ref`, deliberately, and **not** `rev-parse --abbrev-ref HEAD`.
+      #
+      # On a detached checkout `--abbrev-ref` *succeeds*, exit 0, printing the
+      # literal string `"HEAD"`. `actions/checkout` detaches by default, so that
+      # command would report `branch: "HEAD"` for a large share of CI runs — a
+      # value the platform stores, renders in its Branch column, and groups by,
+      # indistinguishable from a repository that genuinely has a branch called
+      # `HEAD`. It is the wrong answer wearing the costume of a right one.
+      #
+      # `git symbolic-ref --short -q HEAD` asks the question actually being
+      # asked: *what branch is HEAD a symbolic reference to?* Detached, there is
+      # no answer, and it says so the honest way — no output, exit 1, and `-q`
+      # keeps it silent while doing it. {.resolve}'s existing `$?.success?`
+      # guard turns that straight into `nil`, which is what a detached checkout
+      # should report and what the platform already knows how to render.
+      BRANCH_COMMAND = %w[git symbolic-ref --short -q HEAD].freeze
 
       class << self
         # @return [String, nil] the checked-out commit, or nil for any reason
@@ -30,25 +53,46 @@ module SpecGuard
         def commit_sha
           return @commit_sha if defined?(@commit_sha)
 
-          @commit_sha = resolve
+          @commit_sha = resolve(COMMIT_SHA_COMMAND)
         end
 
-        # Drop the memoized answer. For tests, and for the rare caller that
-        # changes directory into a different checkout mid-process.
+        # @return [String, nil] the branch the checkout is on, or nil for any
+        #   reason at all — no git, no repository, and notably a **detached
+        #   HEAD**, which is nil rather than the string "HEAD". See
+        #   {BRANCH_COMMAND}.
+        def branch
+          return @branch if defined?(@branch)
+
+          @branch = resolve(BRANCH_COMMAND)
+        end
+
+        # Drop the memoized answers — *both* of them. For tests, and for the
+        # rare caller that changes directory into a different checkout
+        # mid-process, where the commit and the branch have equally gone stale.
         #
         # @return [void]
         def reset!
           remove_instance_variable(:@commit_sha) if defined?(@commit_sha)
+          remove_instance_variable(:@branch) if defined?(@branch)
           nil
         end
 
         private
 
-        def resolve
+        # Shared by both questions so that the two guards below are written
+        # once and cannot drift apart — they are the whole of the never-raises
+        # and never-prints contract.
+        #
+        # @param command [Array<String>] argv, never a shell string
+        # @return [String, nil]
+        def resolve(command)
           # `err: IO::NULL` is the "never prints" half: outside a repository
           # `git rev-parse` writes "fatal: not a git repository" to stderr, and
           # the exit status is the only part of that we want.
-          output = IO.popen(COMMAND, err: IO::NULL, &:read)
+          output = IO.popen(command, err: IO::NULL, &:read)
+          # A non-zero exit is a real answer for {BRANCH_COMMAND} rather than
+          # only an error: `symbolic-ref -q` exits 1 on a detached HEAD, and
+          # "no branch" is exactly what that should mean.
           return nil unless $?&.success? # rubocop:disable Style/SpecialGlobalVars
 
           value = output.to_s.strip
@@ -69,16 +113,19 @@ module SpecGuard
     # `commit_sha` and `branch` are facts about the *checkout*, not about the
     # suite, and every CI provider already publishes them. Reading them from
     # ENV means the common case — a CI job on any of the five major providers —
-    # needs no configuration at all, and the escape hatch stays open for
-    # everyone else:
+    # needs no configuration at all. When no provider named either, both fall
+    # through to {GitCheckout}, which asks git itself — so a laptop run and a
+    # hand-rolled container report their checkout too, without being told to.
+    #
+    # The escape hatch stays open on top of all of it, for a value neither
+    # source can know:
     #
     #   SpecGuard::RSpec.configure do |config|
-    #     config.commit_sha = `git rev-parse HEAD`.strip
-    #     config.branch     = `git rev-parse --abbrev-ref HEAD`.strip
+    #     config.branch = "release/2.0"
     #   end
     #
-    # An explicitly assigned value always wins; the ENV names are only
-    # consulted to seed the defaults.
+    # An explicitly assigned value always wins; the ENV names and the git
+    # fallback are only consulted to seed the defaults.
     #
     # == Why an unset value is nil rather than an error
     #
@@ -268,7 +315,9 @@ module SpecGuard
 
       # The commit the suite ran against. `nil` when nothing said.
       attr_accessor :commit_sha
-      # The branch the suite ran on. `nil` when nothing said.
+      # The branch the suite ran on. `nil` when nothing said — including a
+      # detached checkout, which has no branch to name and says so rather than
+      # inventing one. See {GitCheckout::BRANCH_COMMAND}.
       attr_accessor :branch
       # The CI provider's id for the build this process is one shard of.
       # `nil` when nothing said, which is how a laptop run spells "I am my own
@@ -298,12 +347,15 @@ module SpecGuard
 
       # @param env [#[]] the environment to seed defaults from. Injectable so
       #   the mapping can be tested without mutating the process's own ENV.
-      # @param git [#commit_sha] the checkout to fall back to when no variable
-      #   named the commit. Injectable for the same reason, and so a test does
-      #   not silently pick up the sha of whatever repository it runs in.
+      # @param git [#commit_sha, #branch] the checkout to fall back to when no
+      #   variable named the commit or the branch. Injectable for the same
+      #   reason, and so a test does not silently pick up the sha or the branch
+      #   of whatever repository it runs in.
       def initialize(env: ENV, git: GitCheckout)
         @commit_sha = first_present(env, COMMIT_SHA_KEYS) || blank_to_nil(git.commit_sha)
-        @branch = first_present(env, BRANCH_KEYS)
+        # `||` short-circuits, which is the whole of "do not spawn a subprocess
+        # when a provider already answered".
+        @branch = first_present(env, BRANCH_KEYS) || blank_to_nil(git.branch)
         @run_id = first_present(env, RUN_ID_KEYS)
         @shard_id = resolve_shard_id(env)
         @output_path = first_present(env, OUTPUT_PATH_KEYS) || DEFAULT_OUTPUT_PATH
