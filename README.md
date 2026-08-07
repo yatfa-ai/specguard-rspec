@@ -234,3 +234,11 @@ is still counted into the run. What it cannot do is be recognised on a second
 delivery, so if that shard is retried its numbers are added again rather than
 replacing what was there. If your suite shards and you re-run it, name the
 shards.
+
+---
+
+<p align="center">
+  <a href="https://yatfa.com">
+    <img src="assets/built-with-yatfa.png" alt="Built with yatfa — a team of AI agents that plans, builds &amp; ships software." width="620">
+  </a>
+</p>
