@@ -954,7 +954,23 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
-  # Criterion 5. Each of these fails if its rescue is deleted.
+  # SPGD-121 criterion 5: "a spec that fails if the rescue is removed".
+  #
+  # Deleting the `rescue` in `never_fail_the_run` fails 15 of this block's 17
+  # examples. The count is BLOCK-scoped and says nothing about the rest: the
+  # same mutation fails 16 in this file (the 16th is "survives a fallback write
+  # that fails too", above) and 21 suite-wide (the other 5 are process-level, in
+  # formatter_run_spec.rb's "when the sink cannot be written" and "when the
+  # annotation scanner blows up").
+  #
+  # The two examples that do NOT fail on deletion are "does NOT swallow an
+  # interrupt" and "does NOT swallow an interrupt raised from the lookup", and
+  # they are not slack in the guard — they pin the OPPOSITE mutation. Each fails
+  # if the rescue is BROADENED, measured both ways: `rescue Exception`, and
+  # adding `Interrupt` to the existing clause. Either one fails exactly those
+  # two examples suite-wide and nothing else, so they are the only thing
+  # standing between this rescue and the swallowed Ctrl-C that the formatter's
+  # "Ctrl-C must stay Ctrl-C" note calls out as deliberate.
   describe "never failing the run" do
     def unwritable_sink!
       blocker = File.join(tmpdir, "blocker")
