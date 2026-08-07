@@ -30,6 +30,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         expect(configuration.branch).to be_nil
       end
 
+      # A laptop run has no build to belong to, and that is not a
+      # misconfiguration — the platform reads a nil run id as "this run is its
+      # own run" and gives it a `TestRun` of its own, exactly as before.
+      it "reports an unknown run id rather than raising" do
+        expect(configuration.run_id).to be_nil
+      end
+
       # The one field that cannot be nil: with no path there is no sink, and a
       # run that captured everything and wrote it nowhere is the failure mode
       # this whole slice exists to avoid.
@@ -52,10 +59,116 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     end
 
     context "in a GitHub Actions job" do
-      let(:env) { { "GITHUB_SHA" => "9f8e7d6", "GITHUB_REF_NAME" => "main" } }
+      let(:env) { { "GITHUB_SHA" => "9f8e7d6", "GITHUB_REF_NAME" => "main", "GITHUB_RUN_ID" => "1234567890" } }
 
       it "takes the commit and branch from the job's own variables" do
         expect(configuration).to have_attributes(commit_sha: "9f8e7d6", branch: "main")
+      end
+
+      it "takes the run id from GITHUB_RUN_ID, which every shard of the job shares" do
+        expect(configuration.run_id).to eq("1234567890")
+      end
+
+      # The whole point of the field. Two matrix legs of one workflow run are
+      # one run.
+      it "gives every shard of one workflow run the same id" do
+        shards = Array.new(4) { |index| described_class.new(env: env.merge("TEST_ENV_NUMBER" => index.to_s), git: no_git) }
+
+        expect(shards.map(&:run_id).uniq).to eq(["1234567890"])
+      end
+
+      # Replaces an earlier example named "gives a re-run of the same commit a
+      # different id, so it stays a separate run". That name asserted a fact
+      # about GitHub Actions that is false — `GITHUB_RUN_ID` is documented as
+      # *"This number does not change if you re-run the workflow run"* — while
+      # the body only re-fed a different value and checked it came back out,
+      # which `first_present` cannot fail. The name was the load-bearing part
+      # and it was wrong, so both halves are replaced here.
+      #
+      # This is the real behaviour, and it is wanted: a re-run keeps the run id,
+      # so a retried shard lands back on the run it belongs to rather than
+      # forming a new run holding only the shards that were retried.
+      it "keeps the run id across a re-run of the same workflow run, because the attempt is not part of it" do
+        attempt_two = described_class.new(env: env.merge("GITHUB_RUN_ATTEMPT" => "2"), git: no_git)
+
+        expect(attempt_two.run_id).to eq(configuration.run_id)
+      end
+
+      # The other half of that: it is `shard_id`, not the run id, that lets the
+      # platform tell a re-delivery from a new slice.
+      it "keeps each shard's own id stable across that re-run, so a retried shard replaces itself" do
+        first = described_class.new(env: env.merge("SPECGUARD_SHARD_ID" => "3"), git: no_git)
+        retried = described_class.new(
+          env: env.merge("SPECGUARD_SHARD_ID" => "3", "GITHUB_RUN_ATTEMPT" => "2"), git: no_git
+        )
+
+        expect(retried).to have_attributes(run_id: first.run_id, shard_id: first.shard_id)
+      end
+
+      # A genuinely different run — a nightly, a later push — gets a different
+      # id from GitHub, which is the case the run id really does separate.
+      it "gives a different workflow run a different id" do
+        nightly = described_class.new(env: env.merge("GITHUB_RUN_ID" => "1234567891"), git: no_git)
+
+        expect(nightly.run_id).not_to eq(configuration.run_id)
+      end
+    end
+
+    describe "the shard identity" do
+      it "is nil when nothing shards the suite" do
+        expect(described_class.new(env: {}, git: no_git).shard_id).to be_nil
+      end
+
+      # The trap this resolver exists for. `parallel_tests` numbers its
+      # processes '', '2', '3', … — the first is a *set but empty* variable, so
+      # a first-non-blank rule skips it and leaves exactly one shard of the run
+      # anonymous while its siblings are named. That shard alone then
+      # double-counts on a re-run: a denominator wrong by a fifth of the suite,
+      # pointing at nothing.
+      it "reads the blank first process of parallel_tests as shard 1 rather than as absent" do
+        expect(described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git).shard_id).to eq("1")
+      end
+
+      it "gives every parallel_tests process a distinct shard id" do
+        shards = ["", "2", "3", "4"].map do |number|
+          described_class.new(env: { "TEST_ENV_NUMBER" => number }, git: no_git).shard_id
+        end
+
+        expect(shards).to eq(%w[1 2 3 4])
+      end
+
+      # `--first-is-1` / PARALLEL_TEST_FIRST_IS_1 make parallel_tests emit a
+      # literal "1" for that process. Both configurations have to agree on what
+      # shard 1 is called, or turning the flag on would split one shard in two.
+      it "lands --first-is-1 on the same shard id as the blank default" do
+        blank = described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git)
+        explicit = described_class.new(env: { "TEST_ENV_NUMBER" => "1" }, git: no_git)
+
+        expect(explicit.shard_id).to eq(blank.shard_id)
+      end
+
+      {
+        "GitLab parallel: / Knapsack Pro" => "CI_NODE_INDEX",
+        "CircleCI parallelism:" => "CIRCLE_NODE_INDEX",
+        "Buildkite parallelism:" => "BUILDKITE_PARALLEL_JOB"
+      }.each do |runner, key|
+        it "takes the shard index from #{key} on #{runner}" do
+          expect(described_class.new(env: { key => "0" }, git: no_git).shard_id).to eq("0")
+        end
+      end
+
+      it "lets SPECGUARD_SHARD_ID win, which is how a GitHub Actions matrix names its legs" do
+        env = { "TEST_ENV_NUMBER" => "2", "SPECGUARD_SHARD_ID" => "matrix-leg-3" }
+
+        expect(described_class.new(env: env, git: no_git).shard_id).to eq("matrix-leg-3")
+      end
+
+      # GITHUB_JOB is the job's id as written in the workflow YAML, so every leg
+      # of a matrix reads the same value. Were it in the key list, all N shards
+      # would claim to be one shard and the run would keep only whichever
+      # finished last — a *smaller* denominator than the bug this ticket fixes.
+      it "does not mistake GITHUB_JOB for a shard index" do
+        expect(described_class.new(env: { "GITHUB_JOB" => "rspec" }, git: no_git).shard_id).to be_nil
       end
     end
 
@@ -66,13 +179,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     # telemetry loss. Asserted per provider, so a failure names the one that
     # regressed rather than moving a count.
     {
-      "GitLab CI" => { sha: "CI_COMMIT_SHA", branch: "CI_COMMIT_REF_NAME" },
-      "CircleCI" => { sha: "CIRCLE_SHA1", branch: "CIRCLE_BRANCH" },
-      "Buildkite" => { sha: "BUILDKITE_COMMIT", branch: "BUILDKITE_BRANCH" },
-      "Jenkins" => { sha: "GIT_COMMIT", branch: "GIT_BRANCH" }
+      "GitLab CI" => { sha: "CI_COMMIT_SHA", branch: "CI_COMMIT_REF_NAME", run: "CI_PIPELINE_ID" },
+      "CircleCI" => { sha: "CIRCLE_SHA1", branch: "CIRCLE_BRANCH", run: "CIRCLE_WORKFLOW_ID" },
+      "Buildkite" => { sha: "BUILDKITE_COMMIT", branch: "BUILDKITE_BRANCH", run: "BUILDKITE_BUILD_ID" },
+      "Jenkins" => { sha: "GIT_COMMIT", branch: "GIT_BRANCH", run: "BUILD_TAG" }
     }.each do |provider, keys|
       context "on #{provider}" do
-        let(:env) { { keys[:sha] => "9f8e7d6", keys[:branch] => "release/2.0" } }
+        let(:env) { { keys[:sha] => "9f8e7d6", keys[:branch] => "release/2.0", keys[:run] => "build-77" } }
 
         it "resolves the commit from #{keys[:sha]}" do
           expect(configuration.commit_sha).to eq("9f8e7d6")
@@ -80,6 +193,14 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
         it "resolves the branch from #{keys[:branch]}" do
           expect(configuration.branch).to eq("release/2.0")
+        end
+
+        # Without this the provider's shards have no way to say they are one
+        # run, and a 20,000-example suite lands as one `TestRun` per shard —
+        # each holding a fraction of the denominator, and the dashboard picking
+        # whichever finished last.
+        it "resolves the run id from #{keys[:run]}" do
+          expect(configuration.run_id).to eq("build-77")
         end
       end
     end
@@ -104,12 +225,21 @@ RSpec.describe SpecGuard::RSpec::Configuration do
           "GITHUB_SHA" => "9f8e7d6",
           "SPECGUARD_BRANCH" => "release/2.0",
           "GITHUB_REF_NAME" => "main",
+          "SPECGUARD_RUN_ID" => "our-own-build-id",
+          "GITHUB_RUN_ID" => "1234567890",
           "SPECGUARD_OUTPUT_PATH" => "tmp/specguard.jsonl"
         }
       end
 
       it "prefers the SPECGUARD_ variable over the provider's" do
         expect(configuration).to have_attributes(commit_sha: "deadbeef", branch: "release/2.0")
+      end
+
+      # The escape hatch that matters most here: a runner that shards a suite
+      # itself, or one on a provider not in the list, can still tell the
+      # platform which shards belong together.
+      it "prefers an explicitly supplied run id over the provider's" do
+        expect(configuration.run_id).to eq("our-own-build-id")
       end
 
       it "honours a configured output path" do
@@ -165,6 +295,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       it "falls back to the default path rather than writing to \"\"" do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
+      end
+
+      # An empty run id is worse than none: it is a *key*, and every unrelated
+      # run exporting the same empty string would accumulate onto one row.
+      it "treats a blank run id as no run id at all" do
+        expect(described_class.new(env: { "GITHUB_RUN_ID" => "" }, git: no_git).run_id).to be_nil
       end
     end
 

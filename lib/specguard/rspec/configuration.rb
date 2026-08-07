@@ -151,6 +151,116 @@ module SpecGuard
         GIT_BRANCH
       ].freeze
 
+      # The id the CI provider gave the *build*, which every shard of a sharded
+      # run shares.
+      #
+      # This is the field that makes a 20,000-example suite land as one run.
+      # Nobody runs a suite that size in a single process: under
+      # `parallel_tests`, Knapsack or a CI matrix each shard loads this
+      # formatter and POSTs its own slice, and every shard carries the same
+      # `commit_sha` and `branch` — so the platform had nothing to tell four
+      # shards of one run apart from four separate runs, and recorded four
+      # `TestRun` rows each holding a quarter of the denominator. Annotations
+      # tend to cluster in whatever area a team is currently working on rather
+      # than spreading evenly across shards, so the headline ratio then moved
+      # from re-run to re-run without the suite changing at all.
+      #
+      # == It identifies the run, and deliberately survives a re-run
+      #
+      # These ids are stable across re-attempts of the same build, and that is
+      # documented behaviour rather than an accident. GitHub Actions, verbatim:
+      # `GITHUB_RUN_ID` is *"A unique number for each workflow run within a
+      # repository. This number does not change if you re-run the workflow
+      # run."* (`GITHUB_RUN_ATTEMPT` is the value that increments per attempt.)
+      # Buildkite retries a job inside the same `BUILDKITE_BUILD_ID`, bumping
+      # `BUILDKITE_RETRY_COUNT`; GitLab retries a job inside the same
+      # `CI_PIPELINE_ID`.
+      #
+      # **The attempt is deliberately not part of this id**, and that is the
+      # correction this field carries over its first implementation. Pressing
+      # "re-run failed jobs" — the mainline recovery gesture for a sharded
+      # suite, because re-running all 20,000 examples for one flaky shard is
+      # the thing sharding exists to avoid — re-runs a *subset* of shards. Had
+      # the attempt been folded in, that subset would have formed a brand-new
+      # run holding only the shards that happened to be retried, which is the
+      # split denominator this whole field exists to abolish, one gesture
+      # further down. Keeping the id stable instead lets a retried shard land
+      # back on the run it belongs to and *replace* its own previous slice.
+      #
+      # That replacement is what {SHARD_ID_KEYS} is for, and the two fields are
+      # only correct together: without a shard identity the platform can add a
+      # re-delivered slice but cannot recognise it, so a re-run inflates the
+      # denominator instead of refreshing it.
+      #
+      # Same providers in the same order as above, and the same "unset is nil,
+      # never an error" rule — a laptop run has none of these, and the platform
+      # treats a run with no id as its own run, which is exactly right.
+      #
+      # The requirement on whatever a provider exports is only this: every shard
+      # of one run reads the same value, and no *other* run reads it. A project
+      # whose CI layout does not satisfy that for the variable below — Jenkins
+      # `BUILD_TAG` interpolates `JOB_NAME`, which some matrix layouts vary per
+      # axis — sets `SPECGUARD_RUN_ID` itself, which wins over all of them.
+      RUN_ID_KEYS = %w[
+        SPECGUARD_RUN_ID
+        GITHUB_RUN_ID
+        CI_PIPELINE_ID
+        CIRCLE_WORKFLOW_ID
+        BUILDKITE_BUILD_ID
+        BUILD_TAG
+      ].freeze
+
+      # Which shard of the run this process is.
+      #
+      # The platform keys each slice of a run by this, so a shard that reports
+      # twice — a retried job, a re-run of the whole build — replaces its own
+      # previous numbers rather than adding to them. Without it, ingest can
+      # only ever add, and "re-run failed jobs" reports a suite larger than the
+      # suite.
+      #
+      # It only has to be unique *within one run*; it is never compared across
+      # runs, so a bare parallel-process index is a perfectly good value.
+      #
+      # `nil` is allowed and is not an error: the slice is still counted, it
+      # just cannot be recognised if it arrives twice. See the "anonymous
+      # contribution" note in the platform's `Ingest::RunRecorder` for exactly
+      # what that costs.
+      #
+      # == Two traps that are the reason this is not a plain key list
+      #
+      # 1. `parallel_tests` — by far the most likely way a Ruby suite is
+      #    sharded — sets `TEST_ENV_NUMBER` to the **empty string** for its
+      #    first process (`''`, `'2'`, `'3'`, … so that the first process uses
+      #    the plain `yourproject_test` database). A first-non-blank rule would
+      #    therefore skip straight past it and leave process 1, and only
+      #    process 1, anonymous — the single hardest version of this bug to
+      #    see, because three shards of four would be idempotent. Presence of
+      #    the variable is the signal here, not its value, so a set-but-empty
+      #    `TEST_ENV_NUMBER` resolves to `"1"`. See {#resolve_shard_id}.
+      #
+      # 2. GitHub Actions exports **no** per-leg index for a `matrix:` job.
+      #    `GITHUB_JOB` is the job's id as written in the workflow YAML and is
+      #    identical across every leg of the matrix, so it is not in this list —
+      #    it would make all N shards claim to be the same shard, and the run
+      #    would keep only whichever finished last. A matrix-sharded suite sets
+      #    `SPECGUARD_SHARD_ID` from the matrix value itself, e.g.
+      #    `SPECGUARD_SHARD_ID: ${{ matrix.shard }}`.
+      #
+      # The same rule applies to any nesting: `parallel_tests` *inside* a
+      # matrix leg makes `TEST_ENV_NUMBER` repeat across legs, so those
+      # projects set `SPECGUARD_SHARD_ID` to something that composes both.
+      SHARD_ID_KEYS = %w[
+        SPECGUARD_SHARD_ID
+        TEST_ENV_NUMBER
+        CI_NODE_INDEX
+        CIRCLE_NODE_INDEX
+        BUILDKITE_PARALLEL_JOB
+      ].freeze
+
+      # The one key in {SHARD_ID_KEYS} whose empty value is meaningful rather
+      # than absent. See trap 1 above.
+      BLANK_MEANS_FIRST_SHARD_KEY = "TEST_ENV_NUMBER"
+
       OUTPUT_PATH_KEYS = %w[SPECGUARD_OUTPUT_PATH].freeze
       ENDPOINT_KEYS = %w[SPECGUARD_ENDPOINT].freeze
       API_KEY_KEYS = %w[SPECGUARD_API_KEY].freeze
@@ -160,6 +270,13 @@ module SpecGuard
       attr_accessor :commit_sha
       # The branch the suite ran on. `nil` when nothing said.
       attr_accessor :branch
+      # The CI provider's id for the build this process is one shard of.
+      # `nil` when nothing said, which is how a laptop run spells "I am my own
+      # run". See {RUN_ID_KEYS}.
+      attr_accessor :run_id
+      # Which shard of that build this process is. `nil` when nothing said.
+      # See {SHARD_ID_KEYS}.
+      attr_accessor :shard_id
       # Where the run's JSON payload is appended, one object per line — the
       # local sink when there is no API key, and the fallback when delivery
       # fails.
@@ -187,6 +304,8 @@ module SpecGuard
       def initialize(env: ENV, git: GitCheckout)
         @commit_sha = first_present(env, COMMIT_SHA_KEYS) || blank_to_nil(git.commit_sha)
         @branch = first_present(env, BRANCH_KEYS)
+        @run_id = first_present(env, RUN_ID_KEYS)
+        @shard_id = resolve_shard_id(env)
         @output_path = first_present(env, OUTPUT_PATH_KEYS) || DEFAULT_OUTPUT_PATH
         @endpoint = first_present(env, ENDPOINT_KEYS)
         @api_key = first_present(env, API_KEY_KEYS)
@@ -194,6 +313,35 @@ module SpecGuard
       end
 
       private
+
+      # {SHARD_ID_KEYS} in order, first non-blank wins — except that a
+      # {BLANK_MEANS_FIRST_SHARD_KEY} which is *set* counts as a hit even when
+      # it is empty, and resolves to `"1"`.
+      #
+      # `parallel_tests` numbers its processes `''`, `'2'`, `'3'`, … , so its
+      # first process is the one case where the empty string is a real answer
+      # rather than "nothing said". Reading it as "nothing said" would leave
+      # exactly one shard of a run anonymous while its siblings were
+      # identified, and the platform would then double-count that shard alone
+      # on a re-run — a wrong denominator that moves by a fifth of a suite and
+      # points at nothing.
+      #
+      # `--first-is-1` / `PARALLEL_TEST_FIRST_IS_1` make `parallel_tests` emit
+      # a literal `"1"` for that process, which the ordinary path already
+      # handles and which lands on the same value, so both configurations agree
+      # on what shard 1 is called.
+      def resolve_shard_id(env)
+        SHARD_ID_KEYS.each do |key|
+          value = env[key]
+          next if value.nil?
+
+          stripped = value.to_s.strip
+          return stripped unless stripped.empty?
+          return "1" if key == BLANK_MEANS_FIRST_SHARD_KEY
+        end
+
+        nil
+      end
 
       def first_present(env, keys)
         keys.each do |key|
