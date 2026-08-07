@@ -50,6 +50,23 @@ module SpecGuard
     # round-trips. Reporting all of them is the ratified behaviour (human
     # decision recorded on SPGD-82); the "first" wording is a known spec defect
     # with a correction filed against SPGD-12 §1 and the SPGD-73 roadmap text.
+    #
+    # == Two validators, one report
+    #
+    # {#run} has exactly one branch on which validator produced the verdicts —
+    # the in-gem {Linter}, or the Go port shelled out to by {ValidatorBackend}
+    # when `SPECGUARD_VALIDATE_INTENT` names a binary. Both arms return
+    # {Linter::Result}s, so the branch closes immediately and the reporting and
+    # exit-code logic below is shared rather than duplicated. With the variable
+    # unset — the default, and the only configuration any existing user has —
+    # nothing about this file's behaviour changes.
+    #
+    # The backend's failure modes are exit 2 by construction: {ValidatorError}
+    # is rescued beside {UsageError}, which is what makes "the binary you named
+    # is missing" read as `specguard-lint: error: …` rather than reaching the
+    # backstop and reading as an `internal error:`. Either way it is a 2, and
+    # that is the property that matters — a broken tool must not borrow the
+    # code that means "your annotations are malformed".
     class CLI
       BANNER = "Usage: specguard-lint [options] [files...]"
 
@@ -64,9 +81,10 @@ module SpecGuard
       # repository, an unloadable schema, or an unexpected internal error.
       EXIT_MISUSE = 2
 
-      def initialize(stdout: $stdout, stderr: $stderr)
+      def initialize(stdout: $stdout, stderr: $stderr, env: ENV)
         @stdout = stdout
         @stderr = stderr
+        @env = env
       end
 
       # @param argv [Array<String>]
@@ -76,19 +94,29 @@ module SpecGuard
         options = parse_options(argv)
         return EXIT_OK if options.nil? # --help / --version already printed
 
-        # Loaded before anything is selected or scanned. A schema that cannot
-        # be loaded must never produce a run that checks zero annotations and
-        # then reports itself clean.
-        schema = Schema.load
+        # nil unless SPECGUARD_VALIDATE_INTENT names a usable binary, in which
+        # case this raises rather than returning one that is not. Resolved
+        # before anything is selected or scanned, for the same reason the
+        # schema is: "the validator you asked for is not there" must never
+        # surface as a run that checked nothing and called itself clean.
+        backend = ValidatorBackend.resolve(env: @env)
+
+        # Only on the Ruby path. When the backend is active the binary carries
+        # its own schema and this gem's vendored copy governs nothing, so
+        # loading it would let an unrelated packaging accident fail a run that
+        # never reads it. The guard the load provides is not lost — the port
+        # exits 2 on a schema it cannot load, and #run maps that to a
+        # ValidatorError.
+        schema = Schema.load if backend.nil?
 
         selection = select(options)
         report_selection(selection)
 
-        results = Linter.new(schema).check(Scanner.scan_files(selection.files))
+        results = check(selection.files, backend: backend, schema: schema)
         report_results(results)
 
         results.any?(&:failed?) ? EXIT_MALFORMED : EXIT_OK
-      rescue UsageError => e
+      rescue UsageError, ValidatorError => e
         @stderr.puts "specguard-lint: error: #{e.message}"
         EXIT_MISUSE
       rescue SchemaError => e
@@ -104,6 +132,16 @@ module SpecGuard
       end
 
       private
+
+      # The one branch. Both arms produce the same {Linter::Result} list, so
+      # everything downstream — the FAIL blocks, the summary line, the exit
+      # code — is literally the same code rather than two renderers that have
+      # to be kept in step.
+      def check(files, backend:, schema:)
+        return backend.check(files) if backend
+
+        Linter.new(schema).check(Scanner.scan_files(files))
+      end
 
       # Naming files and asking for the diff are contradictory instructions,
       # and honouring the first while dropping the second silently is the same

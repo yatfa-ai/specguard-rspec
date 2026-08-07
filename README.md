@@ -36,6 +36,36 @@ Go validator over a shared corpus and requires identical findings, ordering and 
 Two read-failure messages are ratified as different there, with the reasons; everything else
 matches byte for byte.
 
+### Optional: the Go validator as a backend
+
+Set `SPECGUARD_VALIDATE_INTENT` to a `validate-intent` binary and `specguard-lint` will hand the
+selected files to it (`--source --json`) instead of validating them in Ruby, then render the same
+report from its findings:
+
+```bash
+SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed
+```
+
+**Off by default, and unset means unchanged.** The binary is not shipped with this gem and is not
+published anywhere yet, so the Ruby path stays the default and stays supported — this is for people
+who already build or vendor the validator and would rather run one implementation than two. A blank
+value counts as unset.
+
+What it does *not* change: the selection, the report format, the summary line, or the exit
+codes. Output is byte-identical to the Ruby path except for three read-failure messages, which are
+enumerated and asserted in `spec/specguard/rspec/validator_backend_spec.rb` and in the parity
+harness above:
+
+| input | Ruby path | Go backend |
+|---|---|---|
+| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
+| a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
+| a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
+
+Every way the backend can fail — the binary is missing, will not execute, exits with something that
+is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
+my job" code. It never becomes exit 1, which means "an annotation is malformed" and nothing else.
+
 ## The formatter — `SpecGuard::RSpecFormatter`
 
 An **additive** RSpec formatter: it runs alongside your usual one (`progress`, `documentation`, …)
