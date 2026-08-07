@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require "json"
 require "socket"
+require "zlib"
 
 # A real HTTP server on a real socket, in ten lines of protocol.
 #
@@ -30,7 +32,20 @@ require "socket"
 #             headers and body rather than on a call.
 class StubIngestEndpoint
   Request = Struct.new(:verb, :path, :headers, :body, keyword_init: true) do
-    def json = JSON.parse(body)
+    # The body as the *platform* would see it, standing in for the
+    # `GzipRequestBody` middleware: a `Content-Encoding: gzip` request is
+    # inflated, anything else is passed through. This is what lets an example
+    # assert that a compressed payload round-trips key-for-key rather than
+    # merely that a header was set — the header alone would stay green through
+    # a body that inflates to something other than what was serialized.
+    #
+    # `body` is deliberately left as the raw bytes that arrived, so an example
+    # can still measure the compressed size and see the two are different.
+    def decoded_body
+      headers["content-encoding"] == "gzip" ? Zlib.gunzip(body) : body
+    end
+
+    def json = JSON.parse(decoded_body)
   end
 
   REASONS = {

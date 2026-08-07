@@ -3,6 +3,7 @@
 require "json"
 require "net/http"
 require "uri"
+require "zlib"
 
 require_relative "configuration"
 require_relative "version"
@@ -28,32 +29,74 @@ module SpecGuard
     # thing to check. Nothing escapes this class except `Interrupt`,
     # `SignalException` and `SystemExit` — Ctrl-C must stay Ctrl-C.
     #
-    # == One request, uncompressed
+    # == One request per process, gzipped once it is big enough
     #
-    # The run goes in a single POST with an identity-encoded body, and that is a
-    # decision about the *platform*, not a shortcut:
+    # A run goes in a single POST, and the body is compressed above a size
+    # threshold. Both halves are decisions rather than defaults, and the
+    # roadmap asked for them to be made deliberately rather than discovered in
+    # production, so they are written down here.
+    #
+    # === Batching: no, and this is settled
     #
     #   * `Ingest::Payload` derives `total_specs_count` from the specs of *that*
     #     request. Splitting a run across N POSTs with no way to say they are
     #     one run would produce N `TestRun` rows with a split denominator,
     #     corrupting the headline annotated-ratio metric.
-    #   * The platform does not decompress request bodies, so a gzipped body
-    #     reaches the JSON parser as bytes and fails.
+    #   * That is qualified rather than absolute, and the qualification is
+    #     `ci_run_id` + `shard_id`. The platform folds every POST carrying the
+    #     same run id onto one `TestRun`, keyed by shard so a slice that arrives
+    #     twice replaces itself, which is what makes a *sharded* run — N
+    #     processes, N POSTs, one run — land as one row. So the rule this class
+    #     keeps is narrower than it was: **one process sends one request.**
+    #   * Batching a single process's own run into several POSTs stays wrong,
+    #     and not only for the denominator: every part would carry the same
+    #     `shard_id`, so the parts would overwrite one another and the row would
+    #     keep only the last. Fixing that means a new part-of-a-shard concept on
+    #     the platform, which is a schema change bought to solve a problem that
+    #     compression already solved.
     #
-    # The first of those is now qualified rather than absolute, and the
-    # qualification is `ci_run_id` + `shard_id`. The platform folds every POST
-    # carrying the same run id onto one `TestRun`, keyed by shard so a slice
-    # that arrives twice replaces itself, which is what makes a *sharded* run —
-    # N processes, N POSTs, one run — land as one row. So the rule this class
-    # still keeps is narrower than it was: **one process sends one request**.
-    # Batching a single process's own run into several POSTs would still be
-    # wrong for the second reason below and for a third — every part would
-    # carry the same `shard_id`, so the parts would overwrite one another and
-    # the row would keep only the last — but the platform is no longer blind to
-    # a run that legitimately arrives in pieces.
+    # === Streaming: no, for the same reason, and the reason is measured
     #
-    # The gzip half remains a cross-repo change to make on the platform side
-    # first.
+    # The pressure that made batching and streaming look necessary was size,
+    # and size is now a number rather than a worry. Measured by running a real
+    # 200-file / 20,000-example suite through this gem's own formatter, half of
+    # the examples annotated:
+    #
+    #   identity   7,354,782 bytes   7.01 MiB    needs 5.9 Mbit/s to write in 10s
+    #   gzip         346,206 bytes   0.33 MiB    needs 0.3 Mbit/s
+    #   ratio           21.2x        95.3% saved       60 ms to compress
+    #
+    # Uncompressed, that body has to be *written* inside
+    # `Configuration::DEFAULT_TIMEOUT_SECONDS` (10). At 5 Mbit/s of uplink it
+    # takes 11.8s and fails as a `write_timeout`; the run then lands in
+    # `log/test_results.jsonl` and the platform never sees it. Compressed, the
+    # same run takes 0.55s on that link and 2.8s on a 1 Mbit/s one. The 60 ms
+    # spent compressing is noise against a suite that took minutes.
+    #
+    # Two honesties about that ratio. It is *below* the 35x this change was
+    # proposed on, because SPGD-159 has since added `id` and `spec_file_path`
+    # to every row — re-measure rather than quote, is the lesson. And it is
+    # probably *above* what a real suite gets: synthetic example names repeat
+    # more than human ones do, so treat 21x as the optimistic end. Nothing here
+    # depends on the exact figure. Even a pessimistic 5x moves the 20k case
+    # from "cannot ship on a slow link" to "ships with room to spare", and
+    # 0.33 MiB is not a payload anyone needs to chunk.
+    #
+    # So: compression yes, batching and streaming no. Recorded rather than left
+    # implicit — an undocumented decision is one that gets re-opened in six
+    # months by someone who cannot tell it was ever made.
+    #
+    # === Why a threshold rather than always
+    #
+    # Below {GZIP_THRESHOLD_BYTES} the round trip buys nothing worth paying for
+    # in opacity: a small run stays identity-encoded, so it is still readable
+    # with `curl` and `tcpdump`, and the local-file and stub-server paths still
+    # show a human a JSON body. Compression is for the case that could not ship
+    # at all, not a uniform policy.
+    #
+    # Compression also sits *inside* the never-block-CI contract. A `Zlib`
+    # failure falls back to the identity body — which the platform still
+    # accepts — rather than raising: a run must not be lost to an optimisation.
     class Transport
       # `config/routes.rb` mounts `post "ingest"` under the `/api/v1` scope.
       # Part of the platform's contract, so it is not configurable — the
@@ -61,6 +104,16 @@ module SpecGuard
       PATH = "/api/v1/ingest"
       CONTENT_TYPE = "application/json"
       USER_AGENT = "specguard-rspec/#{SpecGuard::RSpec::VERSION}"
+      CONTENT_ENCODING = "gzip"
+
+      # Bodies at least this large are gzipped; smaller ones go identity. See
+      # the class comment for why this is a threshold and not a switch.
+      #
+      # 256 KiB is roughly where the round trip starts paying — a few thousand
+      # examples. It is a judgement call, not a measured optimum, and the only
+      # thing that depends on the exact number is how large a run has to be
+      # before `curl` stops showing you a readable body.
+      GZIP_THRESHOLD_BYTES = 256 * 1024
 
       # What the ingest endpoint said, in the one form the caller has to handle.
       #
@@ -153,10 +206,12 @@ module SpecGuard
 
         http = Net::HTTP.new(target.host, target.port)
         http.use_ssl = target.scheme == "https"
-        # All three, not just the two the spec names. A 20k-example run is a
-        # ~6 MiB body, so a peer that accepts the connection and then stops
-        # reading would hang in the *write* — the same unbounded wait, reached
-        # by a different door.
+        # All three, not just the two the spec names. Compression takes a
+        # 20k-example run from 7.01 MiB to 0.33 MiB, which is what puts the
+        # write comfortably inside the budget rather than past it — but a peer
+        # that accepts the connection and then stops reading still hangs in the
+        # *write* whatever the body's size, so the timeout is the thing that
+        # bounds it. Same unbounded wait, reached by a different door.
         http.open_timeout = @timeout
         http.read_timeout = @timeout
         http.write_timeout = @timeout
@@ -168,11 +223,40 @@ module SpecGuard
         request = Net::HTTP::Post.new(target.request_uri)
         # `Api::BaseController#bearer_token` matches /\ABearer\s+(?<token>.+)\z/i.
         request["Authorization"] = "Bearer #{@api_key}"
+        # Describes the body *inside* any encoding, which is what
+        # `Content-Type` means — the platform's `GzipRequestBody` inflates and
+        # then hands an ordinary JSON request downstream.
         request["Content-Type"] = CONTENT_TYPE
         request["Accept"] = CONTENT_TYPE
         request["User-Agent"] = USER_AGENT
-        request.body = body
+
+        compressed = compress(body)
+        request["Content-Encoding"] = CONTENT_ENCODING if compressed
+        # `Net::HTTP::Post#body=` sets `Content-Length` from what it is given,
+        # so the length always describes the bytes actually on the wire.
+        request.body = compressed || body
         request
+      end
+
+      # The compressed body, or `nil` to mean "send it as it is" — for a run
+      # under the threshold and, deliberately, for a compression that failed.
+      #
+      # Returning `nil` on failure rather than letting it out is the whole
+      # point: an identity body is something the platform accepts, so a broken
+      # `Zlib` costs a large run some bandwidth and nothing else. Letting the
+      # error reach {#deliver} would turn it into `Result(outcome: :failed)`
+      # and lose the run to a *saving*.
+      #
+      # `ScriptError, StandardError` matches {#deliver}'s own guard rather than
+      # naming `Zlib::Error`: the failure worth catching here is as likely to be
+      # the `zlib` extension missing from a stripped-down Ruby, which is a
+      # `LoadError` and so a `ScriptError`, as it is a compression fault.
+      def compress(body)
+        return nil if body.bytesize < GZIP_THRESHOLD_BYTES
+
+        Zlib.gzip(body)
+      rescue ScriptError, StandardError
+        nil
       end
 
       def build_uri
