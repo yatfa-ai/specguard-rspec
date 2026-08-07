@@ -87,8 +87,8 @@ module SpecGuard
         # @return [String, nil]
         def resolve(command)
           # `err: IO::NULL` is the "never prints" half: outside a repository
-          # `git rev-parse` writes "fatal: not a git repository" to stderr, and
-          # the exit status is the only part of that we want.
+          # either command writes the same "fatal: not a git repository" to
+          # stderr, and the exit status is the only part of that we want.
           output = IO.popen(command, err: IO::NULL, &:read)
           # A non-zero exit is a real answer for {BRANCH_COMMAND} rather than
           # only an error: `symbolic-ref -q` exits 1 on a detached HEAD, and

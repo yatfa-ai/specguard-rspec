@@ -101,11 +101,16 @@ the one on the next line.
 ```ruby
 # optional — the defaults read the commit, branch, CI run id and shard index
 # from whichever provider is running you (GitHub Actions, GitLab CI, CircleCI,
-# Buildkite, Jenkins), and fall back to `git rev-parse HEAD` for the commit.
+# Buildkite, Jenkins), and when none of them named the commit or the branch,
+# ask git directly for both — so a laptop run and a hand-rolled container
+# report their checkout too, without being configured to. A detached checkout
+# reports no branch rather than the string "HEAD".
 # SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH / SPECGUARD_RUN_ID /
 # SPECGUARD_SHARD_ID / SPECGUARD_OUTPUT_PATH override any of it.
+#
+# Assign a value here only when it is one neither source can know:
 SpecGuard::RSpec.configure do |config|
-  config.commit_sha = `git rev-parse HEAD`.strip
+  config.branch = "release/2.0"
 end
 ```
 
