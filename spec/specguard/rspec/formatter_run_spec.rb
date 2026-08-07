@@ -17,6 +17,12 @@ module FormatterRunHelpers
   RSPEC_EXE = Gem.bin_path("rspec-core", "rspec")
   DEFAULT_SINK = "log/test_results.jsonl"
 
+  # The seed handed to every `order: :random` child. Fixed, not drawn: a run and
+  # its control have to order their examples the same way for a whole-stream
+  # diff to mean anything, and the banner text itself is part of what is
+  # compared. The value is arbitrary.
+  FIXED_SEED = 4242
+
   # A passing, a failing and a pending example, nested two levels deep, and
   # carrying **zero** `@intent:` annotations — the roadmap's cold-start case,
   # and the one the payload must still describe completely.
@@ -46,6 +52,35 @@ module FormatterRunHelpers
     RSpec.describe "user" do
       it "can sign in" do
         expect(true).to be(true)
+      end
+    end
+  RUBY
+
+  # A suite whose only interesting output does not come from an example at all.
+  #
+  # An exception raised in an `after(:context)` hook is not an example failure —
+  # `Reporter#notify_non_example_exception` formats it and sends it through
+  # `reporter.message` (`rspec-core-3.13.6 reporter.rb:163-170`), the same
+  # channel as the `--seed` banner and "No examples found.". That channel is
+  # served by whichever formatter listens for `:message`, and by
+  # `FallbackMessageFormatter` when none does — which makes it the one path that
+  # can acquire a *second* listener without anybody noticing.
+  #
+  # It did. The first attempt at SPGD-195's repair added `progress` at `:seed`
+  # without noticing that `setup_default` had already appointed the fallback
+  # (because this formatter did not implement `message`), so both printed and
+  # every message came out twice: one error block without SpecGuard, two with
+  # it (~335 bytes against ~546 — the block count is the stable figure and the
+  # one asserted below; the totals carry the run's wall-clock digits and move
+  # by a byte or two between invocations). Every suite in this file up to that
+  # point was a pure example suite with no message path at all, so nothing went
+  # red — the same shape as the bug this file exists to pin, one level in.
+  NON_EXAMPLE_ERROR_SUITE = <<~RUBY
+    RSpec.describe "checkout" do
+      after(:context) { raise "TEARDOWN-BLEW-UP" }
+
+      it "totals the basket" do
+        expect(1 + 1).to eq(2)
       end
     end
   RUBY
@@ -170,6 +205,19 @@ module FormatterRunHelpers
     end
   RUBY
 
+  # The README's `RSpec.configure` wiring, copied out rather than paraphrased —
+  # this is the block a reader pastes into `spec/spec_helper.rb`, and the point
+  # of the `:ruby` wiring is that what runs here is what the README says. It
+  # registers SpecGuard's formatter and *nothing else*, which is precisely the
+  # condition SPGD-195 turned into a silent run.
+  RUBY_WIRING = <<~RUBY
+    require "specguard/rspec/formatter"
+
+    RSpec.configure do |config|
+      config.add_formatter(SpecGuard::RSpecFormatter)
+    end
+  RUBY
+
   Run = Struct.new(:exit_status, :stdout, :stderr, :lines, keyword_init: true) do
     def payload = JSON.parse(lines.last)
   end
@@ -192,10 +240,58 @@ module FormatterRunHelpers
   # `--require` is not decoration: RSpec resolves `--format <constant>` by
   # constant lookup and only then guesses a path, and the path it guesses for
   # `SpecGuard::RSpecFormatter` is `spec_guard/r_spec_formatter`. RSpec
-  # processes requires before it loads formatters, so this is also exactly the
-  # `.rspec` incantation the README documents.
+  # processes requires before it loads formatters, so this is the `.rspec`
+  # incantation the README documents.
+  #
+  # == Why `wiring:` exists
+  #
+  # The README documents two ways to install this formatter, and for a long time
+  # only one of them was ever run here. The default `:rspec_flags` wiring adds
+  # `--format progress` on top of the `.rspec` block — which meant every example
+  # in this file was *supplied* the human formatter by the harness, and the
+  # "runs alongside progress rather than replacing it" guard below could not
+  # fail no matter how badly the other wiring behaved. It did behave badly:
+  # SPGD-195, where the README's Ruby form printed zero bytes for a failing
+  # suite. (The README carried that same `--format progress` line at the time,
+  # which is why the two documented wirings behaved differently at all; it is
+  # gone from the README now that neither form needs it.)
+  #
+  # `:rspec_flags` keeps the explicit `--format progress` on purpose. It is the
+  # "developer who named their own formatter" case, and it is what the other
+  # ninety-odd examples in this file want: a run whose human output does not
+  # depend on the repair being present.
+  #
+  # `:ruby` is the other documented form, written out verbatim — a
+  # `spec_helper.rb` carrying nothing but
+  # `config.add_formatter(SpecGuard::RSpecFormatter)`, with **no `--format`
+  # argument at all**, so SpecGuard's is genuinely the only formatter anyone
+  # registered. An assertion about human output is only worth something under
+  # this wiring.
+  #
+  # `:none` is the control the other three are measured against: the same suite,
+  # the same child process, no SpecGuard at all. Criterion 1 asks for output
+  # "byte-comparable to the same suite without the formatter", and that is a
+  # claim about two runs — a substring assertion cannot make it, and a hand-typed
+  # expected string is just the fixture restating itself. See {#stdout_shape}.
+  #
+  # `:ruby_with_failure_list` is `--format failures`, and it is here because it
+  # is the shape that catches an over-eager repair. `FailureListFormatter` prints
+  # one line per failure and **no summary**, so a repair that asks "will anything
+  # print a summary?" reads it as nobody reporting and bolts a whole progress run
+  # onto a formatter the developer explicitly chose. Measured on `MIXED_SUITE`:
+  # 61 bytes of failure list became ~963 bytes of dots, backtrace and summary.
+  # `--format documentation`
+  # cannot catch that — documentation does print a summary.
   #
   # @param suite [String, nil] the single-file case, written to `sample_spec.rb`.
+  # @param wiring [Symbol] `:rspec_flags` (default) — the README's `.rspec`
+  #   block plus an explicit `--format progress`; `:ruby` — the README's
+  #   `RSpec.configure` block, and nothing else; `:ruby_with_documentation` —
+  #   that same block from a developer who also asked for
+  #   `--format documentation`; `:ruby_with_failure_list` — that same block from
+  #   a developer who asked for `--format failures`; `:none` — no SpecGuard, the
+  #   control; or `:failure_list_only` — `--format failures` without SpecGuard,
+  #   the control for the one above.
   # @param files [Hash{String=>String}] additional files, by root-relative path.
   #   Intermediate directories are created. Every key matching `*_spec.rb` is
   #   passed to `rspec` as a target; anything else is a support file, reachable
@@ -205,8 +301,19 @@ module FormatterRunHelpers
   #   environment overrides for the child.
   # @param sabotage [Boolean] load {SABOTAGE} into the child before the
   #   formatter runs, so the annotation lookup's scanner raises.
+  # @param order [Symbol, nil] `nil` (default) leaves the child on RSpec's
+  #   defined ordering; `:random` runs it under `--order random --seed
+  #   #{FIXED_SEED}`.
+  #
+  #   This exists because defined ordering hides a whole output path. Under it
+  #   `seed_used?` is false and RSpec prints no seed banner, so every run this
+  #   file spawned was blind to the one notification {#seed}'s repair has to
+  #   forward by hand — see the random-ordering example in the parity block.
+  #   The seed is fixed rather than drawn so that a run and its control order
+  #   their examples identically and the whole-stream diff stays meaningful.
   # @return [Run]
-  def run_rspec(suite = nil, files: {}, prepare: nil, sabotage: false)
+  def run_rspec(suite = nil, wiring: :rspec_flags, files: {}, prepare: nil, sabotage: false,
+                order: nil)
     Dir.mktmpdir do |root|
       sources = suite ? { "sample_spec.rb" => suite }.merge(files) : files
       sources.each do |path, contents|
@@ -217,17 +324,49 @@ module FormatterRunHelpers
       targets = sources.keys.grep(/_spec\.rb\z/)
       env = HERMETIC_ENV.merge(prepare ? prepare.call(root) : {})
 
-      requires = ["--require", "specguard/rspec/formatter"]
+      case wiring
+      when :rspec_flags
+        requires = ["--require", "specguard/rspec/formatter"]
+        formats = ["--format", "SpecGuard::RSpecFormatter", "--format", "progress"]
+      when :ruby
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = []
+      when :ruby_with_documentation
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = ["--format", "documentation"]
+      when :ruby_with_failure_list
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = ["--format", "failures"]
+      when :none
+        requires = []
+        formats = []
+      when :failure_list_only
+        requires = []
+        formats = ["--format", "failures"]
+      else
+        raise ArgumentError, "unknown wiring: #{wiring.inspect}"
+      end
+
       if sabotage
         File.write(File.join(root, "sabotage.rb"), SABOTAGE)
         requires += ["--require", "./sabotage.rb"]
       end
 
+      ordering =
+        case order
+        when nil then []
+        when :random then ["--order", "random", "--seed", FIXED_SEED.to_s]
+        else raise ArgumentError, "unknown order: #{order.inspect}"
+        end
+
       stdout, stderr, status = Open3.capture3(
         env, RbConfig.ruby, "-I", LIB_DIR, RSPEC_EXE,
         *requires,
-        "--format", "SpecGuard::RSpecFormatter",
-        "--format", "progress",
+        *formats,
+        *ordering,
         *targets,
         chdir: root
       )
@@ -237,6 +376,24 @@ module FormatterRunHelpers
 
       Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines)
     end
+  end
+
+  # Two runs' stdout, reduced to the part that is supposed to be equal.
+  #
+  # Criterion 1 is a claim about *two runs* — "byte-comparable to the same suite
+  # without the formatter" — so it has to be asserted by comparing them, not by
+  # matching substrings a passing implementation and a broken one both contain.
+  # The duplicated-message regression is the case in point: every substring the
+  # `:ruby` block asserted was still present when every message was printed
+  # twice.
+  #
+  # Only the two wall-clock numbers are erased, because they are the only thing
+  # that legitimately differs between two runs of the same suite (SpecGuard's
+  # load time lands in "files took"). Everything else — dots, marks, ordering,
+  # blank lines, and above all *how many times* each block appears — is compared
+  # byte for byte.
+  def stdout_shape(stdout)
+    stdout.gsub(/[\d.]+ seconds/, "<t> seconds")
   end
 
   # Everything a child needs to POST to the stub. `commit_sha` is supplied
@@ -447,6 +604,274 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     it "says nothing on stderr when everything works" do
       expect(run.stderr).to be_empty
+    end
+  end
+
+  # Criterion 1, under the wiring that can actually fail it.
+  #
+  # The block above hands its child `--format progress` on the command line, so
+  # its "runs alongside progress" guard is asserting about a formatter the
+  # *harness* supplied — correct, and unfalsifiable. SPGD-195 lived in the gap:
+  # RSpec adds its default human formatter only when no formatter was
+  # registered at all (`rspec-core-3.13.6 formatters.rb:127`), so the README's
+  # `RSpec.configure` wiring — SpecGuard's formatter and nothing else — made the
+  # list non-empty, suppressed `progress`, and printed **zero bytes** for a
+  # failing suite. Telemetry was perfect; the developer got no dots, no failure,
+  # no diff, no `file:line` and no re-run command, and still exit 1.
+  #
+  # Every example here therefore runs with `wiring: :ruby`, where SpecGuard's is
+  # the only formatter anyone asked for. Delete the repair in
+  # `RSpecFormatter#seed` and this block goes red; the block above stays green.
+  describe "a suite wired the README's Ruby way, with no other formatter" do
+    before(:context) do
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby)
+    end
+
+    let(:run) { @run }
+
+    it "still prints progress's marks, so the run is not silent" do
+      expect(run.stdout).to include(".F*")
+    end
+
+    # The four things a developer needs in order to act on a red suite. Asserted
+    # separately from the dots because a formatter that emitted marks and
+    # swallowed the failure body would satisfy the line above and still leave
+    # nobody able to fix anything.
+    it "prints the failure, its diff, its location and the re-run command" do
+      expect(run.stdout).to include("Failures:")
+      expect(run.stdout).to include("expected: :out_of_stock")
+      expect(run.stdout).to include("sample_spec.rb:10")
+      expect(run.stdout).to include("rspec ./sample_spec.rb:8")
+    end
+
+    it "prints the summary line" do
+      expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
+    end
+
+    # Criterion 5 is about stdout, and criterion 3 is what keeps the repair from
+    # being a trade: the telemetry this wiring produces is the same telemetry
+    # the `.rspec` wiring produces.
+    it "captures the same telemetry as the .rspec wiring" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.payload["specs"].first.keys).to contain_exactly(
+        "id", "spec_file_path", "file_path", "line_number", "name",
+        "duration", "outcome", "status", "intent"
+      )
+    end
+
+    # Criterion 4. The never-block-CI contract is untouched by any of this: the
+    # exit code was already correct when the output was missing.
+    it "leaves the suite's own exit status alone" do
+      expect(run.exit_status).to eq(1)
+    end
+
+    it "says nothing on stderr" do
+      expect(run.stderr).to be_empty
+    end
+  end
+
+  # Criterion 1, stated the way the criterion states it: *byte-comparable to the
+  # same suite without the formatter*.
+  #
+  # The block above asserts on substrings, which is what you want when you are
+  # naming the four things a developer needs off a red suite — but a substring
+  # cannot see a line printed twice, and cannot see a line RSpec would have
+  # printed that nobody did. Both of those have now happened here. So this block
+  # runs each wiring against a `:none` control and diffs the whole stream.
+  #
+  # `NON_EXAMPLE_ERROR_SUITE` is the load-bearing half. `reporter.message` is
+  # served by a *different* formatter from the one that prints dots and
+  # summaries — `FallbackMessageFormatter` when nothing else listens for
+  # `:message` — so restoring the default without accounting for it gives that
+  # notification two listeners and prints every message twice. Measured before
+  # the fix: one error block at the control, two under the README's Ruby
+  # wiring. Every other suite in this file is a pure
+  # example suite with no message path, so nothing else here can see it.
+  describe "output parity with a run that has no SpecGuard at all" do
+    {
+      "the README's Ruby wiring" => :ruby,
+      "the README's .rspec wiring" => :rspec_flags
+    }.each do |description, wiring|
+      context "under #{description}" do
+        # One control per suite, shared across both examples below — these are
+        # subprocess runs, and there are four of them in this block already.
+        before(:context) do
+          @mixed_control = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :none)
+          @message_control = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :none)
+        end
+
+        it "prints a failing suite exactly as RSpec would have" do
+          run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: wiring)
+
+          expect(stdout_shape(run.stdout)).to eq(stdout_shape(@mixed_control.stdout))
+          expect(run.stdout).not_to be_empty
+        end
+
+        # Exactly once, and in the control's own words. `scan(...).length == 1`
+        # would catch the duplication too, but the whole-stream comparison also
+        # catches a message that went missing — which is the failure mode of the
+        # obvious alternative repair, where this formatter implements `message`
+        # as a no-op to suppress the fallback and then nothing prints it at all.
+        it "prints a non-example error exactly as RSpec would have" do
+          run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: wiring)
+
+          expect(stdout_shape(run.stdout)).to eq(stdout_shape(@message_control.stdout))
+          expect(run.stdout.scan("An error occurred in an `after(:context)` hook.").length).to eq(1)
+          expect(run.stdout).to include("TEARDOWN-BLEW-UP")
+        end
+      end
+    end
+
+    # The third output path the repair touches, and the last one this file was
+    # blind to.
+    #
+    # Restoring the default formatter mid-`:seed` means the newcomer misses the
+    # `:seed` notification currently being dispatched, so
+    # `restore_suppressed_default_formatter` hands it that notification by hand.
+    # Under RSpec's *defined* ordering — which every other run in this file uses
+    # — `seed_used?` is false and the seed banner is never printed by anyone, so
+    # dropping that forwarding changes nothing observable and the whole suite
+    # stays green. Under `--order random` it is the difference between a
+    # developer being able to reproduce a flaky failure and not: deleting the
+    # forwarding loop costs `MIXED_SUITE` its head banner and the blank line
+    # above it — a 27-byte hole, and the *only* difference between the two
+    # streams. Quoted as a delta rather than as two totals on purpose: the
+    # totals carry the run's wall-clock digits, so they move between two
+    # invocations of this same suite, while the 27 bytes are exactly those two
+    # lines and do not.
+    #
+    # Only `:ruby` is exercised here on purpose. Under the `.rspec` wiring
+    # `progress` is registered before the run starts, so the restore returns
+    # early and there is nothing to forward — a `:rspec_flags` copy of this
+    # example would pass no matter what the forwarding loop did, which is the
+    # exact defect shape this file exists to stop.
+    context "under the README's Ruby wiring, with randomised ordering" do
+      before(:context) do
+        @random_control = run_rspec(
+          FormatterRunHelpers::MIXED_SUITE, wiring: :none, order: :random
+        )
+      end
+
+      # Guards the diff below against passing vacuously. If a future rspec-core
+      # stopped printing the banner, or the `order:` plumbing silently failed to
+      # reach the child, both streams would lose it together and the comparison
+      # would agree about nothing. This pins that the control really does carry
+      # the thing the comparison is here to protect — head and tail.
+      it "has a control that prints the seed banner twice" do
+        expect(@random_control.stdout.scan(/Randomized with seed #{FormatterRunHelpers::FIXED_SEED}/).length)
+          .to eq(2)
+      end
+
+      it "prints a randomised run exactly as RSpec would have, banner included" do
+        run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby, order: :random)
+
+        expect(stdout_shape(run.stdout)).to eq(stdout_shape(@random_control.stdout))
+      end
+    end
+
+    # And the telemetry is still there — the parity above is worth nothing if it
+    # was bought by not capturing anything.
+    it "captures the run while matching the control byte for byte" do
+      run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :ruby)
+
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(1)
+    end
+  end
+
+  # Criterion 2 again, under the wiring that separates "restore the default when
+  # the run would otherwise be silent" from "restore the default whenever
+  # nothing prints a summary".
+  #
+  # `--format failures` (`FailureListFormatter`) reports the run — one line per
+  # failure — and never prints a summary. The first attempt at this repair asked
+  # only whether some formatter would print a summary, so it read this developer
+  # as unserved and added a whole progress run on top of the formatter they had
+  # explicitly named. Measured on `MIXED_SUITE`, which is what both examples
+  # below run: 61 bytes became ~963. `--format documentation` cannot catch
+  # that, because documentation prints a summary and is therefore recognised
+  # either way.
+  describe "a suite whose developer explicitly chose --format failures" do
+    before(:context) do
+      @control = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :failure_list_only)
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby_with_failure_list)
+    end
+
+    let(:run) { @run }
+
+    it "prints the failure list, and only the failure list" do
+      expect(run.stdout).to eq(@control.stdout)
+      expect(run.stdout).to eq("./sample_spec.rb:8:cannot order an item that is out of stock\n")
+    end
+
+    it "adds neither progress marks nor a summary" do
+      expect(run.stdout).not_to include("3 examples")
+      expect(run.stdout).not_to include("Failures:")
+    end
+
+    it "still captures its telemetry and leaves the exit status alone" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.exit_status).to eq(1)
+    end
+  end
+
+  # Criterion 2 — the other side of the repair, and the one a careless fix
+  # breaks. A developer who named their own formatter has already been served by
+  # RSpec, so restoring the default on top of it would give them documentation
+  # *and* a row of progress dots.
+  #
+  # This is also why the repair cannot live in the user's `spec_helper` as
+  # `add_formatter(:progress) if config.formatters.empty?`:
+  # `configuration_options.rb:21-25` applies `--require` before `--format`, so
+  # the list is `[]` inside the helper even for the run below, and that version
+  # would fail here.
+  describe "a suite whose developer explicitly chose --format documentation" do
+    before(:context) do
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby_with_documentation)
+    end
+
+    let(:run) { @run }
+
+    it "prints documentation output" do
+      expect(run.stdout).to include("can order an item")
+    end
+
+    # Exactly once: a second human formatter would repeat every example name.
+    # The *passing* example is the one to count — RSpec itself reprints the
+    # failing and pending ones in its "Failures:" and "Pending:" sections, so
+    # counting those would assert about documentation's own layout rather than
+    # about how many formatters are attached.
+    it "prints each example's name exactly once" do
+      expect(run.stdout.scan("can order an item").length).to eq(1)
+      expect(run.stdout.scan("3 examples, 1 failure, 1 pending").length).to eq(1)
+    end
+
+    # Progress's marks are the signature of an unwanted second formatter, but
+    # `include(".F*")` is the wrong way to look for them and passes vacuously:
+    # progress emits one mark per example with no newline, so alongside
+    # documentation the marks are scattered one-per-line rather than contiguous.
+    # What a second formatter actually does to this output is push
+    # documentation's lines off the left margin — the mark for the *previous*
+    # example lands in front of the next one's line, turning
+    # `    cannot order an item…` into `.    cannot order an item…`.
+    #
+    # The failing example's listing line is the one to check: it is the first
+    # line printed after an example that progress would have marked, and
+    # `(FAILED - 1)` picks it out from documentation's listing without also
+    # matching the "Failures:" section's own restatement of the same name.
+    it "does not add progress dots alongside it" do
+      listing = run.stdout.lines.grep(/\(FAILED - 1\)/)
+
+      expect(listing.length).to eq(1)
+      expect(listing.first).to eq("    cannot order an item that is out of stock (FAILED - 1)\n")
+    end
+
+    it "captures its telemetry and leaves the exit status alone" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.exit_status).to eq(1)
     end
   end
 

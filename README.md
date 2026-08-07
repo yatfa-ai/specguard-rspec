@@ -55,8 +55,36 @@ end
 # ...or in .rspec — the --require is not optional, RSpec cannot guess this path
 --require specguard/rspec/formatter
 --format SpecGuard::RSpecFormatter
---format progress
 ```
+
+The two forms are equivalent, and neither needs you to name a human formatter. Additive is meant
+literally, in both directions: if you chose a formatter that reports the run to a human
+(`progress`, `documentation`, `--format failures`, `--format json`, …), it is left alone and
+SpecGuard adds nothing to your output; if you chose none, you get RSpec's default (`progress`)
+exactly as you would without this gem — same dots, same failures, same summary, byte for byte.
+
+The qualifier on that first half is deliberate. SpecGuard restores the default when no *other*
+registered formatter would give a human an account of the run, and it judges that by the formatter
+protocol — whether anything answers to `example_started`, `example_passed`, `example_failed`,
+`example_pending` or `dump_summary`. So if the only other formatter you registered is a silent one
+(another telemetry gem, a custom notifier that writes elsewhere), SpecGuard reads the run as
+unserved and restores `progress`, and you get output you did not have before. That is the error
+direction chosen on purpose — noisy beats silent, which is the whole point of this behaviour — but
+if you want a genuinely quiet run, name a formatter that reports the run and says little:
+`--format failures` prints one line per failure and nothing else, so a green suite stays at zero
+bytes and the restore does not fire.
+
+That second half is not free, because RSpec installs its default formatter only when *no* formatter
+was registered at all — so a gem that registers one silently suppresses it, and a failing suite
+prints nothing. SpecGuard restores it on the first notification of the run, once RSpec has finished
+deciding. If you want something other than `progress`, name it the usual way (`--format
+documentation`, or `config.default_formatter = "doc"`) and that is what you will get, on its own.
+
+"Byte for byte" is checked rather than asserted: `spec/specguard/rspec/formatter_run_spec.rb` runs
+each wiring and the same suite with no SpecGuard at all, and diffs the two streams end to end with
+only the two wall-clock numbers erased. Both a failing suite and a suite that reports through
+`reporter.message` — an error in an `after(:context)` hook — are compared that way, because they
+travel through different formatters and an addition that is invisible in one shows up in the other.
 
 Each example contributes its `id`, `spec_file_path`, `file_path`, `line_number`, `name` (the composed
 `describe`/`context`/`it` string), `duration`, `outcome`, `status` (`"annotated"` or
