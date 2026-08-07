@@ -31,9 +31,35 @@ module SpecGuard
     # valid UTF-8 — is also reported as a failure, and therefore also exits 1.
     # That is a deliberate parity choice, not an oversight: the reference tool
     # classifies it separately (its own `KIND_READ`, `bin/validate-intent:91`)
-    # and still reports it as `FAIL` with exit 1. Reproduced this session
-    # against `bin/validate-intent --source` on a file with an invalid UTF-8
-    # byte: `FAIL bad_spec.rb — could not read file: ...`, exit 1.
+    # and still reports it as `FAIL` with exit 1.
+    #
+    # The CLASSIFICATION and the EXIT CODE are what match, and both are now
+    # asserted rather than described: open-test-intent's
+    # `tests/parity/run_ruby_parity.sh` runs this linter and the Go port over
+    # the same inputs and compares them. Its sections named "ratified
+    # difference (a)", "ratified difference (b)" and "an unreadable file" cover
+    # the three read-failure shapes. (Cited by name, not by number — that file
+    # renumbers, and a number nothing checks across two repositories is a
+    # citation waiting to point somewhere else.)
+    #
+    # The MESSAGE TEXT does not match on two of those three, and an earlier
+    # version of this comment claimed it did — it quoted a `FAIL bad_spec.rb —
+    # could not read file: ...` line as if the two tools emitted the same
+    # bytes. They do not, and the harness now says so out loud:
+    #
+    #   * a file that is not valid UTF-8 — the reference reproduces CPython's
+    #     `'utf-8' codec can't decode byte 0xe9 in position 117: invalid
+    #     continuation byte`; `Scanner.scan_text` emits a fixed string.
+    #   * a file that does not exist — the reference reports it on *stderr* as
+    #     `error: no file(s) match '<path>'` (its arguments are glob patterns);
+    #     `Scanner.scan_file` reports it on stdout as a read failure of that
+    #     path (its arguments are paths).
+    #
+    # Both differences are RATIFIED, with the reasoning written down in that
+    # script's header and asserted there — including the assertion that they
+    # still differ, so closing either one fails the harness and forces the
+    # ratification to be retired rather than left to rot the way this comment
+    # did.
     #
     # The line the contract actually draws is *the linter is broken* (2) versus
     # *the input it was pointed at is bad* (1). An unopenable file named on the

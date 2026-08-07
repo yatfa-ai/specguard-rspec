@@ -27,6 +27,24 @@ module SpecGuard
       # @return [Array<Finding>] one per `@intent:` token; empty when the file
       #   carries none. A file that cannot be read yields a single Finding at
       #   line 0 rather than raising — one bad file must not abort the run.
+      #
+      #   RATIFIED DIFFERENCE from the reference tool, for a path that does not
+      #   exist. `bin/validate-intent` expands its arguments as glob PATTERNS
+      #   (`bin/validate-intent:493`), so a name matching nothing is a
+      #   statement about the pattern — `error: no file(s) match '<path>'`, on
+      #   stderr, before any file is opened. This linter does no globbing:
+      #   explicit files are checked as given and `--changed` derives its list
+      #   from git, so every argument here is a PATH, and an unopenable one is
+      #   a read failure OF THAT PATH — reported on stdout with the errno the
+      #   reference cannot name. Adopting the reference's wording would mean
+      #   giving this gem a globber first and changing what
+      #   `specguard-lint 'foo*_spec.rb'` means for everyone already using it.
+      #
+      #   Both tools exit 1 and both name the file; that much is asserted, in
+      #   open-test-intent's `tests/parity/run_ruby_parity.sh` under "ratified
+      #   difference (b)", along with the case that matters more — a missing
+      #   file does not stop either tool checking the good files named beside
+      #   it.
       def scan_file(path)
         begin
           text = File.read(path, encoding: "UTF-8")
@@ -44,6 +62,23 @@ module SpecGuard
       def scan_text(text, file:)
         # An invalid byte sequence would make every String operation below raise
         # from deep inside the scanner. Report it as this file's one problem.
+        #
+        # RATIFIED DIFFERENCE from the reference tool, in the REASON TEXT only.
+        # `bin/validate-intent` lets CPython describe the failure and the Go
+        # port reproduces that description deliberately
+        # (`cmd/validate-intent/fileio.go:69`), so both say `'utf-8' codec
+        # can't decode byte 0xe9 in position 117: invalid continuation byte`
+        # where this says `invalid UTF-8 byte sequence`. Reproducing it would
+        # mean porting CPython's decoder-error classification into a gem whose
+        # whole reason for vendoring the schema is to owe open-test-intent
+        # nothing at runtime — and open-test-intent's own harness already
+        # declines to compare that tail between Python and Go (run_parity.sh,
+        # excluded group 1, "Non-UTF-8 input — the PROSE only").
+        #
+        # What is shared is asserted in `tests/parity/run_ruby_parity.sh` under
+        # "ratified difference (a)": same classification, same file, same
+        # `FAIL <file> — could not read file: ` prefix, a non-empty reason on
+        # both sides, and exit 1.
         unless text.valid_encoding?
           return [Finding.new(file: file, line: 0, problem: "could not read file: invalid UTF-8 byte sequence",
                               kind: Finding::KIND_READ)]
