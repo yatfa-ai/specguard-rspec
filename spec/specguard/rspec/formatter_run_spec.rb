@@ -50,6 +50,33 @@ module FormatterRunHelpers
     end
   RUBY
 
+  # A suite whose only interesting output does not come from an example at all.
+  #
+  # An exception raised in an `after(:context)` hook is not an example failure —
+  # `Reporter#notify_non_example_exception` formats it and sends it through
+  # `reporter.message` (`rspec-core-3.13.6 reporter.rb:163-170`), the same
+  # channel as the `--seed` banner and "No examples found.". That channel is
+  # served by whichever formatter listens for `:message`, and by
+  # `FallbackMessageFormatter` when none does — which makes it the one path that
+  # can acquire a *second* listener without anybody noticing.
+  #
+  # It did. The first attempt at SPGD-195's repair added `progress` at `:seed`
+  # without noticing that `setup_default` had already appointed the fallback
+  # (because this formatter did not implement `message`), so both printed and
+  # every message came out twice: 338 bytes and one error block without
+  # SpecGuard, 546 bytes and two with it. Every suite in this file up to that
+  # point was a pure example suite with no message path at all, so nothing went
+  # red — the same shape as the bug this file exists to pin, one level in.
+  NON_EXAMPLE_ERROR_SUITE = <<~RUBY
+    RSpec.describe "checkout" do
+      after(:context) { raise "TEARDOWN-BLEW-UP" }
+
+      it "totals the basket" do
+        expect(1 + 1).to eq(2)
+      end
+    end
+  RUBY
+
   # Every shape slice 2 has to classify, in one file:
   #
   #   line  3  preceding-comment annotation      -> annotated
@@ -233,12 +260,29 @@ module FormatterRunHelpers
   # registered. An assertion about human output is only worth something under
   # this wiring.
   #
+  # `:none` is the control the other three are measured against: the same suite,
+  # the same child process, no SpecGuard at all. Criterion 1 asks for output
+  # "byte-comparable to the same suite without the formatter", and that is a
+  # claim about two runs — a substring assertion cannot make it, and a hand-typed
+  # expected string is just the fixture restating itself. See {#stdout_shape}.
+  #
+  # `:ruby_with_failure_list` is `--format failures`, and it is here because it
+  # is the shape that catches an over-eager repair. `FailureListFormatter` prints
+  # one line per failure and **no summary**, so a repair that asks "will anything
+  # print a summary?" reads it as nobody reporting and bolts a whole progress run
+  # onto a formatter the developer explicitly chose: 32 bytes of failure list
+  # became 427 bytes of dots, backtrace and summary. `--format documentation`
+  # cannot catch that — documentation does print a summary.
+  #
   # @param suite [String, nil] the single-file case, written to `sample_spec.rb`.
   # @param wiring [Symbol] `:rspec_flags` (default) — the README's `.rspec`
   #   block plus an explicit `--format progress`; `:ruby` — the README's
-  #   `RSpec.configure` block, and nothing else; or `:ruby_with_documentation` —
+  #   `RSpec.configure` block, and nothing else; `:ruby_with_documentation` —
   #   that same block from a developer who also asked for
-  #   `--format documentation`.
+  #   `--format documentation`; `:ruby_with_failure_list` — that same block from
+  #   a developer who asked for `--format failures`; `:none` — no SpecGuard, the
+  #   control; or `:failure_list_only` — `--format failures` without SpecGuard,
+  #   the control for the one above.
   # @param files [Hash{String=>String}] additional files, by root-relative path.
   #   Intermediate directories are created. Every key matching `*_spec.rb` is
   #   passed to `rspec` as a target; anything else is a support file, reachable
@@ -272,6 +316,16 @@ module FormatterRunHelpers
         File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
         requires = ["--require", "./spec_helper.rb"]
         formats = ["--format", "documentation"]
+      when :ruby_with_failure_list
+        File.write(File.join(root, "spec_helper.rb"), RUBY_WIRING)
+        requires = ["--require", "./spec_helper.rb"]
+        formats = ["--format", "failures"]
+      when :none
+        requires = []
+        formats = []
+      when :failure_list_only
+        requires = []
+        formats = ["--format", "failures"]
       else
         raise ArgumentError, "unknown wiring: #{wiring.inspect}"
       end
@@ -294,6 +348,24 @@ module FormatterRunHelpers
 
       Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines)
     end
+  end
+
+  # Two runs' stdout, reduced to the part that is supposed to be equal.
+  #
+  # Criterion 1 is a claim about *two runs* — "byte-comparable to the same suite
+  # without the formatter" — so it has to be asserted by comparing them, not by
+  # matching substrings a passing implementation and a broken one both contain.
+  # The duplicated-message regression is the case in point: every substring the
+  # `:ruby` block asserted was still present when every message was printed
+  # twice.
+  #
+  # Only the two wall-clock numbers are erased, because they are the only thing
+  # that legitimately differs between two runs of the same suite (SpecGuard's
+  # load time lands in "files took"). Everything else — dots, marks, ordering,
+  # blank lines, and above all *how many times* each block appears — is compared
+  # byte for byte.
+  def stdout_shape(stdout)
+    stdout.gsub(/[\d.]+ seconds/, "<t> seconds")
   end
 
   # Everything a child needs to POST to the stub. `commit_sha` is supplied
@@ -568,6 +640,104 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     it "says nothing on stderr" do
       expect(run.stderr).to be_empty
+    end
+  end
+
+  # Criterion 1, stated the way the criterion states it: *byte-comparable to the
+  # same suite without the formatter*.
+  #
+  # The block above asserts on substrings, which is what you want when you are
+  # naming the four things a developer needs off a red suite — but a substring
+  # cannot see a line printed twice, and cannot see a line RSpec would have
+  # printed that nobody did. Both of those have now happened here. So this block
+  # runs each wiring against a `:none` control and diffs the whole stream.
+  #
+  # `NON_EXAMPLE_ERROR_SUITE` is the load-bearing half. `reporter.message` is
+  # served by a *different* formatter from the one that prints dots and
+  # summaries — `FallbackMessageFormatter` when nothing else listens for
+  # `:message` — so restoring the default without accounting for it gives that
+  # notification two listeners and prints every message twice. Measured before
+  # the fix: 338 bytes and one error block at the control, 546 bytes and two
+  # under the README's Ruby wiring. Every other suite in this file is a pure
+  # example suite with no message path, so nothing else here can see it.
+  describe "output parity with a run that has no SpecGuard at all" do
+    {
+      "the README's Ruby wiring" => :ruby,
+      "the README's .rspec wiring" => :rspec_flags
+    }.each do |description, wiring|
+      context "under #{description}" do
+        # One control per suite, shared across both examples below — these are
+        # subprocess runs, and there are four of them in this block already.
+        before(:context) do
+          @mixed_control = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :none)
+          @message_control = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :none)
+        end
+
+        it "prints a failing suite exactly as RSpec would have" do
+          run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: wiring)
+
+          expect(stdout_shape(run.stdout)).to eq(stdout_shape(@mixed_control.stdout))
+          expect(run.stdout).not_to be_empty
+        end
+
+        # Exactly once, and in the control's own words. `scan(...).length == 1`
+        # would catch the duplication too, but the whole-stream comparison also
+        # catches a message that went missing — which is the failure mode of the
+        # obvious alternative repair, where this formatter implements `message`
+        # as a no-op to suppress the fallback and then nothing prints it at all.
+        it "prints a non-example error exactly as RSpec would have" do
+          run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: wiring)
+
+          expect(stdout_shape(run.stdout)).to eq(stdout_shape(@message_control.stdout))
+          expect(run.stdout.scan("An error occurred in an `after(:context)` hook.").length).to eq(1)
+          expect(run.stdout).to include("TEARDOWN-BLEW-UP")
+        end
+      end
+    end
+
+    # And the telemetry is still there — the parity above is worth nothing if it
+    # was bought by not capturing anything.
+    it "captures the run while matching the control byte for byte" do
+      run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :ruby)
+
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(1)
+    end
+  end
+
+  # Criterion 2 again, under the wiring that separates "restore the default when
+  # the run would otherwise be silent" from "restore the default whenever
+  # nothing prints a summary".
+  #
+  # `--format failures` (`FailureListFormatter`) reports the run — one line per
+  # failure — and never prints a summary. The first attempt at this repair asked
+  # only whether some formatter would print a summary, so it read this developer
+  # as unserved and added a whole progress run on top of the formatter they had
+  # explicitly named: 32 bytes became 427. `--format documentation` cannot catch
+  # that, because documentation prints a summary and is therefore recognised
+  # either way.
+  describe "a suite whose developer explicitly chose --format failures" do
+    before(:context) do
+      @control = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :failure_list_only)
+      @run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby_with_failure_list)
+    end
+
+    let(:run) { @run }
+
+    it "prints the failure list, and only the failure list" do
+      expect(run.stdout).to eq(@control.stdout)
+      expect(run.stdout).to eq("./sample_spec.rb:8:cannot order an item that is out of stock\n")
+    end
+
+    it "adds neither progress marks nor a summary" do
+      expect(run.stdout).not_to include("3 examples")
+      expect(run.stdout).not_to include("Failures:")
+    end
+
+    it "still captures its telemetry and leaves the exit status alone" do
+      expect(run.lines.length).to eq(1)
+      expect(run.payload["specs"].length).to eq(3)
+      expect(run.exit_status).to eq(1)
     end
   end
 

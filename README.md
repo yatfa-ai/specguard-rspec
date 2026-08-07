@@ -68,6 +68,12 @@ prints nothing. SpecGuard restores it on the first notification of the run, once
 deciding. If you want something other than `progress`, name it the usual way (`--format
 documentation`, or `config.default_formatter = "doc"`) and that is what you will get, on its own.
 
+"Byte for byte" is checked rather than asserted: `spec/specguard/rspec/formatter_run_spec.rb` runs
+each wiring and the same suite with no SpecGuard at all, and diffs the two streams end to end with
+only the two wall-clock numbers erased. Both a failing suite and a suite that reports through
+`reporter.message` — an error in an `after(:context)` hook — are compared that way, because they
+travel through different formatters and an addition that is invisible in one shows up in the other.
+
 Each example contributes its `id`, `spec_file_path`, `file_path`, `line_number`, `name` (the composed
 `describe`/`context`/`it` string), `duration`, `outcome`, `status` (`"annotated"` or
 `"unannotated"`) and `intent` — the parsed annotation when there is one, `null` when there is not;

@@ -108,15 +108,26 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # formatter registered for, so a hook implemented but not registered is
     # dead code that fails silently — the run completes, the file never appears.
     #
-    # `:seed` is the odd one out and is deliberately in the list: this formatter
-    # has nothing to say about the seed, but `:seed` is the first notification
-    # of a run and is where `#seed` restores the human formatter that
-    # registering this one suppressed (SPGD-195). Drop it from this list and
-    # that repair becomes dead code — a silent run, exactly as before.
-    it "is registered for the four notifications it implements" do
+    # `:seed` and `:message` are the odd ones out and are deliberately in the
+    # list. This formatter has nothing to say about either.
+    #
+    # `:seed` is the first notification of a run and is where `#seed` restores
+    # the human formatter that registering this one suppressed (SPGD-195). Drop
+    # it from this list and that repair becomes dead code — a silent run, exactly
+    # as before.
+    #
+    # `:message` is registered for the sake of the registration itself.
+    # `setup_default` installs a `FallbackMessageFormatter` unless some already
+    # registered formatter listens for `:message`
+    # (`rspec-core-3.13.6 formatters.rb:133-135`), and that fallback then prints
+    # every message a second time alongside the formatter `#seed` restores. Drop
+    # `:message` here and `#message` becomes dead code *and* the duplication
+    # comes back — this list is the only thing that decides whether either hook
+    # is ever called.
+    it "is registered for the five notifications it implements" do
       registered = RSpec::Core::Formatters::Loader.formatters[described_class]
 
-      expect(registered).to contain_exactly(:example_finished, :stop, :close, :seed)
+      expect(registered).to contain_exactly(:example_finished, :stop, :close, :seed, :message)
     end
 
     it "is a BaseFormatter, so RSpec accepts it as an additional --format" do
@@ -172,13 +183,103 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # The other side, so the guard above cannot be satisfied by a hook that
     # simply never does anything.
-    context "when this formatter is registered and nothing will print a summary" do
+    context "when this formatter is registered and nothing else reports the run" do
       let(:registered) { [formatter] }
 
       it "restores the configured default formatter" do
         formatter.seed(nil)
 
         expect(elsewhere).to have_received(:add_formatter).with("progress")
+      end
+    end
+
+    # The case that separates "somebody will print a summary" from "somebody is
+    # reporting the run", and the reason the question is asked in the second
+    # form. `--format failures` (`FailureListFormatter`) prints one line per
+    # failure and never a summary, so a `dump_summary`-only check read this
+    # developer as unserved and added a whole progress run on top of the
+    # formatter they had named: 32 bytes of failure list became 427 bytes of
+    # dots, backtrace and summary.
+    #
+    # The real class, not a double, because what is being pinned is a fact about
+    # a formatter rspec-core ships — a double would just restate whichever answer
+    # this spec was written to expect.
+    context "when another formatter reports the run without printing a summary" do
+      let(:registered) do
+        [formatter, ::RSpec::Core::Formatters::FailureListFormatter.new(StringIO.new)]
+      end
+
+      it "leaves the configuration alone" do
+        formatter.seed(nil)
+
+        expect(elsewhere).not_to have_received(:add_formatter)
+      end
+    end
+  end
+
+  # `#message` is `RSpec::Core::Formatters::FallbackMessageFormatter` under this
+  # class's roof, and it exists because of the registration rather than the other
+  # way round: `setup_default` appoints that fallback unless some registered
+  # formatter listens for `:message` (`formatters.rb:133-135`), and once `#seed`
+  # restores `progress` — which listens for it too — the fallback prints every
+  # message a second time. Listening here stops it being appointed, and this
+  # method takes over its duty.
+  #
+  # The end-to-end proof is in formatter_run_spec.rb, where a suite whose
+  # `after(:context)` hook raises is diffed against the same suite run without
+  # SpecGuard. What these examples pin is the branch, which a subprocess cannot
+  # isolate: the stand-in configuration is injected through `rspec_configuration`
+  # for the same reason `#seed`'s is.
+  describe "#message" do
+    let(:notification) do
+      ::RSpec::Core::Notifications::MessageNotification.new("An error occurred outside of examples")
+    end
+
+    let(:elsewhere) { instance_double(::RSpec::Core::Configuration, formatters: registered) }
+
+    before { allow(formatter).to receive(:rspec_configuration).and_return(elsewhere) }
+
+    # The last-resort case, and the one the fallback used to cover: this
+    # formatter is the only listener, so the message has nowhere else to go.
+    # Without this, suppressing the fallback would trade a duplicated message for
+    # a missing one — which is the same defect as SPGD-195 wearing the opposite
+    # sign.
+    context "when no other registered formatter handles messages" do
+      let(:registered) { [formatter] }
+
+      it "prints the message, exactly as RSpec's fallback would have" do
+        formatter.message(notification)
+
+        expect(output.string).to eq("An error occurred outside of examples\n")
+      end
+    end
+
+    # The duplication case. `progress` handles `:message` via
+    # `BaseTextFormatter`, so after `#seed` has restored it there are two
+    # candidates and only one may print.
+    context "when another registered formatter handles messages" do
+      let(:registered) do
+        [formatter, ::RSpec::Core::Formatters::ProgressFormatter.new(StringIO.new)]
+      end
+
+      it "stays quiet and lets that formatter print it" do
+        formatter.message(notification)
+
+        expect(output.string).to be_empty
+      end
+    end
+
+    # The same inertness guard `#seed` carries. This object only owes anybody a
+    # message because RSpec registered it and therefore skipped appointing its
+    # own fallback; a formatter RSpec never registered — every other example in
+    # this file — owes nothing and must write nothing.
+    context "when this formatter is not among the configuration's formatters" do
+      let(:registered) { [] }
+
+      it "writes nothing" do
+        formatter.message(notification)
+
+        expect(output.string).to be_empty
       end
     end
   end
@@ -800,6 +901,19 @@ RSpec.describe SpecGuard::RSpecFormatter do
       allow(formatter).to receive(:restore_suppressed_default_formatter).and_raise("no such formatter")
 
       expect { formatter.seed(nil) }.not_to raise_error
+      expect(errors.string).to include(described_class::WARNING_PREFIX)
+    end
+
+    # `message` reaches into `RSpec.configuration` for the same reason `seed`
+    # does, and it is dispatched from a worse place: `reporter.message` carries
+    # non-example exceptions and "No examples found.", and the first of those can
+    # arrive before `Reporter#report` is even entered. A raise here would replace
+    # the error the developer was being told about with one from the telemetry
+    # gem.
+    it "swallows a failure while relaying a message" do
+      allow(formatter).to receive(:relay_message).and_raise("no configuration")
+
+      expect { formatter.message(nil) }.not_to raise_error
       expect(errors.string).to include(described_class::WARNING_PREFIX)
     end
 
