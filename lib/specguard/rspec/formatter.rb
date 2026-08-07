@@ -36,6 +36,7 @@ require "json"
 require "fileutils"
 
 require_relative "configuration"
+require_relative "transport"
 # Brings the linter's discovery chain with it (Scanner, Finding, Schema). That
 # direction is safe — `specguard/rspec` does not require `rspec/core`, so the
 # linter stays loadable without RSpec; it is only the reverse that would break
@@ -75,7 +76,16 @@ module SpecGuard
   # `status` is not decoration: `Ingest::Payload` validates it against a
   # two-value enum for *every* spec and collects the failures globally, so a
   # payload missing the key is not a payload with a gap — it is a 400 with one
-  # error per example. HTTP transport is the next slice's job.
+  # error per example.
+  #
+  # == Where the run goes
+  #
+  # `api_key` set  → one `POST <endpoint>/api/v1/ingest`.
+  # `api_key` unset → appended to `output_path`, one JSON object per line.
+  #
+  # The credential is the switch on purpose: local development is then the
+  # default and needs no opt-out. See {#deliver} for what happens when the POST
+  # does not land.
   #
   # A malformed or schema-invalid annotation is recorded as `unannotated` with a
   # null intent rather than shipped or shouted about; {AnnotationLookup}
@@ -113,6 +123,12 @@ module SpecGuard
     # Prefixed so it is obvious in a CI log which tool is talking, and worded so
     # a reader knows immediately that it is not their tests that broke.
     WARNING_PREFIX = "SpecGuard: test telemetry failed and was skipped"
+
+    # The other half of that: the run was captured fine, the *delivery* did not
+    # land. Kept distinct from {WARNING_PREFIX} because the reader's situation
+    # is different — nothing was lost, the payload is sitting in a file, and the
+    # thing to fix is a key or a URL rather than a broken sink.
+    DELIVERY_WARNING_PREFIX = "SpecGuard: could not deliver test telemetry"
 
     # `Ingest::Payload::STATUSES`, restated. The platform validates every spec
     # against this pair (`payload.rb:17`), so they are the contract and not a
@@ -176,19 +192,19 @@ module SpecGuard
     def close(notification)
       never_fail_the_run do
         @duration_seconds ||= elapsed_since_start
-        append(payload)
+        deliver(payload)
       end
       never_fail_the_run { super(notification) }
     end
 
-    # The run, as it will be written (and, from the third slice on, POSTed).
-    # Public so a caller — or a spec — can inspect what was captured without
-    # going anywhere near the filesystem.
+    # The run, as it will be written or POSTed. Public so a caller — or a spec
+    # — can inspect what was captured without going anywhere near the
+    # filesystem or the network.
     #
     # Key names match the platform's ingest contract
-    # (`Ingest::Payload`: commit_sha / branch / duration_seconds / specs) so
-    # that adding transport later is a transport change and not a reshaping of
-    # everything above it.
+    # (`Ingest::Payload`: commit_sha / branch / duration_seconds / specs), which
+    # is what made adding transport a transport change rather than a reshaping
+    # of everything above it. {Transport} sends this Hash verbatim.
     #
     # @return [Hash]
     def payload
@@ -203,6 +219,76 @@ module SpecGuard
     end
 
     private
+
+    # Sink selection, and the fallback that keeps a failed delivery from being
+    # a silent one.
+    #
+    # Called from inside {#never_fail_the_run}, so nothing below has to guard
+    # itself against raising — including the fallback `append`, whose own
+    # failure modes (unwritable `log/`, full disk) are already covered there.
+    #
+    # == Why a failure writes the file rather than shrugging
+    #
+    # "Never block CI" is a promise about the *exit code*, not a licence to
+    # discard the run. A 401 with no file left behind loses the whole run's
+    # telemetry for a mistake — a rotated key, a typo'd URL — that is fixed in
+    # thirty seconds and cannot be re-run afterwards, because the suite is over.
+    # Writing the payload to the local sink turns silent loss into recoverable
+    # loss, which is the same thing `output_path` already exists for ("supports
+    # a future replay-from-file ingestion path").
+    def deliver(data)
+      configuration = SpecGuard::RSpec.configuration
+      return append(data) if blank?(configuration.api_key)
+
+      obstacle = undeliverable_reason(configuration, data)
+      return fall_back(data, obstacle) if obstacle
+
+      result = transport_for(configuration).deliver(data)
+      return if result.success?
+
+      fall_back(data, result.reason)
+    end
+
+    # The checks worth doing *before* spending the run's wall clock on a request
+    # whose answer is already known.
+    #
+    # `commit_sha` is the sharp one: `Ingest::Payload#validate_commit_sha`
+    # refuses a blank one and the controller renders 400, so the run would be
+    # discarded whole — every example, not merely the empty field. Ten seconds
+    # of CI time to be told that is pure loss, and the operator learns more from
+    # being told *why* than from being shown the platform's rejection.
+    #
+    # @return [String, nil] nil when there is nothing standing in the way.
+    def undeliverable_reason(configuration, data)
+      if blank?(configuration.endpoint)
+        return "an API key is set but no endpoint is (set SPECGUARD_ENDPOINT)"
+      end
+
+      return unless blank?(data["commit_sha"])
+
+      "the commit could not be determined, and the endpoint rejects a run without one " \
+        "(set SPECGUARD_COMMIT_SHA)"
+    end
+
+    def fall_back(data, reason)
+      # Warned before the write, not after: if the fallback write *also* fails,
+      # the outer guard's one allotted warning has already been spent on the
+      # more specific message, which is the one naming the status code.
+      warn_delivery_failure(reason)
+      append(data)
+    end
+
+    def transport_for(configuration)
+      SpecGuard::RSpec::Transport.new(
+        endpoint: configuration.endpoint,
+        api_key: configuration.api_key,
+        timeout: configuration.timeout
+      )
+    end
+
+    def blank?(value)
+      value.nil? || value.to_s.strip.empty?
+    end
 
     def capture(example)
       metadata = example.metadata || {}
@@ -277,10 +363,26 @@ module SpecGuard
     # output of the suite it is supposed to be reporting on under thousands of
     # identical lines — which is its own way of breaking somebody's CI.
     def warn_once(error)
+      emit_warning("#{WARNING_PREFIX} (#{error.class}: #{error.message}). The test run is unaffected.")
+    end
+
+    # The delivery half, through the same one-shot budget so a run still emits
+    # at most one line however many things went wrong. `reason` names the HTTP
+    # status when there was one — a 400 and a 401 call for entirely different
+    # actions, and a warning that only said "delivery failed" would leave the
+    # reader unable to tell which.
+    def warn_delivery_failure(reason)
+      path = SpecGuard::RSpec.configuration.output_path
+
+      emit_warning("#{DELIVERY_WARNING_PREFIX} (#{reason}). " \
+                   "Falling back to #{path}; the test run is unaffected.")
+    end
+
+    def emit_warning(line)
       return if @warned
 
       @warned = true
-      @error_stream.puts("#{WARNING_PREFIX} (#{error.class}: #{error.message}). The test run is unaffected.")
+      @error_stream.puts(line)
     rescue ScriptError, StandardError
       # The warning stream itself is gone. There is nothing left to say, and
       # saying it is not worth failing the run over.

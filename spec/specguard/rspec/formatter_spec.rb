@@ -3,6 +3,8 @@
 require "tmpdir"
 require "specguard/rspec/formatter"
 
+require_relative "../../support/stub_ingest_endpoint"
+
 # What the formatter captures, where it puts it, and — the part that matters
 # most — what it does when any of that goes wrong.
 #
@@ -37,6 +39,11 @@ RSpec.describe SpecGuard::RSpecFormatter do
   # Each example gets its own project root, and the global configuration is
   # rebuilt around it — the formatter reads a process-wide singleton, so a spec
   # that leaked its output path would silently redirect every later one.
+  #
+  # `endpoint` and `api_key` are pinned to nil rather than left alone for the
+  # same reason: `Configuration.new` seeds from the *real* ENV, so a developer
+  # who happened to export `SPECGUARD_API_KEY` would have every example in this
+  # file quietly POSTing somewhere instead of writing the file it asserts on.
   around do |example|
     Dir.mktmpdir do |dir|
       @tmpdir = dir
@@ -45,6 +52,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
         config.output_path = File.join(dir, "log", "test_results.jsonl")
         config.commit_sha = "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2"
         config.branch = "main"
+        config.endpoint = nil
+        config.api_key = nil
       end
       example.run
     ensure
@@ -221,6 +230,17 @@ RSpec.describe SpecGuard::RSpecFormatter do
   end
 
   describe "the JSONL sink" do
+    # Criterion 2. Every example in this block runs with no API key, which is
+    # the local-development default, and none of them may reach the network.
+    it "attempts no HTTP call at all when there is no API key" do
+      allow(SpecGuard::RSpec::Transport).to receive(:new).and_call_original
+
+      finish(build_example)
+      formatter.close(nil)
+
+      expect(SpecGuard::RSpec::Transport).not_to have_received(:new)
+    end
+
     it "appends the run as a single JSON object on one line" do
       finish(build_example)
       formatter.stop(nil)
@@ -260,6 +280,223 @@ RSpec.describe SpecGuard::RSpecFormatter do
       formatter.close(nil)
 
       expect(JSON.parse(sink_lines.first)["duration_seconds"]).to be_a(Float).and be >= 0
+    end
+  end
+
+  # Criterion 1, 3 and 4: which sink the run goes to, and what happens when the
+  # chosen one does not accept it.
+  #
+  # The failure half is the reason this slice exists. `Net::HTTP` hands back
+  # `Net::HTTPUnauthorized` as an ordinary return value, so a wrong API key
+  # raises nothing — and the never-block-CI guard around every hook is a
+  # `rescue`. A naive `deliver(payload)` inside it therefore produces no
+  # exception, no warning, no log line and no file: the entire run's telemetry
+  # gone, silently, which is what SPGD-12's "if the API key is wrong … it logs a
+  # warning to stderr" forbids.
+  describe "the HTTP sink" do
+    def deliver_to(server, status: 202, **overrides)
+      SpecGuard::RSpec.configure do |config|
+        config.endpoint = server.endpoint
+        config.api_key = "sgk_abc123"
+        config.timeout = 5
+        overrides.each { |key, value| config.public_send(:"#{key}=", value) }
+      end
+
+      finish(build_example)
+      formatter.stop(nil)
+      formatter.close(nil)
+      server.requests.first
+    end
+
+    it "POSTs the run once when an API key is configured" do
+      StubIngestEndpoint.run do |server|
+        deliver_to(server)
+
+        expect(server.requests.length).to eq(1)
+      end
+    end
+
+    it "sends exactly what #payload assembled, to the platform's path" do
+      StubIngestEndpoint.run do |server|
+        request = deliver_to(server)
+
+        expect(request.path).to eq("/api/v1/ingest")
+        expect(request.headers["authorization"]).to eq("Bearer sgk_abc123")
+        expect(request.json["specs"].length).to eq(1)
+        expect(request.json).to include("commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
+                                        "branch" => "main")
+      end
+    end
+
+    # The point of POSTing at all: the local file is the *fallback*, not a
+    # second copy. Writing both would double a shared CI sink's contents for
+    # every successful run.
+    it "writes no local file when the endpoint accepted the run" do
+      StubIngestEndpoint.run do |server|
+        deliver_to(server)
+
+        expect(sink_lines).to be_empty
+      end
+    end
+
+    it "says nothing on stderr when the endpoint accepted the run" do
+      StubIngestEndpoint.run do |server|
+        deliver_to(server)
+
+        expect(errors.string).to be_empty
+      end
+    end
+
+    it "honours the configured timeout rather than Net::HTTP's 60 seconds" do
+      allow(SpecGuard::RSpec::Transport).to receive(:new).and_call_original
+
+      StubIngestEndpoint.run do |server|
+        deliver_to(server, timeout: 3)
+
+        expect(SpecGuard::RSpec::Transport)
+          .to have_received(:new).with(hash_including(timeout: 3))
+      end
+    end
+
+    # Criterion 3. Three statuses, because the *action* each implies is
+    # different and a warning that only said "delivery failed" would leave the
+    # reader unable to tell which of them they are looking at.
+    [400, 401, 500].each do |status|
+      context "when the endpoint answers #{status}" do
+        it "warns on stderr, naming the status" do
+          StubIngestEndpoint.run(status: status) do |server|
+            deliver_to(server)
+
+            expect(errors.string).to include(described_class::DELIVERY_WARNING_PREFIX)
+            expect(errors.string).to include("HTTP #{status}")
+          end
+        end
+
+        # The failure sink: silent loss becomes recoverable loss. The suite is
+        # over by the time anyone reads the warning, so a run discarded here
+        # cannot be re-produced — and `output_path` already exists to support
+        # exactly this replay-from-file path.
+        it "writes the payload to the local fallback rather than dropping it" do
+          StubIngestEndpoint.run(status: status) do |server|
+            deliver_to(server)
+
+            expect(sink_lines.length).to eq(1)
+            expect(JSON.parse(sink_lines.first)["specs"].length).to eq(1)
+          end
+        end
+
+        it "does not raise out of close" do
+          StubIngestEndpoint.run(status: status) do |server|
+            expect { deliver_to(server) }.not_to raise_error
+          end
+        end
+
+        it "warns once, not once per problem" do
+          StubIngestEndpoint.run(status: status) do |server|
+            deliver_to(server)
+
+            expect(errors.string.lines.length).to eq(1)
+          end
+        end
+
+        it "names the fallback file, so the reader knows the run is recoverable" do
+          StubIngestEndpoint.run(status: status) do |server|
+            deliver_to(server)
+
+            expect(errors.string).to include(SpecGuard::RSpec.configuration.output_path)
+          end
+        end
+      end
+    end
+
+    # Criterion 4: a raised exception takes the same path as a refused
+    # response. One outcome, one warning, one fallback write.
+    describe "when the request cannot be made at all" do
+      before do
+        SpecGuard::RSpec.configure do |config|
+          config.api_key = "sgk_abc123"
+          config.endpoint = "http://127.0.0.1:1"
+          config.timeout = 1
+        end
+      end
+
+      it "warns and falls back rather than losing the run" do
+        finish(build_example)
+        formatter.close(nil)
+
+        expect(errors.string).to include(described_class::DELIVERY_WARNING_PREFIX)
+        expect(sink_lines.length).to eq(1)
+      end
+
+      it "does not raise out of close" do
+        expect { formatter.close(nil) }.not_to raise_error
+      end
+
+      it "names the underlying error, so the cause is not a mystery" do
+        formatter.close(nil)
+
+        expect(errors.string).to match(/Errno::|SocketError/)
+      end
+    end
+
+    # Criterion 5's second half, and the reason a pre-flight check is worth
+    # having at all. `Ingest::Payload#validate_commit_sha` refuses a blank
+    # commit and the controller renders 400, so the run would be discarded
+    # whole — every example, not merely the empty field. Spending the run's
+    # wall clock to be told that is pure loss.
+    describe "when the commit could not be determined" do
+      it "does not POST at all" do
+        StubIngestEndpoint.run do |server|
+          deliver_to(server, commit_sha: nil)
+
+          expect(server.requests).to be_empty
+        end
+      end
+
+      it "takes the fallback sink and says why" do
+        StubIngestEndpoint.run do |server|
+          deliver_to(server, commit_sha: nil)
+
+          expect(sink_lines.length).to eq(1)
+          expect(errors.string).to include("the commit could not be determined")
+        end
+      end
+
+      it "treats a blank commit the same as a missing one" do
+        StubIngestEndpoint.run do |server|
+          deliver_to(server, commit_sha: "   ")
+
+          expect(server.requests).to be_empty
+        end
+      end
+    end
+
+    # A key with nowhere to send it. Answered here rather than deep inside
+    # `Net::HTTP`, because "no endpoint is configured" is a sentence somebody
+    # can act on and `URI::InvalidURIError` is not.
+    describe "when an API key is set but no endpoint is" do
+      before { SpecGuard::RSpec.configure { |config| config.api_key = "sgk_abc123" } }
+
+      it "falls back to the file and names the missing setting" do
+        formatter.close(nil)
+
+        expect(sink_lines.length).to eq(1)
+        expect(errors.string).to include("SPECGUARD_ENDPOINT")
+      end
+    end
+
+    # The fallback's own failure mode. Both sinks are gone, the run really is
+    # lost — but the process must still exit on the suite's own terms, and the
+    # one warning the run is allowed must be the specific one.
+    it "survives a fallback write that fails too, still naming the HTTP status" do
+      StubIngestEndpoint.run(status: 401) do |server|
+        blocker = File.join(tmpdir, "blocker")
+        File.write(blocker, "not a directory")
+
+        expect { deliver_to(server, output_path: File.join(blocker, "results.jsonl")) }
+          .not_to raise_error
+        expect(errors.string).to include("HTTP 401")
+      end
     end
   end
 
