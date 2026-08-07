@@ -33,16 +33,26 @@ module SpecGuard
     # The run goes in a single POST with an identity-encoded body, and that is a
     # decision about the *platform*, not a shortcut:
     #
-    #   * `Api::V1::IngestsController#create` is an unconditional
-    #     `test_runs.create!` per request, and `Ingest::Payload` derives
-    #     `total_specs_count` from the specs of *that* request. Splitting a run
-    #     across N POSTs would produce N `TestRun` rows with a split
-    #     denominator, corrupting the headline annotated-ratio metric.
+    #   * `Ingest::Payload` derives `total_specs_count` from the specs of *that*
+    #     request. Splitting a run across N POSTs with no way to say they are
+    #     one run would produce N `TestRun` rows with a split denominator,
+    #     corrupting the headline annotated-ratio metric.
     #   * The platform does not decompress request bodies, so a gzipped body
     #     reaches the JSON parser as bytes and fails.
     #
-    # Both are cross-repo changes to make deliberately on the platform side
-    # first. Until then, one request is the only shape that lands correctly.
+    # The first of those is now qualified rather than absolute, and the
+    # qualification is `ci_run_id`. The platform accumulates every POST carrying
+    # the same run id onto one `TestRun`, which is what makes a *sharded* run —
+    # N processes, N POSTs, one run — land as one row. So the rule this class
+    # still keeps is narrower than it was: **one process sends one request**.
+    # Batching a single process's own run into several POSTs would still be
+    # wrong for the second reason below and for a third — a partial delivery
+    # would leave a row that is honestly labelled and quietly incomplete — but
+    # the platform is no longer blind to a run that legitimately arrives in
+    # pieces.
+    #
+    # The gzip half remains a cross-repo change to make on the platform side
+    # first.
     class Transport
       # `config/routes.rb` mounts `post "ingest"` under the `/api/v1` scope.
       # Part of the platform's contract, so it is not configurable — the

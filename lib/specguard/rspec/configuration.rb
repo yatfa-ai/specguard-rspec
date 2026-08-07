@@ -151,6 +151,41 @@ module SpecGuard
         GIT_BRANCH
       ].freeze
 
+      # The id the CI provider gave the *build*, which every shard of a
+      # sharded run shares and no second run of the same commit repeats.
+      #
+      # This is the field that makes a 20,000-example suite land as one run.
+      # Nobody runs a suite that size in a single process: under
+      # `parallel_tests`, Knapsack or a CI matrix each shard loads this
+      # formatter and POSTs its own slice, and every shard carries the same
+      # `commit_sha` and `branch` — so the platform had nothing to tell four
+      # shards of one run apart from four separate runs, and recorded four
+      # `TestRun` rows each holding a quarter of the denominator. Annotations
+      # tend to cluster in whatever area a team is currently working on rather
+      # than spreading evenly across shards, so the headline ratio then moved
+      # from re-run to re-run without the suite changing at all.
+      #
+      # `commit_sha` cannot stand in for it: a re-run and a nightly of the same
+      # commit are genuinely two runs and must stay two rows.
+      #
+      # Same providers in the same order as above, and the same "unset is nil,
+      # never an error" rule — a laptop run has none of these, and the platform
+      # treats a run with no id as its own run, which is exactly right.
+      #
+      # The requirement on whatever a provider exports is only this: every shard
+      # of one run reads the same value, and no other run reads it. A project
+      # whose CI layout does not satisfy that for the variable below — Jenkins
+      # `BUILD_TAG` interpolates `JOB_NAME`, which some matrix layouts vary per
+      # axis — sets `SPECGUARD_RUN_ID` itself, which wins over all of them.
+      RUN_ID_KEYS = %w[
+        SPECGUARD_RUN_ID
+        GITHUB_RUN_ID
+        CI_PIPELINE_ID
+        CIRCLE_WORKFLOW_ID
+        BUILDKITE_BUILD_ID
+        BUILD_TAG
+      ].freeze
+
       OUTPUT_PATH_KEYS = %w[SPECGUARD_OUTPUT_PATH].freeze
       ENDPOINT_KEYS = %w[SPECGUARD_ENDPOINT].freeze
       API_KEY_KEYS = %w[SPECGUARD_API_KEY].freeze
@@ -160,6 +195,10 @@ module SpecGuard
       attr_accessor :commit_sha
       # The branch the suite ran on. `nil` when nothing said.
       attr_accessor :branch
+      # The CI provider's id for the build this process is one shard of.
+      # `nil` when nothing said, which is how a laptop run spells "I am my own
+      # run". See {RUN_ID_KEYS}.
+      attr_accessor :run_id
       # Where the run's JSON payload is appended, one object per line — the
       # local sink when there is no API key, and the fallback when delivery
       # fails.
@@ -187,6 +226,7 @@ module SpecGuard
       def initialize(env: ENV, git: GitCheckout)
         @commit_sha = first_present(env, COMMIT_SHA_KEYS) || blank_to_nil(git.commit_sha)
         @branch = first_present(env, BRANCH_KEYS)
+        @run_id = first_present(env, RUN_ID_KEYS)
         @output_path = first_present(env, OUTPUT_PATH_KEYS) || DEFAULT_OUTPUT_PATH
         @endpoint = first_present(env, ENDPOINT_KEYS)
         @api_key = first_present(env, API_KEY_KEYS)

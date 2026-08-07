@@ -30,6 +30,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         expect(configuration.branch).to be_nil
       end
 
+      # A laptop run has no build to belong to, and that is not a
+      # misconfiguration — the platform reads a nil run id as "this run is its
+      # own run" and gives it a `TestRun` of its own, exactly as before.
+      it "reports an unknown run id rather than raising" do
+        expect(configuration.run_id).to be_nil
+      end
+
       # The one field that cannot be nil: with no path there is no sink, and a
       # run that captured everything and wrote it nowhere is the failure mode
       # this whole slice exists to avoid.
@@ -52,10 +59,28 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     end
 
     context "in a GitHub Actions job" do
-      let(:env) { { "GITHUB_SHA" => "9f8e7d6", "GITHUB_REF_NAME" => "main" } }
+      let(:env) { { "GITHUB_SHA" => "9f8e7d6", "GITHUB_REF_NAME" => "main", "GITHUB_RUN_ID" => "1234567890" } }
 
       it "takes the commit and branch from the job's own variables" do
         expect(configuration).to have_attributes(commit_sha: "9f8e7d6", branch: "main")
+      end
+
+      it "takes the run id from GITHUB_RUN_ID, which every shard of the job shares" do
+        expect(configuration.run_id).to eq("1234567890")
+      end
+
+      # The whole point of the field. Two matrix legs of one workflow run are
+      # one run; two workflow runs of the same commit are two.
+      it "gives every shard of one workflow run the same id" do
+        shards = Array.new(4) { |index| described_class.new(env: env.merge("TEST_ENV_NUMBER" => index.to_s), git: no_git) }
+
+        expect(shards.map(&:run_id).uniq).to eq(["1234567890"])
+      end
+
+      it "gives a re-run of the same commit a different id, so it stays a separate run" do
+        rerun = described_class.new(env: env.merge("GITHUB_RUN_ID" => "1234567891"), git: no_git)
+
+        expect(rerun.run_id).not_to eq(configuration.run_id)
       end
     end
 
@@ -66,13 +91,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     # telemetry loss. Asserted per provider, so a failure names the one that
     # regressed rather than moving a count.
     {
-      "GitLab CI" => { sha: "CI_COMMIT_SHA", branch: "CI_COMMIT_REF_NAME" },
-      "CircleCI" => { sha: "CIRCLE_SHA1", branch: "CIRCLE_BRANCH" },
-      "Buildkite" => { sha: "BUILDKITE_COMMIT", branch: "BUILDKITE_BRANCH" },
-      "Jenkins" => { sha: "GIT_COMMIT", branch: "GIT_BRANCH" }
+      "GitLab CI" => { sha: "CI_COMMIT_SHA", branch: "CI_COMMIT_REF_NAME", run: "CI_PIPELINE_ID" },
+      "CircleCI" => { sha: "CIRCLE_SHA1", branch: "CIRCLE_BRANCH", run: "CIRCLE_WORKFLOW_ID" },
+      "Buildkite" => { sha: "BUILDKITE_COMMIT", branch: "BUILDKITE_BRANCH", run: "BUILDKITE_BUILD_ID" },
+      "Jenkins" => { sha: "GIT_COMMIT", branch: "GIT_BRANCH", run: "BUILD_TAG" }
     }.each do |provider, keys|
       context "on #{provider}" do
-        let(:env) { { keys[:sha] => "9f8e7d6", keys[:branch] => "release/2.0" } }
+        let(:env) { { keys[:sha] => "9f8e7d6", keys[:branch] => "release/2.0", keys[:run] => "build-77" } }
 
         it "resolves the commit from #{keys[:sha]}" do
           expect(configuration.commit_sha).to eq("9f8e7d6")
@@ -80,6 +105,14 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
         it "resolves the branch from #{keys[:branch]}" do
           expect(configuration.branch).to eq("release/2.0")
+        end
+
+        # Without this the provider's shards have no way to say they are one
+        # run, and a 20,000-example suite lands as one `TestRun` per shard —
+        # each holding a fraction of the denominator, and the dashboard picking
+        # whichever finished last.
+        it "resolves the run id from #{keys[:run]}" do
+          expect(configuration.run_id).to eq("build-77")
         end
       end
     end
@@ -104,12 +137,21 @@ RSpec.describe SpecGuard::RSpec::Configuration do
           "GITHUB_SHA" => "9f8e7d6",
           "SPECGUARD_BRANCH" => "release/2.0",
           "GITHUB_REF_NAME" => "main",
+          "SPECGUARD_RUN_ID" => "our-own-build-id",
+          "GITHUB_RUN_ID" => "1234567890",
           "SPECGUARD_OUTPUT_PATH" => "tmp/specguard.jsonl"
         }
       end
 
       it "prefers the SPECGUARD_ variable over the provider's" do
         expect(configuration).to have_attributes(commit_sha: "deadbeef", branch: "release/2.0")
+      end
+
+      # The escape hatch that matters most here: a runner that shards a suite
+      # itself, or one on a provider not in the list, can still tell the
+      # platform which shards belong together.
+      it "prefers an explicitly supplied run id over the provider's" do
+        expect(configuration.run_id).to eq("our-own-build-id")
       end
 
       it "honours a configured output path" do
@@ -165,6 +207,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       it "falls back to the default path rather than writing to \"\"" do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
+      end
+
+      # An empty run id is worse than none: it is a *key*, and every unrelated
+      # run exporting the same empty string would accumulate onto one row.
+      it "treats a blank run id as no run id at all" do
+        expect(described_class.new(env: { "GITHUB_RUN_ID" => "" }, git: no_git).run_id).to be_nil
       end
     end
 

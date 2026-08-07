@@ -52,6 +52,11 @@ RSpec.describe SpecGuard::RSpecFormatter do
         config.output_path = File.join(dir, "log", "test_results.jsonl")
         config.commit_sha = "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2"
         config.branch = "main"
+        # Pinned for the same reason `endpoint` and `api_key` are: `Configuration.new` seeds from
+        # the real ENV, and this suite runs inside CI jobs that export `GITHUB_RUN_ID` — so left
+        # alone, the envelope examples below would assert against whatever build happened to be
+        # running them.
+        config.run_id = "gha-1234567890"
         config.endpoint = nil
         config.api_key = nil
       end
@@ -115,6 +120,30 @@ RSpec.describe SpecGuard::RSpecFormatter do
         "commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
         "branch" => "main"
       )
+    end
+
+    # Without this, a sharded suite has no way to say its N POSTs are one run,
+    # and the platform records N `TestRun` rows each holding a fraction of the
+    # denominator — a 20,000-example suite reported as ~5,000, attributed to the
+    # right commit, with nothing on the dashboard able to show it is partial.
+    #
+    # The setting is `run_id` and the wire field is `ci_run_id` on purpose: the
+    # keys of this Hash are the platform's names, spelled as `TestRun` spells
+    # them, and the setting names are this gem's.
+    it "names the CI run the shard belongs to, under the platform's own key" do
+      formatter.stop(nil)
+
+      expect(formatter.payload).to include("ci_run_id" => "gha-1234567890")
+    end
+
+    # The laptop path. A run nobody's CI provider named still ships a complete
+    # envelope; the platform reads the nil as "this run is its own run".
+    it "sends an explicit null run id rather than omitting the key" do
+      SpecGuard::RSpec.configure { |config| config.run_id = nil }
+      formatter.stop(nil)
+
+      expect(formatter.payload).to have_key("ci_run_id")
+      expect(formatter.payload["ci_run_id"]).to be_nil
     end
 
     it "reports a non-negative run duration once the suite has stopped" do
@@ -324,7 +353,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(request.headers["authorization"]).to eq("Bearer sgk_abc123")
         expect(request.json["specs"].length).to eq(1)
         expect(request.json).to include("commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
-                                        "branch" => "main")
+                                        "branch" => "main",
+                                        "ci_run_id" => "gha-1234567890")
       end
     end
 

@@ -73,9 +73,10 @@ the one on the next line.
 > formatter never has anything to hide.
 
 ```ruby
-# optional — the defaults read the commit and branch from whichever CI provider
-# is running you (GitHub Actions, GitLab CI, CircleCI, Buildkite, Jenkins), and
-# fall back to `git rev-parse HEAD`. SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH /
+# optional — the defaults read the commit, branch and CI run id from whichever
+# provider is running you (GitHub Actions, GitLab CI, CircleCI, Buildkite,
+# Jenkins), and fall back to `git rev-parse HEAD` for the commit.
+# SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH / SPECGUARD_RUN_ID /
 # SPECGUARD_OUTPUT_PATH override any of it.
 SpecGuard::RSpec.configure do |config|
   config.commit_sha = `git rev-parse HEAD`.strip
@@ -85,7 +86,9 @@ end
 ## Shipping the run to SpecGuard
 
 Set an API key and an endpoint and the run is POSTed to
-`<endpoint>/api/v1/ingest` — once per run, as a single request:
+`<endpoint>/api/v1/ingest` — once per process, as a single request (see
+[If you shard your suite](#if-you-shard-your-suite) for what happens when there
+is more than one process):
 
 ```bash
 export SPECGUARD_ENDPOINT=https://specguard.example.com
@@ -129,3 +132,28 @@ hook rescues, warns once on stderr, and leaves the exit status to your suite
 alone. A non-2xx response gets the same treatment: `Net::HTTP` returns those as
 ordinary values rather than raising, so they are checked for explicitly instead
 of being left to a `rescue` that would never see them.
+
+### If you shard your suite
+
+`parallel_tests`, Knapsack and a CI matrix all run the suite as several
+processes, and each one loads this formatter and POSTs its own slice. The run id
+is what tells SpecGuard those POSTs are **one run**: shards that share it are
+accumulated onto a single record, so a 20,000-example suite reports a 20,000
+denominator instead of one record per shard holding a quarter of it — and a
+quarter is what the dashboard showed before, attributed to the right commit,
+with nothing to mark it as partial.
+
+Every supported provider publishes an id for the build (`GITHUB_RUN_ID`,
+`CI_PIPELINE_ID`, `CIRCLE_WORKFLOW_ID`, `BUILDKITE_BUILD_ID`, `BUILD_TAG`), so a
+sharded job on any of them needs no configuration. If you shard somewhere else,
+export one yourself — any value that every shard of the run shares and no other
+run repeats:
+
+```bash
+export SPECGUARD_RUN_ID="$MY_CI_BUILD_ID"
+```
+
+Unset is not an error. A run with no id is treated as a run of its own, which is
+exactly right for `bundle exec rspec` on a laptop. Two runs of the *same commit*
+— a re-run, a nightly — carry different ids and stay two separate records, which
+is why the commit alone cannot do this job.

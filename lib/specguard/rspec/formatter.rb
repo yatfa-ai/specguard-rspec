@@ -202,9 +202,25 @@ module SpecGuard
     # filesystem or the network.
     #
     # Key names match the platform's ingest contract
-    # (`Ingest::Payload`: commit_sha / branch / duration_seconds / specs), which
-    # is what made adding transport a transport change rather than a reshaping
-    # of everything above it. {Transport} sends this Hash verbatim.
+    # (`Ingest::Payload`: commit_sha / branch / ci_run_id / duration_seconds /
+    # specs), which is what made adding transport a transport change rather
+    # than a reshaping of everything above it. {Transport} sends this Hash
+    # verbatim.
+    #
+    # `ci_run_id` is the field that keeps a sharded suite honest: every shard of
+    # one CI run emits the same one, and the platform accumulates them onto a
+    # single `TestRun` instead of recording one row per shard with a quarter of
+    # the denominator in it. `nil` here — a laptop run, an unrecognised
+    # provider — means "this run is its own run", which is the pre-existing
+    # behaviour and is left exactly alone.
+    #
+    # The setting is `run_id` and the wire field is `ci_run_id`, deliberately.
+    # Configuration names are this gem's own (`SPECGUARD_RUN_ID`, next to
+    # `output_path` and `endpoint`); every key in *this* Hash is the platform's,
+    # spelled exactly as `TestRun` spells it. That rule is what lets a reader
+    # check the envelope against the schema without a translation table — and a
+    # run identity that two sides spell differently is one more way to split a
+    # run, which is the whole defect this field closes.
     #
     # @return [Hash]
     def payload
@@ -213,6 +229,7 @@ module SpecGuard
       {
         "commit_sha" => configuration.commit_sha,
         "branch" => configuration.branch,
+        "ci_run_id" => configuration.run_id,
         "duration_seconds" => @duration_seconds,
         "specs" => @specs
       }

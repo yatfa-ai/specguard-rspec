@@ -350,7 +350,8 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     end
 
     it "wraps them in a run envelope" do
-      expect(run.payload.keys).to contain_exactly("commit_sha", "branch", "duration_seconds", "specs")
+      expect(run.payload.keys)
+        .to contain_exactly("commit_sha", "branch", "ci_run_id", "duration_seconds", "specs")
       expect(run.payload["duration_seconds"]).to be_a(Float).and be > 0
     end
 
