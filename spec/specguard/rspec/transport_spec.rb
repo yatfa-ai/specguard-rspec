@@ -92,13 +92,30 @@ RSpec.describe SpecGuard::RSpec::Transport do
     end
   end
 
-  # A 20,000-example run is a ~6 MiB JSON body, and `#post` bounds the whole
-  # request — the *write* included — with one timeout, 10s by default. Below
-  # roughly 5 Mbit/s of uplink that body cannot be written in time: `#deliver`
-  # answers `Result(outcome: :failed)`, the formatter falls back to
+  # A 20,000-example run serializes to 7,354,782 bytes (7.01 MiB), and `#post`
+  # bounds the whole request — the *write* included — with one timeout, 10s by
+  # default. Below 5.9 Mbit/s of uplink that body cannot be written in time:
+  # `#deliver` answers `Result(outcome: :failed)`, the formatter falls back to
   # `log/test_results.jsonl`, and the platform never receives the run. Which is
   # the large-suite case the whole formatter exists for. Gzipped, the same body
-  # is ~0.17 MiB.
+  # is 346,206 bytes (0.33 MiB) — 21.2x.
+  #
+  # `Transport`'s class comment owns those figures, including how they were
+  # measured and why 21.2x is the optimistic end. They are repeated here only
+  # because this is where the behavior they justify is proved; if they are ever
+  # re-measured, that comment is the one that has to change and this one is the
+  # second site. An earlier draft of this file quoted the *proposal*'s numbers
+  # (~6 MiB / ~0.17 MiB / 35x), which SPGD-159 had already invalidated by adding
+  # `id` and `spec_file_path` to every row — re-measure rather than quote.
+  #
+  # Those are figures for a *real* formatter run. The fixture below is not one,
+  # and is deliberately not described as one: `run_of` builds a leaner row than
+  # the formatter emits, so `run_of(20_000)` is 4,655,671 bytes (4.44 MiB),
+  # gzipping to 243,458 (19.1x). That is the right trade for a unit spec — it
+  # exercises the same code path at the same order of magnitude without a
+  # multi-second fixture build — but it means this file proves the *mechanism*
+  # at scale, while the 7.01 MiB figure above is the thing the mechanism exists
+  # for. Do not read the two as the same measurement.
   describe "a run big enough to need compressing" do
     # Sized by construction rather than by a hopeful example count: the row
     # shape changes (SPGD-159 added two fields), and a fixed count would one day
@@ -155,9 +172,10 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(captured.json).to eq(big)
     end
 
-    # The scale target itself, at full size, because the threshold examples
-    # above prove the mechanism and this proves it at the volume the roadmap
-    # named. ~6 MiB of JSON through a real socket.
+    # The scale target itself, at the volume the roadmap named, because the
+    # threshold examples above prove the mechanism on a body that only just
+    # clears it. 4.44 MiB of JSON through a real socket — see the note above on
+    # why this fixture is leaner than the 7.01 MiB a real 20k run produces.
     it "round-trips a 20,000-example run key for key" do
       huge = run_of(20_000)
 

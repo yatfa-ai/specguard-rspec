@@ -97,6 +97,31 @@ module SpecGuard
     # Compression also sits *inside* the never-block-CI contract. A `Zlib`
     # failure falls back to the identity body — which the platform still
     # accepts — rather than raising: a run must not be lost to an optimisation.
+    #
+    # === The version floor this creates, which is a deploy order and not a merge order
+    #
+    # Sending `Content-Encoding: gzip` requires a platform that can inflate one,
+    # and that arrived with `GzipRequestBody` (SPGD-175). "Merge the platform PR
+    # first" is the half of this that is easy to say and is *not* sufficient:
+    # merge order only settles the source trees. What this gem actually talks to
+    # is a **deployment**.
+    #
+    # So a gem at this version pointed at an installation deployed before
+    # `GzipRequestBody` will 400 every run over {GZIP_THRESHOLD_BYTES} — the
+    # inflater is not there, the body reaches the JSON parser still gzipped, and
+    # `Api::V1::IngestsController` refuses it. {#deliver} answers
+    # `Result(outcome: :rejected, code: 400)`; there is no retry-as-identity, so
+    # the formatter falls back to `log/test_results.jsonl` and the run is lost
+    # to the platform. That is precisely the failure this change exists to
+    # close, reintroduced for precisely the large suites it targets — and it is
+    # silent apart from one stderr line, because CI still goes green.
+    #
+    # Written down rather than fixed, deliberately. A 400-triggered retry with
+    # the identity body would paper over it, but it doubles the request count on
+    # every genuinely-malformed payload and makes a client-side bug look like a
+    # flake; that is a contract decision, not a detail to slip in here. The
+    # honest statement of the constraint is a version floor: **this gem requires
+    # a platform deployment that includes `GzipRequestBody`.**
     class Transport
       # `config/routes.rb` mounts `post "ingest"` under the `/api/v1` scope.
       # Part of the platform's contract, so it is not configurable — the
