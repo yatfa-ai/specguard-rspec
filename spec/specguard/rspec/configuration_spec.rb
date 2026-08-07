@@ -70,17 +70,105 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       end
 
       # The whole point of the field. Two matrix legs of one workflow run are
-      # one run; two workflow runs of the same commit are two.
+      # one run.
       it "gives every shard of one workflow run the same id" do
         shards = Array.new(4) { |index| described_class.new(env: env.merge("TEST_ENV_NUMBER" => index.to_s), git: no_git) }
 
         expect(shards.map(&:run_id).uniq).to eq(["1234567890"])
       end
 
-      it "gives a re-run of the same commit a different id, so it stays a separate run" do
-        rerun = described_class.new(env: env.merge("GITHUB_RUN_ID" => "1234567891"), git: no_git)
+      # Replaces an earlier example named "gives a re-run of the same commit a
+      # different id, so it stays a separate run". That name asserted a fact
+      # about GitHub Actions that is false — `GITHUB_RUN_ID` is documented as
+      # *"This number does not change if you re-run the workflow run"* — while
+      # the body only re-fed a different value and checked it came back out,
+      # which `first_present` cannot fail. The name was the load-bearing part
+      # and it was wrong, so both halves are replaced here.
+      #
+      # This is the real behaviour, and it is wanted: a re-run keeps the run id,
+      # so a retried shard lands back on the run it belongs to rather than
+      # forming a new run holding only the shards that were retried.
+      it "keeps the run id across a re-run of the same workflow run, because the attempt is not part of it" do
+        attempt_two = described_class.new(env: env.merge("GITHUB_RUN_ATTEMPT" => "2"), git: no_git)
 
-        expect(rerun.run_id).not_to eq(configuration.run_id)
+        expect(attempt_two.run_id).to eq(configuration.run_id)
+      end
+
+      # The other half of that: it is `shard_id`, not the run id, that lets the
+      # platform tell a re-delivery from a new slice.
+      it "keeps each shard's own id stable across that re-run, so a retried shard replaces itself" do
+        first = described_class.new(env: env.merge("SPECGUARD_SHARD_ID" => "3"), git: no_git)
+        retried = described_class.new(
+          env: env.merge("SPECGUARD_SHARD_ID" => "3", "GITHUB_RUN_ATTEMPT" => "2"), git: no_git
+        )
+
+        expect(retried).to have_attributes(run_id: first.run_id, shard_id: first.shard_id)
+      end
+
+      # A genuinely different run — a nightly, a later push — gets a different
+      # id from GitHub, which is the case the run id really does separate.
+      it "gives a different workflow run a different id" do
+        nightly = described_class.new(env: env.merge("GITHUB_RUN_ID" => "1234567891"), git: no_git)
+
+        expect(nightly.run_id).not_to eq(configuration.run_id)
+      end
+    end
+
+    describe "the shard identity" do
+      it "is nil when nothing shards the suite" do
+        expect(described_class.new(env: {}, git: no_git).shard_id).to be_nil
+      end
+
+      # The trap this resolver exists for. `parallel_tests` numbers its
+      # processes '', '2', '3', … — the first is a *set but empty* variable, so
+      # a first-non-blank rule skips it and leaves exactly one shard of the run
+      # anonymous while its siblings are named. That shard alone then
+      # double-counts on a re-run: a denominator wrong by a fifth of the suite,
+      # pointing at nothing.
+      it "reads the blank first process of parallel_tests as shard 1 rather than as absent" do
+        expect(described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git).shard_id).to eq("1")
+      end
+
+      it "gives every parallel_tests process a distinct shard id" do
+        shards = ["", "2", "3", "4"].map do |number|
+          described_class.new(env: { "TEST_ENV_NUMBER" => number }, git: no_git).shard_id
+        end
+
+        expect(shards).to eq(%w[1 2 3 4])
+      end
+
+      # `--first-is-1` / PARALLEL_TEST_FIRST_IS_1 make parallel_tests emit a
+      # literal "1" for that process. Both configurations have to agree on what
+      # shard 1 is called, or turning the flag on would split one shard in two.
+      it "lands --first-is-1 on the same shard id as the blank default" do
+        blank = described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git)
+        explicit = described_class.new(env: { "TEST_ENV_NUMBER" => "1" }, git: no_git)
+
+        expect(explicit.shard_id).to eq(blank.shard_id)
+      end
+
+      {
+        "GitLab parallel: / Knapsack Pro" => "CI_NODE_INDEX",
+        "CircleCI parallelism:" => "CIRCLE_NODE_INDEX",
+        "Buildkite parallelism:" => "BUILDKITE_PARALLEL_JOB"
+      }.each do |runner, key|
+        it "takes the shard index from #{key} on #{runner}" do
+          expect(described_class.new(env: { key => "0" }, git: no_git).shard_id).to eq("0")
+        end
+      end
+
+      it "lets SPECGUARD_SHARD_ID win, which is how a GitHub Actions matrix names its legs" do
+        env = { "TEST_ENV_NUMBER" => "2", "SPECGUARD_SHARD_ID" => "matrix-leg-3" }
+
+        expect(described_class.new(env: env, git: no_git).shard_id).to eq("matrix-leg-3")
+      end
+
+      # GITHUB_JOB is the job's id as written in the workflow YAML, so every leg
+      # of a matrix reads the same value. Were it in the key list, all N shards
+      # would claim to be one shard and the run would keep only whichever
+      # finished last — a *smaller* denominator than the bug this ticket fixes.
+      it "does not mistake GITHUB_JOB for a shard index" do
+        expect(described_class.new(env: { "GITHUB_JOB" => "rspec" }, git: no_git).shard_id).to be_nil
       end
     end
 

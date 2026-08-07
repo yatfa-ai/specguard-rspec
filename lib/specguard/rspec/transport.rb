@@ -41,15 +41,16 @@ module SpecGuard
     #     reaches the JSON parser as bytes and fails.
     #
     # The first of those is now qualified rather than absolute, and the
-    # qualification is `ci_run_id`. The platform accumulates every POST carrying
-    # the same run id onto one `TestRun`, which is what makes a *sharded* run —
+    # qualification is `ci_run_id` + `shard_id`. The platform folds every POST
+    # carrying the same run id onto one `TestRun`, keyed by shard so a slice
+    # that arrives twice replaces itself, which is what makes a *sharded* run —
     # N processes, N POSTs, one run — land as one row. So the rule this class
     # still keeps is narrower than it was: **one process sends one request**.
     # Batching a single process's own run into several POSTs would still be
-    # wrong for the second reason below and for a third — a partial delivery
-    # would leave a row that is honestly labelled and quietly incomplete — but
-    # the platform is no longer blind to a run that legitimately arrives in
-    # pieces.
+    # wrong for the second reason below and for a third — every part would
+    # carry the same `shard_id`, so the parts would overwrite one another and
+    # the row would keep only the last — but the platform is no longer blind to
+    # a run that legitimately arrives in pieces.
     #
     # The gzip half remains a cross-repo change to make on the platform side
     # first.

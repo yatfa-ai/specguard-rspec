@@ -73,11 +73,11 @@ the one on the next line.
 > formatter never has anything to hide.
 
 ```ruby
-# optional — the defaults read the commit, branch and CI run id from whichever
-# provider is running you (GitHub Actions, GitLab CI, CircleCI, Buildkite,
-# Jenkins), and fall back to `git rev-parse HEAD` for the commit.
+# optional — the defaults read the commit, branch, CI run id and shard index
+# from whichever provider is running you (GitHub Actions, GitLab CI, CircleCI,
+# Buildkite, Jenkins), and fall back to `git rev-parse HEAD` for the commit.
 # SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH / SPECGUARD_RUN_ID /
-# SPECGUARD_OUTPUT_PATH override any of it.
+# SPECGUARD_SHARD_ID / SPECGUARD_OUTPUT_PATH override any of it.
 SpecGuard::RSpec.configure do |config|
   config.commit_sha = `git rev-parse HEAD`.strip
 end
@@ -154,6 +154,52 @@ export SPECGUARD_RUN_ID="$MY_CI_BUILD_ID"
 ```
 
 Unset is not an error. A run with no id is treated as a run of its own, which is
-exactly right for `bundle exec rspec` on a laptop. Two runs of the *same commit*
-— a re-run, a nightly — carry different ids and stay two separate records, which
-is why the commit alone cannot do this job.
+exactly right for `bundle exec rspec` on a laptop. A genuinely different run — a
+nightly, a later push — gets a different id from its provider and stays a
+separate record, which is why the commit alone cannot do this job.
+
+#### Re-runs, and why each shard also names itself
+
+A CI run id does **not** change when you re-run the build. GitHub's own wording
+for `GITHUB_RUN_ID` is *"This number does not change if you re-run the workflow
+run"*; Buildkite retries a job inside the same `BUILDKITE_BUILD_ID` and GitLab
+inside the same `CI_PIPELINE_ID`. That is the behaviour SpecGuard wants — press
+"re-run failed jobs" on a sharded suite and only the failed shards run again, so
+they need to land back on the run they came from rather than forming a new run
+holding a fifth of the suite.
+
+For that to be right, a shard has to be able to *replace* its own earlier
+numbers instead of adding to them, which means naming itself. SpecGuard reads
+the shard index your runner already exports:
+
+| Runner | Variable |
+| --- | --- |
+| `parallel_tests` | `TEST_ENV_NUMBER` (its blank first process is read as shard `1`) |
+| GitLab `parallel:`, Knapsack Pro | `CI_NODE_INDEX` |
+| CircleCI `parallelism:` | `CIRCLE_NODE_INDEX` |
+| Buildkite `parallelism:` | `BUILDKITE_PARALLEL_JOB` |
+
+**GitHub Actions `matrix:` is the one that needs a line of config.** It exports
+no per-leg index — `GITHUB_JOB` is the job's id in your YAML and is identical
+across every leg — so set it from the matrix value:
+
+```yaml
+strategy:
+  matrix:
+    shard: [1, 2, 3, 4]
+steps:
+  - run: bundle exec rspec
+    env:
+      SPECGUARD_SHARD_ID: ${{ matrix.shard }}
+```
+
+The value only has to be unique *within one run*; it is never compared across
+runs. Do the same if you nest — `parallel_tests` inside a matrix leg repeats
+`TEST_ENV_NUMBER` across legs, so give `SPECGUARD_SHARD_ID` something that
+composes both.
+
+Leaving it unset is not an error and does not lose the slice: an unnamed shard
+is still counted into the run. What it cannot do is be recognised on a second
+delivery, so if that shard is retried its numbers are added again rather than
+replacing what was there. If your suite shards and you re-run it, name the
+shards.

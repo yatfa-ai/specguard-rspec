@@ -57,6 +57,10 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # alone, the envelope examples below would assert against whatever build happened to be
         # running them.
         config.run_id = "gha-1234567890"
+        # And `shard_id` for a sharper version of it: this gem's own suite may itself be run under
+        # `parallel_tests`, which exports `TEST_ENV_NUMBER` — so unpinned, these examples would
+        # pass single-process and fail only when someone ran the suite in parallel.
+        config.shard_id = "shard-2"
         config.endpoint = nil
         config.api_key = nil
       end
@@ -144,6 +148,25 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       expect(formatter.payload).to have_key("ci_run_id")
       expect(formatter.payload["ci_run_id"]).to be_nil
+    end
+
+    # The other half of the run identity. A CI run id survives a re-run by
+    # design (`GITHUB_RUN_ID` is documented as unchanged across attempts), so
+    # this is what lets the platform tell a shard reporting for the second time
+    # from a shard reporting for the first — and therefore replace its numbers
+    # rather than add them.
+    it "names which shard of that run this process is" do
+      formatter.stop(nil)
+
+      expect(formatter.payload).to include("shard_id" => "shard-2")
+    end
+
+    it "sends an explicit null shard id rather than omitting the key" do
+      SpecGuard::RSpec.configure { |config| config.shard_id = nil }
+      formatter.stop(nil)
+
+      expect(formatter.payload).to have_key("shard_id")
+      expect(formatter.payload["shard_id"]).to be_nil
     end
 
     it "reports a non-negative run duration once the suite has stopped" do
@@ -354,7 +377,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(request.json["specs"].length).to eq(1)
         expect(request.json).to include("commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
                                         "branch" => "main",
-                                        "ci_run_id" => "gha-1234567890")
+                                        "ci_run_id" => "gha-1234567890",
+                                        "shard_id" => "shard-2")
       end
     end
 

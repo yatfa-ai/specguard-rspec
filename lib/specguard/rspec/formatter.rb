@@ -208,13 +208,22 @@ module SpecGuard
     # verbatim.
     #
     # `ci_run_id` is the field that keeps a sharded suite honest: every shard of
-    # one CI run emits the same one, and the platform accumulates them onto a
-    # single `TestRun` instead of recording one row per shard with a quarter of
-    # the denominator in it. `nil` here — a laptop run, an unrecognised
+    # one CI run emits the same one, and the platform folds them onto a single
+    # `TestRun` instead of recording one row per shard with a quarter of the
+    # denominator in it. `nil` here — a laptop run, an unrecognised
     # provider — means "this run is its own run", which is the pre-existing
     # behaviour and is left exactly alone.
     #
-    # The setting is `run_id` and the wire field is `ci_run_id`, deliberately.
+    # `shard_id` says *which* slice of that run this is, and it is what makes
+    # the fold idempotent. A CI run id survives a re-run by design (GitHub's
+    # `GITHUB_RUN_ID` is documented as unchanged across attempts), so without a
+    # per-shard key the platform could only add a re-delivered slice, never
+    # recognise it, and "re-run failed jobs" would report a suite bigger than
+    # the suite. With it, a retried shard replaces its own previous numbers.
+    # `nil` is allowed and still counts — see {Configuration::SHARD_ID_KEYS}.
+    #
+    # The settings are `run_id` / `shard_id` and the wire fields are
+    # `ci_run_id` / `shard_id`, deliberately.
     # Configuration names are this gem's own (`SPECGUARD_RUN_ID`, next to
     # `output_path` and `endpoint`); every key in *this* Hash is the platform's,
     # spelled exactly as `TestRun` spells it. That rule is what lets a reader
@@ -230,6 +239,7 @@ module SpecGuard
         "commit_sha" => configuration.commit_sha,
         "branch" => configuration.branch,
         "ci_run_id" => configuration.run_id,
+        "shard_id" => configuration.shard_id,
         "duration_seconds" => @duration_seconds,
         "specs" => @specs
       }
