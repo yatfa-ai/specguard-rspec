@@ -825,7 +825,6 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
-  # Criterion 5. Each of these fails if its rescue is deleted.
   # The delivery decision that comes before every other one: was anything
   # actually measured?
   #
@@ -846,8 +845,9 @@ RSpec.describe SpecGuard::RSpecFormatter do
       allow(formatter).to receive(:rspec_configuration).and_return(configuration)
     end
 
-    # Criterion 5, and the only example here that names the *cause* rather than
-    # a downstream symptom.
+    # SPGD-154 criterion 5 ("the check is `::RSpec`-qualified and
+    # `respond_to?`-guarded"), and the only example here that names the *cause*
+    # rather than a downstream symptom.
     #
     # `SpecGuard::RSpec` is this gem's own namespace, so a bare
     # `RSpec.configuration` inside `module SpecGuard` reaches this gem's
@@ -861,7 +861,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     #
     # (Mutating both — bare `RSpec` *and* no `respond_to?` — is the state the
     # ticket warned about: a swallowed NoMethodError leaving a formatter that
-    # delivers nothing at all. That one is not subtle; 84 examples fail.)
+    # delivers nothing at all. That one is not subtle; 85 examples fail.)
     it "reads the real RSpec's configuration, not this gem's same-named one" do
       expect(formatter.send(:rspec_configuration)).to equal(::RSpec.configuration)
     end
@@ -932,9 +932,11 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
-    # Criterion 5's second half. An RSpec build without the predicate must fall
-    # through to *normal delivery* — the pre-existing behaviour — rather than
-    # to a NoMethodError that never_fail_the_run would swallow into silence.
+    # SPGD-154 criterion 5, second half ("a stubbed configuration without
+    # `dry_run?` still delivers normally"). An RSpec build lacking the
+    # predicate must fall through to *normal delivery* — the pre-existing
+    # behaviour — rather than to a NoMethodError that never_fail_the_run would
+    # swallow into silence.
     context "when the RSpec configuration has no #dry_run? at all" do
       before { allow(formatter).to receive(:rspec_configuration).and_return(Object.new) }
 
@@ -952,6 +954,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # Criterion 5. Each of these fails if its rescue is deleted.
   describe "never failing the run" do
     def unwritable_sink!
       blocker = File.join(tmpdir, "blocker")

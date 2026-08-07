@@ -218,7 +218,11 @@ module FormatterRunHelpers
     end
   RUBY
 
-  Run = Struct.new(:exit_status, :stdout, :stderr, :lines, keyword_init: true) do
+  # `sink_exists` is carried separately from `lines` because `lines` collapses
+  # absent-and-empty into the same `[]`: without it, "the sink was never
+  # created" and "the sink was created and left empty" are indistinguishable,
+  # and only the former is the property SPGD-154 criterion 2 asks for.
+  Run = Struct.new(:exit_status, :stdout, :stderr, :lines, :sink_exists, keyword_init: true) do
     def payload = JSON.parse(lines.last)
   end
 
@@ -375,9 +379,11 @@ module FormatterRunHelpers
       )
 
       sink = File.join(root, env.fetch("SPECGUARD_OUTPUT_PATH", DEFAULT_SINK) || DEFAULT_SINK)
-      lines = File.exist?(sink) ? File.readlines(sink, chomp: true) : []
+      sink_exists = File.exist?(sink)
+      lines = sink_exists ? File.readlines(sink, chomp: true) : []
 
-      Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines)
+      Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines,
+              sink_exists: sink_exists)
     end
   end
 
@@ -1440,7 +1446,8 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(@normal_requests.first.json["specs"].length).to eq(3)
       end
 
-      # Criterion 1.
+      # SPGD-154 criterion 1: "`rspec --dry-run` with SPECGUARD_API_KEY and
+      # SPECGUARD_ENDPOINT set issues zero HTTP requests".
       it "issues no HTTP request at all" do
         expect(@dry_requests).to be_empty
       end
@@ -1467,19 +1474,34 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(@normal.lines.length).to eq(1)
       end
 
-      # Criterion 2. A .jsonl of zero-duration all-green runs is the same
+      # SPGD-154 criterion 2: "`rspec --dry-run` with no API key appends no
+      # line to log/test_results.jsonl (absent, or byte-identical to before)".
+      # A .jsonl of zero-duration all-green runs is the same
       # corruption as a delivered one, deferred until something replays it.
       it "appends nothing to log/test_results.jsonl" do
         expect(@dry.lines).to be_empty
       end
 
-      it "does not even create the sink" do
+      # ...and the child really did run, with the flag really taking effect —
+      # so "nothing was written" is a refusal rather than a process that never
+      # started.
+      it "still ran the suite, reporting the dry run's own all-green summary" do
         expect(@dry.stdout).to include("1 example, 0 failures")
-        expect(@dry.lines).to be_empty
+      end
+
+      # The stronger half of the same criterion, and the reason this is a
+      # separate example: `lines` is `[]` for an absent sink *and* for an empty
+      # one, so only `sink_exists` can distinguish "never appended" from
+      # "appended nothing". `#append` is never reached at all.
+      it "does not even create the sink" do
+        expect(@dry.sink_exists).to be(false)
+        expect(@normal.sink_exists).to be(true)
       end
     end
 
-    # Criterion 4. The never-block-CI contract is not suspended by the refusal:
+    # SPGD-154 criterion 4: "the dry run's own exit code is unchanged and at
+    # most one stderr line is emitted". The never-block-CI contract is not
+    # suspended by the refusal:
     # a dry run is somebody's lint job, and it must exit on its own terms.
     describe "the contract the refusal must not break" do
       before(:context) do
