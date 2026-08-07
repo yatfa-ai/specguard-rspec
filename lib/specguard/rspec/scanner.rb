@@ -93,9 +93,13 @@ module SpecGuard
         end
       end
 
-      # RATIFIED DIFFERENCE from the reference tool, in the REASON TEXT only —
-      # the same shape as `scan_text`'s above, one layer up, and for the same
-      # reason.
+      # RATIFIED DIFFERENCE from the reference tool. Two of them, and only the
+      # first is a difference in reason TEXT — an earlier revision of this
+      # comment claimed there was just the one, and it was wrong in a way worth
+      # recording, because the mistake was structural rather than careless: it
+      # described a symptom instead of a cause.
+      #
+      # == (1) The wording, when both parsers reject the payload
       #
       # `PayloadNormalizer` rescues PROTOCOL.md §1's permissive syntax on both
       # sides, so a payload it can fix renders identically. What reaches
@@ -118,6 +122,77 @@ module SpecGuard
       # (unlike a read failure, this one is line-scoped and both agree on the
       # line and even the column), same `could not parse annotation: ` prefix,
       # same counts, and exit 1. Only the tail is unpinned.
+      #
+      # == (2) THE ACCEPTANCE SET: the payloads only ONE parser rejects
+      #
+      # (1) is about how the two spell the same refusal. This is about the
+      # payloads where they do not both refuse — a bigger difference, and the
+      # generator (1) was hiding. CPython's grammar is strictly the more
+      # permissive of the two, so there is a set of payloads `json.loads`
+      # accepts and `JSON.parse` does not, and every member of it diverges.
+      #
+      # The set was DERIVED rather than guessed, because guessing is what
+      # produced the "only the tail differs" claim: 89,108 documents — the
+      # port's own `pyjson_fuzz_test.go` seed corpus and token alphabet, a
+      # generated well-formed corpus, and every one of the 65,536 single
+      # `\uXXXX` escapes — through both parsers. Widening the sweep did not add
+      # a member. It has exactly THREE:
+      #
+      #   1. the non-finite literals `NaN` / `Infinity` / `-Infinity`. CPython
+      #      accepts them and the port accepts them ON PURPOSE — pyjson.go's
+      #      "WHAT IT BUYS BEYOND THE PROSE" records that an earlier Go
+      #      decoder rejecting them "made Go classify such a document as a
+      #      parse failure where Python reported a schema violation", and that
+      #      retiring that exclusion was the point of the file. The same
+      #      divergence it closed between Go and Python is the one that reopens
+      #      here between Ruby and Go.
+      #   2. a HIGH surrogate escape (`\ud800`-`\udbff`) not followed by a LOW
+      #      one. Ruby raises `incomplete surrogate pair`, or `invalid
+      #      surrogate pair` when the next escape is not a low surrogate. A
+      #      lone LOW surrogate is accepted by both — the rule is narrower than
+      #      "surrogate escapes diverge".
+      #   3. container nesting past Ruby's `max_nesting: 100` default. CPython
+      #      has no document-depth limit short of its recursion limit.
+      #
+      # Each produces one of two shapes, depending on whether the payload the
+      # port successfully parses then passes the schema:
+      #
+      #   (v)  NOT schema-valid — the CLASSIFICATION differs. This path reports
+      #        KIND_PARSE and renders one em-dash line; the backend reports
+      #        KIND_SCHEMA and renders a `-> ` line per violation. File, line,
+      #        counts and exit code still agree.
+      #   (vi) schema-valid — the VERDICT differs. This path reports the
+      #        annotation malformed and exits 1; the backend reports nothing
+      #        and exits 0. Only the file agrees.
+      #
+      # (vi) is reachable through member 2 alone, and provably so: a
+      # schema-valid payload must put the offending syntax in a value the
+      # schema permits, and every such value is a string or an array of strings
+      # (`SpecGuard::RSpec::SCHEMA_PATH`). A number and a container cannot
+      # occupy a string slot; a surrogate escape lives inside one.
+      #
+      # RATIFIED, and the reason is scope, not preference. `allow_nan: true`
+      # would close member 1 and `max_nesting: false` would close member 3 —
+      # both are options on the `JSON.parse` call below — but member 2 has no
+      # option and would need CPython's string decoder ported into this gem,
+      # which is the trade `scan_text` and (1) above have each already
+      # declined. Closing two of three would leave the set inconsistent, and
+      # every one of the three is a change to the DEFAULT path, which the slice
+      # that introduced `ValidatorBackend` explicitly holds fixed. Whether the
+      # gem should adopt CPython's acceptance grammar wholesale is a question
+      # about this gem's default behaviour, and it is deliberately left open
+      # rather than settled here.
+      #
+      # Asserted from both sides — the enumeration itself, the boundary, and
+      # both shapes — in `spec/specguard/rspec/validator_backend_spec.rb` under
+      # "the JSON acceptance-set difference", and against the real binary in
+      # `tests/parity/run_ruby_parity.sh` under "ratified difference (d)" and
+      # section 8b's entries (v) and (vi).
+      #
+      # Note that `JSON::NestingError` is a subclass of `JSON::ParserError`, so
+      # member 3 is already carried by the rescue below; it needs no clause of
+      # its own, and adding one would suggest the classification differs when
+      # it does not.
       #
       # @return [Finding]
       def parse(raw, file:, line:)

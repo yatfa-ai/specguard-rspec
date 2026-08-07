@@ -51,11 +51,14 @@ published anywhere yet, so the Ruby path stays the default and stays supported �
 who already build or vendor the validator and would rather run one implementation than two. A blank
 value counts as unset.
 
-What it does *not* change: the selection, the report format, the summary line, or the exit
-codes. Every finding is reported against the same file, at the same line, with the same
-classification, the same counts and the same exit code on both backends. **Four messages differ in
-their trailing text only**, and they are enumerated and asserted — in both directions, so closing
-one fails the suite rather than leaving a stale claim here — in
+What it does *not* change: the selection, the report format, or the summary-line format. What it
+*can* change is narrower than an earlier version of this section claimed, and the difference is
+worth stating precisely rather than reassuringly.
+
+For every payload both JSON parsers accept, the two backends agree completely: the same finding
+against the same file at the same line, the same classification, the same counts and the same exit
+code. **Three messages differ in their trailing text only**, and they are enumerated and asserted —
+in both directions, so closing one fails the suite rather than leaving a stale claim here — in
 `spec/specguard/rspec/validator_backend_spec.rb` and in the parity harness above:
 
 | input | Ruby path | Go backend |
@@ -70,7 +73,38 @@ the linter reports, and **every** malformed-JSON annotation renders differently 
 The Ruby path interpolates Ruby's `JSON::ParserError`; the validator reproduces CPython's `json`
 diagnostic, and the backend passes that through unaltered rather than inventing a third spelling.
 Both agree on which annotation broke, and on the line and column — only the prose moves. The other
-three rows are read failures and need an unreadable path to reach at all.
+rows are read failures and need an unreadable path to reach at all.
+
+#### The fourth difference, which is not about wording
+
+The two JSON parsers do not accept the same language. CPython's `json` — which the validator
+reproduces deliberately — accepts three things Ruby's `JSON.parse` refuses:
+
+1. the non-finite literals `NaN`, `Infinity` and `-Infinity`;
+2. a high surrogate escape (`\ud800`–`\udbff`) not followed by a low one;
+3. nesting deeper than Ruby's `max_nesting: 100` default.
+
+That list is exhaustive, and it was derived rather than guessed: 89,108 documents, including every
+one of the 65,536 single `\uXXXX` escapes, through both parsers. (A *lone low* surrogate is fine on
+both — the rule is narrower than "surrogate escapes".)
+
+On such a payload the backend does not word the failure differently; it does not have the same
+failure. It parses the payload and validates it, so you get a schema violation with `-> ` reason
+lines where the Ruby path gives you one `— could not parse annotation:` line. The file, the line,
+the counts and the exit code still agree.
+
+And if that payload is otherwise **schema-valid** — reachable only through the surrogate case,
+since a number and a container cannot fill a slot the schema declares as a string — the backend
+finds nothing wrong and **exits 0 where the Ruby path exits 1**. This is the one input on which
+the two backends disagree about whether your suite passes. It is enumerated and asserted from both
+sides, in the same places as the three rows above.
+
+Both are ratified rather than fixed, and the reason is scope: `allow_nan: true` and
+`max_nesting: false` would close two of the three, but the surrogate case has no such option and
+would mean porting CPython's string decoder into this gem — and all three would change what the
+**default** Ruby path does, which the slice that added this backend deliberately holds fixed. See
+`Scanner#parse` for the full reasoning; whether the gem should adopt CPython's acceptance grammar
+is left open there rather than settled.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do

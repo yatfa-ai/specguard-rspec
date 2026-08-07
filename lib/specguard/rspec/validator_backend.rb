@@ -84,23 +84,38 @@ module SpecGuard
     #     which is a statement about a *pattern* — a concept `specguard-lint`
     #     does not have, and whose text would carry the escaped form.
     #
-    # This is one of the THREE enumerated text differences between the
-    # backends; all three are asserted in
-    # `spec/specguard/rspec/validator_backend_spec.rb` and in
-    # open-test-intent's `tests/parity/run_ruby_parity.sh` under "the Go
-    # backend". The other two are both cases of the backend passing the port's
-    # text straight through where the Ruby path spells it its own way:
+    # This is one of the FOUR enumerated differences between the backends; all
+    # four are asserted in `spec/specguard/rspec/validator_backend_spec.rb` and
+    # in open-test-intent's `tests/parity/run_ruby_parity.sh` under "the Go
+    # backend". Three of them are differences in TEXT — the backend passing the
+    # port's wording through where the Ruby path spells it its own way — and
+    # the fourth is not, which is why this list no longer calls them "text
+    # differences" as an earlier revision did:
     #
     #   * the read-failure tail — see {Scanner.scan_text}, which records why
     #     the gem emits a fixed string where CPython and the port emit a
     #     decoder diagnostic;
-    #   * the parse-failure tail — see {Scanner#parse}. A payload that survives
-    #     normalisation and still is not JSON is described by whichever JSON
-    #     parser saw it, so the Ruby path carries Ruby's
+    #   * the parse-failure tail — see {Scanner#parse} (1). A payload that
+    #     survives normalisation and still is not JSON is described by
+    #     whichever JSON parser saw it, so the Ruby path carries Ruby's
     #     `JSON::ParserError#message` and the backend carries CPython's. This
-    #     is the only one of the three that is NOT a read failure, and it is by
-    #     far the most commonly hit: `parse` is one of the three things the
-    #     linter exists to report.
+    #     is the most commonly hit of the three: `parse` is one of the three
+    #     things the linter exists to report.
+    #   * THE ACCEPTANCE SET — see {Scanner#parse} (2), and note that this one
+    #     is not a wording difference at all. The two JSON parsers do not
+    #     accept the same language: CPython takes non-finite literals, lone
+    #     high surrogates and unbounded nesting, and Ruby takes none of the
+    #     three. For such a payload the backend does not merely word the
+    #     failure differently, it does not have one — it parses the payload and
+    #     validates it, so the finding arrives as KIND_SCHEMA against the Ruby
+    #     path's KIND_PARSE, and where the payload is schema-VALID the backend
+    #     reports nothing at all and the two exit codes disagree.
+    #
+    # That last case is the only known input on which the two backends return
+    # different verdicts for the same file, and it is ratified rather than
+    # closed for reasons {Scanner#parse} sets out. Nothing here can detect it:
+    # a document reporting no findings is exactly what a clean run looks like,
+    # so the mapping below is correct and the disagreement is upstream of it.
     #
     # == Everything that can go wrong here is exit 2
     #

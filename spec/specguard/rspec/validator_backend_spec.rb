@@ -804,6 +804,341 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # ------------------------------------------------------------------------ #
+  # THE ACCEPTANCE-SET DIFFERENCE — the GENERATOR of divergence, not another
+  # instance of one.
+  #
+  # The block above ratifies a parse-message TAIL. That framing was too narrow,
+  # and the way it was too narrow matters more than the fact: it described the
+  # symptom (two JSON parsers word an error differently) rather than the cause
+  # (two JSON parsers do not accept the same LANGUAGE). Once the cause is
+  # named, the divergences it produces are enumerable in one pass instead of
+  # being discovered one fixture at a time.
+  #
+  # The cause: `bin/validate-intent` parses with CPython's `json`, and the port
+  # reproduces CPython's grammar deliberately — see
+  # cmd/validate-intent/pyjson.go, "WHAT IT BUYS BEYOND THE PROSE", which names
+  # the non-finite literals and records that accepting them was the whole point
+  # of retiring an earlier exclusion. `Scanner#parse` uses Ruby's `JSON.parse`.
+  # CPython's grammar is strictly the more permissive of the two, so there is a
+  # set of payloads one accepts and the other refuses, and every member of that
+  # set is a divergence.
+  #
+  # The set was DERIVED, not guessed: 89,108 documents — the port's own
+  # `pyjson_fuzz_test.go` seed corpus and token alphabet, a generated
+  # well-formed corpus, and every one of the 65,536 single `\uXXXX` escapes —
+  # were put through CPython's `json.loads` and Ruby's `JSON.parse`. The
+  # difference has exactly THREE members, and widening the sweep did not add a
+  # fourth. `Scanner#parse` carries the enumeration and the method.
+  #
+  # It produces TWO divergence shapes, and only one of them is a wording
+  # difference:
+  #
+  #   (v)  the payload is not schema-valid. The Ruby path never gets a value to
+  #        validate, so it reports KIND_PARSE — one em-dash line. The backend
+  #        parses it fine and reports KIND_SCHEMA — a `-> ` line per violation.
+  #        Same file, same line, same counts, same exit code; different
+  #        classification and a completely different block.
+  #
+  #   (vi) the payload IS schema-valid. The Ruby path reports it malformed and
+  #        exits 1; the backend reports NOTHING and exits 0. Only the file
+  #        agrees.
+  #
+  # Both are RATIFIED rather than closed, and the reason is scope rather than
+  # taste: this slice's contract is that an unset SPECGUARD_VALIDATE_INTENT
+  # changes nothing, and every way to close these changes the DEFAULT path. See
+  # `Scanner#parse` for the decision, including the part that is not mine —
+  # two of the three members close with `JSON.parse` options that already
+  # exist, which makes this a question for whoever owns the gem's default
+  # behaviour rather than a limitation.
+  describe "the JSON acceptance-set difference" do
+    def parses?(doc)
+      JSON.parse(doc)
+      true
+    rescue JSON::ParserError, JSON::NestingError
+      false
+    end
+
+    # ---------------------------------------------------------------------- #
+    # The enumeration, asserted against Ruby rather than described in prose.
+    #
+    # These examples do not touch the backend. They pin the BOUNDARY of the
+    # generator, so the fixtures below are demonstrably a sample of a known set
+    # rather than a list of things somebody happened to try — and so a Ruby
+    # upgrade that moved any boundary fails here, naming the cause, instead of
+    # surfacing later as a mysterious parity break.
+    describe "the set has exactly the three enumerated members" do
+      # Member 1. CPython accepts all three; the port accepts them on purpose.
+      it "refuses the non-finite literals — member 1" do
+        expect(parses?('{"a":NaN}')).to be(false)
+        expect(parses?('{"a":Infinity}')).to be(false)
+        expect(parses?('{"a":-Infinity}')).to be(false)
+      end
+
+      # Exhaustive over the escape axis. Every one of the 65,536 single
+      # `\uXXXX` escapes, and the answer is a contiguous range: the HIGH
+      # surrogates and nothing else. A lone LOW surrogate is accepted by Ruby,
+      # which is why the rule is not "surrogate escapes diverge" — stating it
+      # that way would be wider than the truth and would make the boundary
+      # fixtures below look like failures.
+      it "refuses exactly the high surrogates, across all 65536 escapes — member 2" do
+        refused = (0x0000..0xFFFF).select do |cp|
+          !parses?(format('["\\u%04x"]', cp))
+        end
+
+        expect(refused).to eq((0xD800..0xDBFF).to_a)
+      end
+
+      # And a high surrogate is rescued only by a LOW one immediately after it.
+      it "refuses a high surrogate unless a low surrogate follows it — member 2" do
+        expect(parses?('"\\ud800\\udc00"')).to be(true)
+        expect(parses?('"\\udbff\\udfff"')).to be(true)
+        expect(parses?('"\\ud800\\ud800"')).to be(false)
+        expect(parses?('"\\ud800\\u0041"')).to be(false)
+        expect(parses?('"\\ud800A"')).to be(false)
+        expect(parses?('"\\ud800"')).to be(false)
+      end
+
+      # Member 3. Ruby defaults to `max_nesting: 100`; CPython has no
+      # document-depth limit short of its recursion limit, and accepts 2000
+      # deep without complaint.
+      it "refuses nesting past max_nesting: 100 — member 3" do
+        # Ruby counts containers that have contents, so the bare-array boundary
+        # sits one level deeper than the object one. Both are pinned because
+        # either moving is the same news.
+        expect(parses?(("[" * 101) + ("]" * 101))).to be(true)
+        expect(parses?(("[" * 102) + ("]" * 102))).to be(false)
+        expect(parses?(('{"a":' * 100) + "1" + ("}" * 100))).to be(true)
+        expect(parses?(('{"a":' * 101) + "1" + ("}" * 101))).to be(false)
+      end
+
+      # The part of the decision that is not this slice's to make, pinned so it
+      # stays true. Two of the three members are one existing option away; the
+      # surrogate member has no option and would need CPython's string decoder
+      # ported into the gem — the trade `Scanner.scan_text` and `Scanner#parse`
+      # have already declined twice. Nothing here enables these; the gem's
+      # `JSON.parse` call is deliberately left at its defaults.
+      it "documents that two of the three members close with existing options" do
+        expect { JSON.parse('{"a":NaN}', allow_nan: true) }.not_to raise_error
+        expect { JSON.parse(("[" * 200) + ("]" * 200), max_nesting: false) }.not_to raise_error
+        # No option rescues the third, which is why closing two would leave the
+        # set inconsistent rather than closed.
+        expect { JSON.parse('"\\ud800"', allow_nan: true, max_nesting: false) }
+          .to raise_error(JSON::ParserError)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # Shape (v). All three members appear, because the point of enumerating a
+    # set is to sample all of it: NaN, Infinity, -Infinity, a non-finite in a
+    # REQUIRED property (which the backend reports differently again, as a type
+    # error rather than an additional property), a lone high surrogate, a bad
+    # surrogate pair, and 101-deep nesting.
+    #
+    # spec/fixtures/validator/acceptance-set-kind.json is RECORDED from
+    # `validate-intent-go --source --json spec/fixtures/acceptance_set_kind_spec.rb`
+    # run from the gem root.
+    describe "shape (v): the payload is not schema-valid — the CLASSIFICATION differs" do
+      let(:paths) { %w[spec/fixtures/acceptance_set_kind_spec.rb] }
+      let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-kind.json") }
+
+      def run_cli(env)
+        stdout = StringIO.new
+        stderr = StringIO.new
+        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+        [stdout.string, stderr.string, code]
+      end
+
+      def both_ways
+        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
+      end
+
+      def fail_lines(stdout)
+        stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+      end
+
+      it "is running where the recorded path resolves" do
+        expect(paths).to all(satisfy { |path| File.file?(path) })
+      end
+
+      # Non-vacuity, and coverage of the enumeration in one assertion: seven
+      # failures means every member of the set reached the report.
+      it "compared seven findings from all three members of the set" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(fail_lines(ruby_stdout).length).to eq(7)
+        expect(fail_lines(go_stdout).length).to eq(7)
+      end
+
+      # The shared half — and it is a real half. Everything that tells a reader
+      # WHICH annotation is broken agrees.
+      it "reports the same annotations, at the same lines" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+        lines = ->(stdout) { fail_lines(stdout).map { |line| line[/:(\d+)/, 1].to_i } }
+
+        expect(lines.call(go_stdout)).to eq(lines.call(ruby_stdout))
+        expect(lines.call(go_stdout)).to eq([31, 32, 33, 34, 35, 36, 37])
+      end
+
+      it "counts them identically, and as annotations rather than unread files" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+        summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
+
+        expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
+        expect(summary.call(go_stdout)).to eq("specguard-lint: checked 8 @intent annotations, 7 malformed")
+      end
+
+      it "exits 1 on both" do
+        (*, ruby_code), (*, go_code) = both_ways
+
+        expect(go_code).to eq(ruby_code)
+        expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+      end
+
+      it "says nothing on stderr on either backend" do
+        (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+
+        expect(go_stderr).to eq(ruby_stderr)
+        expect(go_stderr).to be_empty
+      end
+
+      # The half that is NOT shared, and the reason this needs its own shape
+      # rather than being folded into the tail ratification above: the Ruby
+      # path renders a `problem` and the backend renders `reasons`, so there is
+      # no common prefix to split on and no tail to compare. The classification
+      # itself moved.
+      it "differs in CLASSIFICATION, not in a trailing tail" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+        parse_prefix = " — could not parse annotation: "
+
+        # Ruby: every failure is a one-line `problem`.
+        expect(fail_lines(ruby_stdout)).to all(include(parse_prefix))
+        # Backend: not one of them is, and each is followed by `-> ` reasons.
+        expect(fail_lines(go_stdout)).to all(satisfy { |line| !line.include?(parse_prefix) })
+        # 15 reason lines against 7 em-dash lines: one per additional-property
+        # or type violation, and five apiece for the two `{"a": ...}` payloads
+        # that miss all four required properties as well.
+        expect(go_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(15)
+        expect(ruby_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(0)
+      end
+
+      # The retire branch. If these ever agree, the acceptance sets have been
+      # made to match and this block plus its fixture should be deleted in
+      # favour of adding the file to the byte-identical corpus above.
+      it "still differs — retire this block if it stops" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(go_stdout).not_to eq(ruby_stdout)
+      end
+
+      # Pinned from both sides, so a change to either spelling is visible here
+      # rather than only in the cross-repo harness.
+      it "renders Ruby's parse errors one way and the port's schema errors the other" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(ruby_stdout).to include("could not parse annotation: unexpected token 'NaN' at line 1 column 114")
+        expect(ruby_stdout).to include("could not parse annotation: unexpected token '-Infinity' at line 1 column 114")
+        expect(ruby_stdout).to include("could not parse annotation: incomplete surrogate pair at '\\ud800\"' at line 1 column 9")
+        expect(ruby_stdout).to include("could not parse annotation: invalid surrogate pair at '\\ud800\\ud800\"' at line 1 column 9")
+        expect(ruby_stdout).to include("could not parse annotation: nesting of 101 is too deep")
+
+        expect(go_stdout).to include("        -> <root>: additional property 'x' is not allowed")
+        expect(go_stdout).to include("        -> entity: expected type string, got number")
+        expect(go_stdout).to include("        -> <root>: missing required property 'entity'")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # Shape (vi). The strongest divergence in this file, and the only one that
+    # moves the exit code.
+    #
+    # spec/fixtures/validator/acceptance-set-verdict.json is RECORDED from
+    # `validate-intent-go --source --json spec/fixtures/acceptance_set_verdict_spec.rb`
+    # run from the gem root. It exits 0 — that is the finding.
+    describe "shape (vi): the payload IS schema-valid — the VERDICT differs" do
+      let(:paths) { %w[spec/fixtures/acceptance_set_verdict_spec.rb] }
+      let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-verdict.json") }
+
+      def run_cli(env)
+        stdout = StringIO.new
+        stderr = StringIO.new
+        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+        [stdout.string, stderr.string, code]
+      end
+
+      def both_ways
+        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 0) })]
+      end
+
+      def fail_lines(stdout)
+        stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+      end
+
+      it "is running where the recorded path resolves" do
+        expect(paths).to all(satisfy { |path| File.file?(path) })
+      end
+
+      # The whole finding, in one example. This is not a wording difference and
+      # not a classification difference: one backend fails the run and the
+      # other passes it, on the same bytes.
+      it "fails the run on the Ruby path and passes it on the backend" do
+        (ruby_stdout, _, ruby_code), (go_stdout, _, go_code) = both_ways
+
+        expect(ruby_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+        expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(fail_lines(ruby_stdout).length).to eq(2)
+        expect(fail_lines(go_stdout)).to be_empty
+      end
+
+      it "disagrees about the counts, not only about the findings" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+        summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
+
+        expect(summary.call(ruby_stdout)).to eq("specguard-lint: checked 4 @intent annotations, 2 malformed")
+        expect(summary.call(go_stdout)).to eq("specguard-lint: checked 4 @intent annotations, 0 malformed")
+      end
+
+      # What DOES still agree, so the entry is honest about its shared half
+      # rather than claiming there is none: both read the same file and find
+      # the same four annotations in it, and neither says anything on stderr.
+      it "agrees on the file and on how many annotations are in it" do
+        (ruby_stdout, ruby_stderr, *), (go_stdout, go_stderr, *) = both_ways
+        selection = ->(stdout) { stdout.lines.first.chomp }
+
+        expect(selection.call(go_stdout)).to eq(selection.call(ruby_stdout))
+        expect(selection.call(go_stdout)).to eq("specguard-lint: checked 1 spec file")
+        expect(go_stdout).to include("checked 4 @intent annotations")
+        expect(ruby_stdout).to include("checked 4 @intent annotations")
+        expect(go_stderr).to eq(ruby_stderr)
+        expect(go_stderr).to be_empty
+      end
+
+      # The boundary, and the reason the fixture carries four annotations
+      # rather than two. Lines 29 and 30 are a lone LOW surrogate and a
+      # well-formed pair: both parsers accept both, so they pass on BOTH
+      # backends. Without them this block would be evidence for a rule far
+      # wider than the one that is true.
+      it "does not fire for a lone low surrogate or a well-formed pair" do
+        (ruby_stdout, *), = both_ways
+        broken = fail_lines(ruby_stdout).map { |line| line[/:(\d+)/, 1].to_i }
+
+        expect(broken).to eq([27, 28])
+        expect(broken).not_to include(29, 30)
+      end
+
+      # The retire branch, in the only form available here: the backend must
+      # still be finding nothing. If it ever reports these, the acceptance sets
+      # have converged and this block should go.
+      it "still differs — retire this block if it stops" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(go_stdout).not_to eq(ruby_stdout)
+        expect(JSON.parse(recorded)["ok"]).to be(true)
+        expect(JSON.parse(recorded)["summary"]["failed"]).to eq(0)
+      end
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
   # Exit 1 means "an annotation is malformed" and nothing else. A backend that
   # could not produce a verdict must not borrow it — and must not land on the
   # `internal error:` backstop either, which reads as a bug in the linter
