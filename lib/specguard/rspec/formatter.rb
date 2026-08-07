@@ -221,8 +221,11 @@ module SpecGuard
     #   formatter's duty, and printing a message no other registered formatter
     #   will print is precisely its job. That is the only write.
     #
-    #   The `nil` default is for the in-process examples, which construct this
-    #   class directly; RSpec itself always supplies a stream. It cannot reach
+    #   The `nil` default has no caller. RSpec always supplies a stream, and the
+    #   two direct constructions in the repo — both in `formatter_spec.rb` —
+    #   pass one explicitly, so nothing exercises it. It survives because
+    #   narrowing a public constructor's signature is not this slice's business,
+    #   not because anything depends on it. It cannot reach
     #   `output.puts`: {#relay_message} returns early unless this object is in
     #   `RSpec.configuration.formatters`, which only RSpec puts it in, and doing
     #   so means RSpec built it. A `nil` that somehow got there would raise
@@ -271,16 +274,22 @@ module SpecGuard
     #
     # Registering *this* formatter makes that list non-empty, so `progress` is
     # never added — and since this formatter's product is a file, the run prints
-    # **nothing**. Measured on a two-example suite with one failure: 351 bytes
-    # of stdout without SpecGuard, 0 bytes with it. No dots, no failure message,
-    # no diff, no `file:line`, no re-run command, and still exit 1. The
-    # telemetry was written perfectly; the developer was left blind.
+    # **nothing**. Measured on `formatter_run_spec.rb`'s `MIXED_SUITE`: ~900
+    # bytes of stdout without SpecGuard, **0** with it. No dots, no failure
+    # message, no diff, no `file:line`, no re-run command, and still exit 1. The
+    # telemetry was written perfectly (1 line, all 3 specs); the developer was
+    # left blind.
     #
-    # (Every byte count in this class's comments names the suite it was measured
-    # on, because they come from different ones and are not comparable across
-    # methods. This paragraph's are from that two-example failing suite;
-    # {#message}'s are from a suite whose `after(:context)` hook raises, which
-    # is `NON_EXAMPLE_ERROR_SUITE` in `formatter_run_spec.rb`.)
+    # (Two rules for the byte counts in this class's comments, both learned the
+    # hard way. **Name the suite** — they come from different ones and are not
+    # comparable across methods; this paragraph's and {#reports_the_run?}'s are
+    # `MIXED_SUITE`, {#message}'s are `NON_EXAMPLE_ERROR_SUITE`, both defined in
+    # `formatter_run_spec.rb`. And **prefer a delta or a count to a total**: a
+    # total carries the run's wall-clock digits, so it is not reproducible even
+    # on the same suite — `MIXED_SUITE`'s control measured 955 and 956 bytes on
+    # consecutive invocations, and `NON_EXAMPLE_ERROR_SUITE`'s 333 through 335.
+    # Hence the `~` above, and hence the figures that carry the argument
+    # elsewhere are deltas — 0, a 27-byte hole, one error block versus two.)
     #
     # It hit exactly the wrong person. The `.rspec` wiring escaped it only
     # because the README spelled it with a second `--format progress` line, and
@@ -330,9 +339,9 @@ module SpecGuard
     # time it is added, `setup_default` has already decided that nobody handles
     # `:message` and installed a `FallbackMessageFormatter` to cover for it — so
     # the newcomer, which does handle `:message`, became the *second* listener on
-    # that notification and every message printed twice. Measured on a suite
-    # whose `after(:context)` hook raises: 338 bytes and one error block without
-    # SpecGuard, 546 bytes and two with it. {#message} is the fix, and it works
+    # that notification and every message printed twice. Measured on
+    # `NON_EXAMPLE_ERROR_SUITE`: one error block without SpecGuard, two with it
+    # (~335 bytes against ~546). {#message} is the fix, and it works
     # by making `setup_default`'s premise true rather than by undoing its
     # conclusion — there is no public way to withdraw a registered listener.
     #
@@ -378,9 +387,10 @@ module SpecGuard
     #
     # Before this method, this class did not listen for `:message`, so the
     # fallback was always appointed — and then {#seed} added `progress`, which
-    # listens for it too. Two listeners, one stream, every message twice. A suite
-    # whose `after(:context)` hook raises printed its error block once and 338
-    # bytes without SpecGuard, and twice and 546 bytes with it.
+    # listens for it too. Two listeners, one stream, every message twice. On
+    # `NON_EXAMPLE_ERROR_SUITE` the error block printed once without SpecGuard
+    # and twice with it, which is the claim that matters and the one the spec
+    # asserts; the streams were ~335 and ~546 bytes.
     #
     # The fallback cannot be withdrawn once appointed: `Reporter#register_listener`
     # has no inverse, and `Configuration#formatters` hands back a `dup`
@@ -565,8 +575,9 @@ module SpecGuard
     # `dump_summary` alone is *not* enough, and shipping it alone was a bug. A
     # suite run with `--format failures` prints one line per failure and no
     # summary, so a `dump_summary`-only question read it as "nobody is reporting"
-    # and bolted a whole progress run onto an explicitly chosen formatter — 32
-    # bytes of failure list became 427 bytes of dots, backtrace and summary. That
+    # and bolted a whole progress run onto an explicitly chosen formatter.
+    # Measured on `formatter_run_spec.rb`'s `MIXED_SUITE`: 61 bytes of failure
+    # list became ~963 bytes of dots, backtrace and summary. That
     # is the additive promise broken in the same breath as it is kept.
     #
     # == What `respond_to?` cannot see

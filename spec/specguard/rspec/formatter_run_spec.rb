@@ -69,8 +69,10 @@ module FormatterRunHelpers
   # It did. The first attempt at SPGD-195's repair added `progress` at `:seed`
   # without noticing that `setup_default` had already appointed the fallback
   # (because this formatter did not implement `message`), so both printed and
-  # every message came out twice: 338 bytes and one error block without
-  # SpecGuard, 546 bytes and two with it. Every suite in this file up to that
+  # every message came out twice: one error block without SpecGuard, two with
+  # it (~335 bytes against ~546 — the block count is the stable figure and the
+  # one asserted below; the totals carry the run's wall-clock digits and move
+  # by a byte or two between invocations). Every suite in this file up to that
   # point was a pure example suite with no message path at all, so nothing went
   # red — the same shape as the bug this file exists to pin, one level in.
   NON_EXAMPLE_ERROR_SUITE = <<~RUBY
@@ -276,8 +278,9 @@ module FormatterRunHelpers
   # is the shape that catches an over-eager repair. `FailureListFormatter` prints
   # one line per failure and **no summary**, so a repair that asks "will anything
   # print a summary?" reads it as nobody reporting and bolts a whole progress run
-  # onto a formatter the developer explicitly chose: 32 bytes of failure list
-  # became 427 bytes of dots, backtrace and summary. `--format documentation`
+  # onto a formatter the developer explicitly chose. Measured on `MIXED_SUITE`:
+  # 61 bytes of failure list became ~963 bytes of dots, backtrace and summary.
+  # `--format documentation`
   # cannot catch that — documentation does print a summary.
   #
   # @param suite [String, nil] the single-file case, written to `sample_spec.rb`.
@@ -682,8 +685,8 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
   # summaries — `FallbackMessageFormatter` when nothing else listens for
   # `:message` — so restoring the default without accounting for it gives that
   # notification two listeners and prints every message twice. Measured before
-  # the fix: 338 bytes and one error block at the control, 546 bytes and two
-  # under the README's Ruby wiring. Every other suite in this file is a pure
+  # the fix: one error block at the control, two under the README's Ruby
+  # wiring. Every other suite in this file is a pure
   # example suite with no message path, so nothing else here can see it.
   describe "output parity with a run that has no SpecGuard at all" do
     {
@@ -730,8 +733,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # — `seed_used?` is false and the seed banner is never printed by anyone, so
     # dropping that forwarding changes nothing observable and the whole suite
     # stays green. Under `--order random` it is the difference between a
-    # developer being able to reproduce a flaky failure and not: 430 bytes with
-    # the head banner, 403 without it.
+    # developer being able to reproduce a flaky failure and not: deleting the
+    # forwarding loop costs `MIXED_SUITE` its head banner and the blank line
+    # above it — a 27-byte hole, and the *only* difference between the two
+    # streams. Quoted as a delta rather than as two totals on purpose: the
+    # totals carry the run's wall-clock digits, so they move between two
+    # invocations of this same suite, while the 27 bytes are exactly those two
+    # lines and do not.
     #
     # Only `:ruby` is exercised here on purpose. Under the `.rspec` wiring
     # `progress` is registered before the run starts, so the restore returns
@@ -780,7 +788,8 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
   # failure — and never prints a summary. The first attempt at this repair asked
   # only whether some formatter would print a summary, so it read this developer
   # as unserved and added a whole progress run on top of the formatter they had
-  # explicitly named: 32 bytes became 427. `--format documentation` cannot catch
+  # explicitly named. Measured on `MIXED_SUITE`, which is what both examples
+  # below run: 61 bytes became ~963. `--format documentation` cannot catch
   # that, because documentation prints a summary and is therefore recognised
   # either way.
   describe "a suite whose developer explicitly chose --format failures" do
