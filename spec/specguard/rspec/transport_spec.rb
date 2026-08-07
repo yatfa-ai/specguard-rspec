@@ -75,11 +75,149 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(request.json).to eq(payload)
     end
 
-    # FIND 3: the platform does not decompress request bodies, so a gzipped one
-    # reaches the JSON parser as bytes and 400s. Identity is not laziness here,
-    # it is the only encoding that lands.
-    it "sends the body uncompressed, because the platform cannot decompress one" do
+    # This example used to assert the opposite, and the reason it did was true
+    # at the time: the platform could not inflate a request body, so identity
+    # was the only encoding that landed. `GzipRequestBody` (SPGD-175) removed
+    # that constraint, and this run is *still* identity-encoded — for a
+    # different reason. It is far under the threshold, and a small body stays
+    # readable to `curl`, `tcpdump` and anyone reading the stub server's record
+    # of what arrived.
+    #
+    # The size assertion is not decoration: without it this example would keep
+    # passing while silently testing nothing the day the fixture grows past the
+    # threshold.
+    it "leaves a small run uncompressed, so it stays inspectable on the wire" do
+      expect(payload.to_json.bytesize).to be < described_class::GZIP_THRESHOLD_BYTES
       expect(request.headers["content-encoding"]).to be_nil
+    end
+  end
+
+  # A 20,000-example run serializes to 7,354,782 bytes (7.01 MiB), and `#post`
+  # bounds the whole request — the *write* included — with one timeout, 10s by
+  # default. Below 5.9 Mbit/s of uplink that body cannot be written in time:
+  # `#deliver` answers `Result(outcome: :failed)`, the formatter falls back to
+  # `log/test_results.jsonl`, and the platform never receives the run. Which is
+  # the large-suite case the whole formatter exists for. Gzipped, the same body
+  # is 346,206 bytes (0.33 MiB) — 21.2x.
+  #
+  # `Transport`'s class comment owns those figures, including how they were
+  # measured and why 21.2x is the optimistic end. They are repeated here only
+  # because this is where the behavior they justify is proved; if they are ever
+  # re-measured, that comment is the one that has to change and this one is the
+  # second site. An earlier draft of this file quoted the *proposal*'s numbers
+  # (~6 MiB / ~0.17 MiB / 35x), which SPGD-159 had already invalidated by adding
+  # `id` and `spec_file_path` to every row — re-measure rather than quote.
+  #
+  # Those are figures for a *real* formatter run. The fixture below is not one,
+  # and is deliberately not described as one: `run_of` builds a leaner row than
+  # the formatter emits, so `run_of(20_000)` is 4,655,671 bytes (4.44 MiB),
+  # gzipping to 243,458 (19.1x). That is the right trade for a unit spec — it
+  # exercises the same code path at the same order of magnitude without a
+  # multi-second fixture build — but it means this file proves the *mechanism*
+  # at scale, while the 7.01 MiB figure above is the thing the mechanism exists
+  # for. Do not read the two as the same measurement.
+  describe "a run big enough to need compressing" do
+    # Sized by construction rather than by a hopeful example count: the row
+    # shape changes (SPGD-159 added two fields), and a fixed count would one day
+    # stop clearing the threshold and quietly stop testing compression.
+    def run_of(examples)
+      row = payload["specs"].first
+
+      payload.merge("specs" => Array.new(examples) do |i|
+        row.merge("id" => "./spec/models/model_#{i}_spec.rb[1:1]",
+                  "file_path" => "spec/models/model_#{i}_spec.rb",
+                  "line_number" => i + 1,
+                  "name" => "Model#{i} does the one thing it is for")
+      end)
+    end
+
+    let(:big) { run_of(2_000) }
+
+    let(:captured) do
+      StubIngestEndpoint.run do |server|
+        transport_to(server).deliver(big)
+        server.requests.first
+      end
+    end
+
+    before { expect(big.to_json.bytesize).to be > described_class::GZIP_THRESHOLD_BYTES }
+
+    it "declares the body gzipped, which the platform's inflater keys on" do
+      expect(captured.headers["content-encoding"]).to eq("gzip")
+    end
+
+    # `Content-Type` describes the body *inside* the encoding. Sending
+    # `application/gzip` would be the natural-looking mistake, and the platform
+    # inflates first and then parses as JSON, so it would 400 every large run.
+    it "still declares the payload itself as JSON" do
+      expect(captured.headers["content-type"]).to eq("application/json")
+    end
+
+    it "puts materially fewer bytes on the wire than the payload serializes to" do
+      expect(captured.body.bytesize).to be < (big.to_json.bytesize / 10)
+    end
+
+    # The length has to describe the bytes actually sent, not the payload they
+    # came from. `ActionDispatch::Request#raw_post` reads exactly
+    # `Content-Length` bytes, so an over-large value hangs the read and an
+    # under-large one hands the inflater a truncated stream.
+    it "sets Content-Length to what it actually wrote" do
+      expect(captured.headers["content-length"]).to eq(captured.body.bytesize.to_s)
+    end
+
+    # The claim the header alone cannot make. A transport that set
+    # `Content-Encoding: gzip` and then gzipped the wrong string — or gzipped
+    # it twice — passes every assertion above and loses the run in production.
+    it "round-trips key for key once the receiver inflates it" do
+      expect(captured.json).to eq(big)
+    end
+
+    # The scale target itself, at the volume the roadmap named, because the
+    # threshold examples above prove the mechanism on a body that only just
+    # clears it. 4.44 MiB of JSON through a real socket — see the note above on
+    # why this fixture is leaner than the 7.01 MiB a real 20k run produces.
+    it "round-trips a 20,000-example run key for key" do
+      huge = run_of(20_000)
+
+      arrived = StubIngestEndpoint.run do |server|
+        transport_to(server, timeout: 30).deliver(huge)
+        server.requests.first
+      end
+
+      expect(arrived.headers["content-encoding"]).to eq("gzip")
+      expect(arrived.json).to eq(huge)
+      expect(arrived.json["specs"].length).to eq(20_000)
+    end
+
+    # Compression is an optimisation, and the never-block-CI contract says an
+    # optimisation may not cost a run. Both branches of `#compress`'s guard are
+    # exercised: a `Zlib` fault, and the `zlib` extension missing from a
+    # stripped-down Ruby — a `LoadError`, which is a `ScriptError` and which a
+    # bare `rescue` would not catch.
+    describe "when compression itself fails" do
+      [[Zlib::BufError, "out of buffer space"],
+       [NotImplementedError, "no zlib in this build"]].each do |error, message|
+        it "still delivers the run, identity-encoded, after a #{error}" do
+          allow(Zlib).to receive(:gzip).and_raise(error, message)
+
+          StubIngestEndpoint.run(status: 202) do |server|
+            result = transport_to(server).deliver(big)
+            arrived = server.requests.first
+
+            expect(result).to be_success
+            expect(arrived.headers["content-encoding"]).to be_nil
+            expect(arrived.json).to eq(big)
+          end
+        end
+
+        it "does not raise out of #deliver after a #{error}" do
+          allow(Zlib).to receive(:gzip).and_raise(error, message)
+
+          StubIngestEndpoint.run(status: 202) do |server|
+            expect { transport_to(server).deliver(big) }.not_to raise_error
+          end
+        end
+      end
     end
   end
 

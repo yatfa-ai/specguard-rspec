@@ -5,6 +5,6 @@
 # only needs to demonstrate the gem is requireable and versioned.
 RSpec.describe SpecGuard::RSpec do
   it "defines SpecGuard::RSpec::VERSION" do
-    expect(SpecGuard::RSpec::VERSION).to eq("0.1.0")
+    expect(SpecGuard::RSpec::VERSION).to eq("0.2.0")
   end
 end
