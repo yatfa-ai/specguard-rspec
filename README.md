@@ -185,6 +185,29 @@ There are **no retries**, and the whole delivery is bounded by `timeout`
 allowed to be lost, and a retry would only double what a hung endpoint can cost
 your CI run.
 
+**A dry run is refused, to both sinks.** `rspec --dry-run` builds and reports
+every example without executing a single body, so its per-example `duration` is
+the cost of *constructing* an example (single-digit microseconds — a
+`sleep 0.05` example understates its own runtime by three to four orders of
+magnitude) and its `outcome` is `passed` for code that never
+ran. Nothing downstream can tell the difference, and an all-green, near-instant
+run is exactly the shape that poisons both the numbers SpecGuard reports. So
+when RSpec is in dry-run mode the formatter makes no POST **and** writes no line
+to `log/test_results.jsonl` — a file full of zero-duration green runs is the
+same corruption, deferred until something replays it — and says so once:
+
+```
+SpecGuard: skipped test telemetry for a dry run (rspec --dry-run executes no
+example bodies, so this run's durations and outcomes would not be
+measurements). Nothing was sent or written; the test run is unaffected.
+```
+
+This matters most where you are least likely to look for it: an API key is
+usually an environment-level secret rather than a job-level one, so a lint job
+that runs `rspec --dry-run` to catch an unparseable spec file inherits the key
+and would otherwise overwrite your suite's real duration and pass/fail picture
+with zeroes and green.
+
 It **never blocks CI.** RSpec does not sandbox formatters — an exception raised
 in one escapes the runner and takes RSpec's own exit code with it — so every
 hook rescues, warns once on stderr, and leaves the exit status to your suite

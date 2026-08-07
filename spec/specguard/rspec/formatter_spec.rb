@@ -826,6 +826,132 @@ RSpec.describe SpecGuard::RSpecFormatter do
   end
 
   # Criterion 5. Each of these fails if its rescue is deleted.
+  # The delivery decision that comes before every other one: was anything
+  # actually measured?
+  #
+  # `rspec --dry-run` builds and reports every example without executing a
+  # body, so `duration` becomes the cost of construction (~1e-5s) and `outcome`
+  # becomes `passed` for code that never ran. Neither field carries a marker
+  # saying so, `Ingest::Payload` validates neither, and
+  # `Repository#latest_test_run` is last-writer-wins — so a lint job that
+  # inherits an environment-level API key replaces the repository's headline
+  # with all-green zeroes.
+  #
+  # Dry-run mode is a property of the process, so these examples stub the one
+  # seam that reads it. The end-to-end proof — a real `rspec --dry-run` against
+  # a real socket — is in formatter_run_spec.rb.
+  describe "refusing to deliver a dry run" do
+    def dry_run!(value = true)
+      configuration = instance_double(RSpec::Core::Configuration, dry_run?: value)
+      allow(formatter).to receive(:rspec_configuration).and_return(configuration)
+    end
+
+    # Criterion 5, and the only example here that names the *cause* rather than
+    # a downstream symptom.
+    #
+    # `SpecGuard::RSpec` is this gem's own namespace, so a bare
+    # `RSpec.configuration` inside `module SpecGuard` reaches this gem's
+    # Configuration — which has no `dry_run?`. Measured by mutating
+    # `#rspec_configuration` and running this suite: with the formatter's
+    # `respond_to?` guard in place that does not raise, it answers "not a dry
+    # run" for every run and silently reinstates the defect the guard exists to
+    # close. Five examples fail, four of them process-level ones in
+    # formatter_run_spec.rb that can only report the symptom; this is the one
+    # that says which line is wrong.
+    #
+    # (Mutating both — bare `RSpec` *and* no `respond_to?` — is the state the
+    # ticket warned about: a swallowed NoMethodError leaving a formatter that
+    # delivers nothing at all. That one is not subtle; 84 examples fail.)
+    it "reads the real RSpec's configuration, not this gem's same-named one" do
+      expect(formatter.send(:rspec_configuration)).to equal(::RSpec.configuration)
+    end
+
+    it "is asking a question this gem's own configuration cannot answer" do
+      expect(SpecGuard::RSpec.configuration).not_to respond_to(:dry_run?)
+      expect(::RSpec.configuration).to respond_to(:dry_run?)
+    end
+
+    # The control for everything below: this suite is not itself a dry run, so
+    # unstubbed the predicate must be false and delivery must be ordinary.
+    it "delivers normally when RSpec is not in dry-run mode" do
+      expect(formatter.send(:dry_run?)).to be(false)
+
+      finish(build_example)
+      formatter.close(nil)
+
+      expect(sink_lines.length).to eq(1)
+    end
+
+    context "when RSpec is in dry-run mode" do
+      before { dry_run!(true) }
+
+      it "appends nothing to the local sink" do
+        finish(build_example)
+        formatter.close(nil)
+
+        expect(sink_lines).to be_empty
+      end
+
+      it "issues no POST, even with an API key and an endpoint configured" do
+        StubIngestEndpoint.run do |server|
+          SpecGuard::RSpec.configure do |config|
+            config.endpoint = server.endpoint
+            config.api_key = "sgk_abc123"
+            config.timeout = 5
+          end
+
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(server.requests).to be_empty
+        end
+      end
+
+      it "says so on stderr, exactly once" do
+        3.times { finish(build_example) }
+        formatter.close(nil)
+
+        expect(errors.string).to include(described_class::DRY_RUN_WARNING_PREFIX)
+        expect(errors.string.lines.length).to eq(1)
+      end
+
+      # Only the *delivery* decision changes. Capture is left exactly as it
+      # was, so a caller — or a future replay path — can still inspect what the
+      # run looked like without anything having been written anywhere.
+      it "still captures the run, so #payload remains inspectable" do
+        finish(build_example)
+        formatter.stop(nil)
+        formatter.close(nil)
+
+        expect(formatter.payload["specs"].length).to eq(1)
+        expect(formatter.payload["duration_seconds"]).to be_a(Float)
+      end
+
+      it "does not raise out of close" do
+        expect { formatter.close(nil) }.not_to raise_error
+      end
+    end
+
+    # Criterion 5's second half. An RSpec build without the predicate must fall
+    # through to *normal delivery* — the pre-existing behaviour — rather than
+    # to a NoMethodError that never_fail_the_run would swallow into silence.
+    context "when the RSpec configuration has no #dry_run? at all" do
+      before { allow(formatter).to receive(:rspec_configuration).and_return(Object.new) }
+
+      it "treats the run as an ordinary one" do
+        expect(formatter.send(:dry_run?)).to be(false)
+      end
+
+      it "delivers it, rather than swallowing a NoMethodError into silence" do
+        finish(build_example)
+        formatter.close(nil)
+
+        expect(sink_lines.length).to eq(1)
+        expect(errors.string).to be_empty
+      end
+    end
+  end
+
   describe "never failing the run" do
     def unwritable_sink!
       blocker = File.join(tmpdir, "blocker")

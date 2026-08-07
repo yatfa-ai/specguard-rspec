@@ -197,6 +197,14 @@ module SpecGuard
     # thing to fix is a key or a URL rather than a broken sink.
     DELIVERY_WARNING_PREFIX = "SpecGuard: could not deliver test telemetry"
 
+    # The third shape, and the only one that reports a *deliberate* refusal
+    # rather than something going wrong. Nothing failed and nothing is
+    # recoverable from a file, because there was nothing worth keeping — see
+    # {#dry_run?}. It still gets said out loud: a user who wired the formatter
+    # up and then saw neither a POST nor a line would otherwise have to go
+    # looking for a bug that is not there.
+    DRY_RUN_WARNING_PREFIX = "SpecGuard: skipped test telemetry for a dry run"
+
     # `Ingest::Payload::STATUSES`, restated. The platform validates every spec
     # against this pair (`payload.rb:17`), so they are the contract and not a
     # local naming choice.
@@ -628,7 +636,16 @@ module SpecGuard
     # Writing the payload to the local sink turns silent loss into recoverable
     # loss, which is the same thing `output_path` already exists for ("supports
     # a future replay-from-file ingestion path").
+    #
+    # == And the one case that goes to neither sink
+    #
+    # A dry run is refused outright — no POST, no line. It is the exception to
+    # the paragraph above because there is nothing to recover: the run measured
+    # nothing, so keeping it is not preserving telemetry, it is manufacturing
+    # it. {#dry_run?} has the argument in full.
     def deliver(data)
+      return skip_dry_run if dry_run?
+
       configuration = SpecGuard::RSpec.configuration
       return append(data) if blank?(configuration.api_key)
 
@@ -660,6 +677,88 @@ module SpecGuard
 
       "the commit could not be determined, and the endpoint rejects a run without one " \
         "(set SPECGUARD_COMMIT_SHA)"
+    end
+
+    # Is RSpec executing example bodies at all?
+    #
+    # == Why a dry run must not be delivered
+    #
+    # `rspec --dry-run` walks the suite, builds every example and reports each
+    # one as `passed`, without running a single body. The two per-example fields
+    # this formatter exists to report are therefore both fabrications:
+    # `duration` is the cost of constructing an example (single-digit
+    # microseconds against the pinned rspec-core 3.13.6 — a `sleep 0.05`
+    # example understates its own runtime by three to four orders of magnitude)
+    # and `outcome` is `passed` for code that never executed.
+    #
+    # Nothing downstream can tell. The payload carries no dry-run marker,
+    # `Ingest::Payload` validates neither field, and `Repository#latest_test_run`
+    # is last-writer-wins — so one lint job that runs `rspec --dry-run` with an
+    # environment-level `SPECGUARD_API_KEY` in scope replaces the suite's
+    # headline with all-green zeroes that look exactly like a fast, healthy
+    # suite.
+    #
+    # The local sink gets the same refusal for the same reason: a `.jsonl` of
+    # zero-duration all-green runs is the identical corruption, deferred until
+    # something replays it.
+    #
+    # == The `::` is load-bearing — do not remove it
+    #
+    # This is the class-body hazard documented at the top of `module SpecGuard`,
+    # in its worst form. Inside this namespace a bare `RSpec.configuration`
+    # resolves to `SpecGuard::RSpec.configuration` — *this gem's* Configuration,
+    # whose accessors are `commit_sha`, `branch`, `run_id`, `shard_id`,
+    # `output_path`, `endpoint`, `api_key` and `timeout`, and which has no
+    # `dry_run?`. Note that several methods here — {#payload}, {#deliver},
+    # {#append} — legitimately call `SpecGuard::RSpec.configuration` for this
+    # gem's own settings, so both spellings appear in this file and mean
+    # different things.
+    #
+    # The mis-spelling's consequence depends on the `respond_to?` below, and
+    # both halves were measured by mutating this method and running the suite:
+    #
+    #   bare `RSpec`, respond_to? kept     this gem's Configuration answers
+    #                                      `respond_to?(:dry_run?) => false`, so
+    #                                      every run is treated as ordinary and
+    #                                      the defect this method closes is
+    #                                      silently reinstated. 5 examples fail,
+    #                                      all of them dry-run ones.
+    #   bare `RSpec`, respond_to? removed  NoMethodError inside `close`'s
+    #                                      {#never_fail_the_run}, swallowed — a
+    #                                      formatter that delivers *nothing*, on
+    #                                      every run, behind one warning line,
+    #                                      while the suite still passes. 84
+    #                                      examples fail.
+    #
+    # So `respond_to?` is not only there for an RSpec build without the
+    # predicate: it is what keeps a mis-spelling from escalating into deleting
+    # all telemetry. Neither state is acceptable, and the extracted
+    # {#rspec_configuration} gives the `::` exactly one place to be wrong and
+    # one place to be pinned — formatter_spec.rb asserts it is `equal` to
+    # `::RSpec.configuration`, which is the only assertion that names the cause
+    # rather than a downstream symptom.
+    def dry_run?
+      configuration = rspec_configuration
+      return false unless configuration.respond_to?(:dry_run?)
+
+      configuration.dry_run?
+    end
+
+    # The real RSpec's configuration, as opposed to this gem's. Its own method
+    # so that the `::` above has exactly one place to be wrong, and one place to
+    # be pinned by a test. See {#dry_run?}.
+    def rspec_configuration
+      ::RSpec.configuration
+    end
+
+    # Said rather than done silently, and through the same one-shot budget as
+    # every other warning so a dry run still emits at most one line. Nothing is
+    # appended: this is the one path where the absence of a file is the
+    # feature.
+    def skip_dry_run
+      emit_warning("#{DRY_RUN_WARNING_PREFIX} (rspec --dry-run executes no example bodies, so " \
+                   "this run's durations and outcomes would not be measurements). " \
+                   "Nothing was sent or written; the test run is unaffected.")
     end
 
     def fall_back(data, reason)
