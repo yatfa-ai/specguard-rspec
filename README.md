@@ -25,6 +25,17 @@ bundle exec specguard-lint --changed   # CI mode: only files in the current diff
 bundle exec specguard-lint             # one-off audit: every *_spec.rb
 ```
 
+Files are **positional** (`specguard-lint spec/order_spec.rb`); there is no `--source` flag —
+that belongs to the reference tool, not to this one.
+
+The linter is an independent implementation of the same protocol, and its agreement with the
+reference is checked by running the two side by side rather than asserted in a comment:
+`tests/parity/run_ruby_parity.sh` in
+[open-test-intent](https://github.com/yatfa-ai/open-test-intent) runs `specguard-lint` and the
+Go validator over a shared corpus and requires identical findings, ordering and exit codes.
+Two read-failure messages are ratified as different there, with the reasons; everything else
+matches byte for byte.
+
 ## The formatter — `SpecGuard::RSpecFormatter`
 
 An **additive** RSpec formatter: it runs alongside your usual one (`progress`, `documentation`, …)

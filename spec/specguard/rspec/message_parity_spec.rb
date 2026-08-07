@@ -17,6 +17,20 @@
 # gem bump, these fail — which is the point: the renderer builds text from the
 # gem's structured fields precisely so that drift is impossible, and this is
 # the assertion that proves it stayed impossible.
+#
+# WHAT THIS FILE IS NOT, and where the rest lives
+# ===============================================
+# Four payloads through `Schema#violations`. No scanner, no CLI, no exit code,
+# no second process — by the constraint above, which stands. Reading this file
+# as "Ruby ≡ the reference" would be reading four hand-copied strings as a
+# proof about two programs.
+#
+# The executable cross-tool comparison lives in the other repo, where it can
+# shell out without making this suite unrunnable:
+# `open-test-intent/tests/parity/run_ruby_parity.sh` runs `bin/specguard-lint`
+# and the Go port over the shared corpus and requires their findings, their
+# ordering and their exit codes to agree. Nothing here needs to change to
+# accommodate it, and nothing here should be "improved" into shelling out.
 RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
   subject(:schema) { SpecGuard::RSpec::Schema.load }
 
