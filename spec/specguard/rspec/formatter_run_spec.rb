@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "open3"
+require "fileutils"
 
 require_relative "../../support/stub_ingest_endpoint"
 
@@ -111,6 +112,53 @@ module FormatterRunHelpers
     end
   RUBY
 
+  # A table-driven loop: the `it` is written once, on line 4, so all three
+  # examples report the same `metadata[:line_number]`. Nothing here is
+  # contrived — this is how anyone writes a parameterised case table, and under
+  # a `(file_path, line_number)` key all three collapse onto one row.
+  LOOP_SUITE = <<~RUBY
+    RSpec.describe "Order" do
+      [["visa", 200], ["expired", 402], ["stolen", 403]].each do |card, status|
+        it "returns \#{status} for a \#{card} card" do
+          expect(status).to be_positive
+        end
+      end
+    end
+  RUBY
+
+  # A shared example group defined in `spec/support/shared.rb` and run from two
+  # different spec files. Every one of the four examples is *defined* at the
+  # same two coordinates, and `spec/support/shared.rb` is not a `*_spec.rb` at
+  # all — so under the old key the two files that actually ran the tests appear
+  # nowhere in the payload.
+  SHARED_EXAMPLE_FILES = {
+    "spec/support/shared.rb" => <<~RUBY,
+      RSpec.shared_examples "a persisted record" do
+        it "has an identifier" do
+          expect(1).to be_positive
+        end
+
+        it "survives a reload" do
+          expect(true).to be(true)
+        end
+      end
+    RUBY
+    "spec/orders_spec.rb" => <<~RUBY,
+      require_relative "support/shared"
+
+      RSpec.describe "Order" do
+        it_behaves_like "a persisted record"
+      end
+    RUBY
+    "spec/users_spec.rb" => <<~RUBY
+      require_relative "support/shared"
+
+      RSpec.describe "User" do
+        it_behaves_like "a persisted record"
+      end
+    RUBY
+  }.freeze
+
   # Makes the annotation lookup's one external dependency blow up, from inside
   # the child process, without touching lib/. Stands in for the family the
   # lookup cannot control: an unreadable spec file, a spec file that is not
@@ -147,14 +195,26 @@ module FormatterRunHelpers
   # processes requires before it loads formatters, so this is also exactly the
   # `.rspec` incantation the README documents.
   #
+  # @param suite [String, nil] the single-file case, written to `sample_spec.rb`.
+  # @param files [Hash{String=>String}] additional files, by root-relative path.
+  #   Intermediate directories are created. Every key matching `*_spec.rb` is
+  #   passed to `rspec` as a target; anything else is a support file, reachable
+  #   from a spec by `require_relative`. This is what lets a shared example group
+  #   be exercised the only way it can be — defined in one file, run from two.
   # @param prepare [#call] optional hook, handed the project root, returning
   #   environment overrides for the child.
   # @param sabotage [Boolean] load {SABOTAGE} into the child before the
   #   formatter runs, so the annotation lookup's scanner raises.
   # @return [Run]
-  def run_rspec(suite, prepare: nil, sabotage: false)
+  def run_rspec(suite = nil, files: {}, prepare: nil, sabotage: false)
     Dir.mktmpdir do |root|
-      File.write(File.join(root, "sample_spec.rb"), suite)
+      sources = suite ? { "sample_spec.rb" => suite }.merge(files) : files
+      sources.each do |path, contents|
+        full_path = File.join(root, path)
+        FileUtils.mkdir_p(File.dirname(full_path))
+        File.write(full_path, contents)
+      end
+      targets = sources.keys.grep(/_spec\.rb\z/)
       env = HERMETIC_ENV.merge(prepare ? prepare.call(root) : {})
 
       requires = ["--require", "specguard/rspec/formatter"]
@@ -168,7 +228,7 @@ module FormatterRunHelpers
         *requires,
         "--format", "SpecGuard::RSpecFormatter",
         "--format", "progress",
-        "sample_spec.rb",
+        *targets,
         chdir: root
       )
 
@@ -365,7 +425,20 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     it "carries exactly the fields the platform's spec entry is made of" do
       expect(specs.first.keys)
-        .to contain_exactly("file_path", "line_number", "name", "duration", "outcome", "status", "intent")
+        .to contain_exactly("id", "spec_file_path", "file_path", "line_number", "name", "duration",
+                            "outcome", "status", "intent")
+    end
+
+    # Criterion 3, on the ordinary suite: no two rows share an identity even
+    # when nothing about the suite is unusual.
+    it "gives every example an id of its own" do
+      expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(specs.length)
+    end
+
+    # The ordinary case: nothing is shared, so the file that ran the example and
+    # the file that defined it are the same file.
+    it "reports the owning spec file as the file the examples are written in" do
+      expect(specs.map { |spec| spec["spec_file_path"] }).to all(eq("sample_spec.rb"))
     end
 
     it "leaves the suite's own exit status alone" do
@@ -472,6 +545,107 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(annotated).to eq(3)
         expect(annotated).to be < specs.length
       end
+    end
+  end
+
+  # The two shapes that make `(file_path, line_number)` the wrong key, run for
+  # real. A double cannot prove either of these: it is told what `id` to answer,
+  # so it would agree with any implementation. Only RSpec deciding for itself
+  # says whether the identity actually separates these examples.
+  describe "a table-driven loop, where one `it` produces several examples" do
+    before(:context) { @run = run_rspec(FormatterRunHelpers::LOOP_SUITE) }
+
+    let(:run) { @run }
+    let(:specs) { run.payload["specs"] }
+
+    it "runs all three examples" do
+      expect(run.stdout).to include("3 examples, 0 failures")
+      expect(specs.length).to eq(3)
+    end
+
+    # The defect, stated as the measurement. All three are written on line 3 —
+    # that is what the loop *is* — so the coordinate has one distinct value for
+    # three examples.
+    it "reports one shared definition coordinate for all three" do
+      expect(specs.map { |spec| spec["line_number"] }).to all(eq(3))
+      expect(specs.map { |spec| [spec["file_path"], spec["line_number"]] }.uniq.length).to eq(1)
+    end
+
+    # Criterion 1. Three rows, three identities — so a per-example duration and
+    # a per-example outcome each have somewhere to live.
+    it "still gives each of the three an id of its own" do
+      expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(3)
+    end
+
+    # RSpec's own re-run argument, verbatim: `rspec './loop_spec.rb[1:2]'` runs
+    # exactly the second case and nothing else. Keeping the `./` prefix is the
+    # point — it is what makes the value paste-able rather than merely unique.
+    it "makes each id the argument that re-runs that one example" do
+      expect(specs.map { |spec| spec["id"] })
+        .to eq(["./sample_spec.rb[1:1]", "./sample_spec.rb[1:2]", "./sample_spec.rb[1:3]"])
+    end
+
+    it "still names each example distinctly, and still accepts every row" do
+      expect(specs.map { |spec| spec["name"] }).to eq(
+        ["Order returns 200 for a visa card",
+         "Order returns 402 for a expired card",
+         "Order returns 403 for a stolen card"]
+      )
+      violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
+      expect(violations).to be_empty
+    end
+  end
+
+  describe "a shared example group run from two different spec files" do
+    before(:context) { @run = run_rspec(files: FormatterRunHelpers::SHARED_EXAMPLE_FILES) }
+
+    let(:run) { @run }
+    let(:specs) { run.payload["specs"] }
+
+    it "runs both files' worth of examples" do
+      expect(run.stdout).to include("4 examples, 0 failures")
+      expect(specs.length).to eq(4)
+    end
+
+    # The defect, again as a measurement. Four examples, two coordinates — and
+    # both coordinates name a file the linter never even scans, because
+    # `spec/support/shared.rb` is not a `*_spec.rb`.
+    it "reports every one of them as defined in the shared support file" do
+      expect(specs.map { |spec| spec["file_path"] }).to all(eq("spec/support/shared.rb"))
+      expect(specs.map { |spec| [spec["file_path"], spec["line_number"]] }.uniq.length).to eq(2)
+    end
+
+    # Criterion 2, first half.
+    it "still gives each of the four an id of its own" do
+      expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(4)
+    end
+
+    # Criterion 2, second half — and the whole reason `spec_file_path` is a
+    # separate field. Without it the two files that actually ran these tests
+    # appear nowhere in the payload, so a duration-by-file report attributes all
+    # four to a `spec/support/` helper.
+    it "names the including spec file as the file that ran each example" do
+      expect(specs.map { |spec| spec["spec_file_path"] })
+        .to contain_exactly("spec/orders_spec.rb", "spec/orders_spec.rb",
+                            "spec/users_spec.rb", "spec/users_spec.rb")
+    end
+
+    it "roots each id at the including file too, so re-running one is unambiguous" do
+      expect(specs.map { |spec| spec["id"] }).to contain_exactly(
+        "./spec/orders_spec.rb[1:1:1]", "./spec/orders_spec.rb[1:1:2]",
+        "./spec/users_spec.rb[1:1:1]", "./spec/users_spec.rb[1:1:2]"
+      )
+    end
+
+    it "still produces a spec entry the platform accepts, for all four" do
+      violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
+
+      expect(violations).to be_empty
+    end
+
+    it "keeps the suite's own exit status and says nothing on stderr" do
+      expect(run.exit_status).to eq(0)
+      expect(run.stderr).to be_empty
     end
   end
 

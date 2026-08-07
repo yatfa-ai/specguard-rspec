@@ -58,10 +58,25 @@ end
 --format progress
 ```
 
-Each example contributes its `file_path`, `line_number`, `name` (the composed
+Each example contributes its `id`, `spec_file_path`, `file_path`, `line_number`, `name` (the composed
 `describe`/`context`/`it` string), `duration`, `outcome`, `status` (`"annotated"` or
 `"unannotated"`) and `intent` — the parsed annotation when there is one, `null` when there is not;
 the run envelope carries `commit_sha`, `branch` and `duration_seconds`.
+
+`id` is RSpec's own example id — `./spec/orders_spec.rb[1:2]`, the argument that re-runs that one
+example — and it is the key that distinguishes examples a coordinate cannot. A table-driven loop
+writes its `it` once, so all of its examples share a `line_number`; a shared example group reports
+the coordinate of `spec/support/shared.rb` from every file that includes it. `spec_file_path` is the
+spec file that actually **ran** the example, which is the same as `file_path` for an ordinary example
+and the *including* file for a shared one — so duration-by-file adds up against the file you would
+have named, not against a `spec/support/` helper.
+
+> `id` is unique within a run, not stable across refactors: it is positional, so reordering examples
+> changes it, exactly as inserting a line changes `line_number`. Matching one test across runs is
+> `name` plus file.
+
+`file_path` and `line_number` keep meaning the **definition** site — that is the line the `@intent:`
+annotation is read from.
 
 An example counts as **annotated** when an `@intent:` sits on its `it` line, or on the comment line
 immediately above it:

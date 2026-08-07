@@ -70,17 +70,27 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # `rerun_file_path` defaults to `file_path` and `id` is built from it, which is
+  # exactly the relationship RSpec itself maintains
+  # (`metadata.rb:160`, `metadata.rb:105`) — so the default double is an
+  # *ordinary* example, where the owning file and the definition file coincide.
+  # The shared-example case, where they diverge, is the one worth passing them
+  # apart for.
   def build_example(name: "user when signed in can order an item",
                     file_path: "./spec/orders_spec.rb",
                     line_number: 4,
                     run_time: 0.0109,
-                    status: :passed)
+                    status: :passed,
+                    rerun_file_path: file_path,
+                    id: "#{rerun_file_path}[1:1]")
     execution_result = instance_double(RSpec::Core::Example::ExecutionResult,
                                        run_time: run_time, status: status)
 
     instance_double(RSpec::Core::Example,
                     full_description: name,
-                    metadata: { file_path: file_path, line_number: line_number },
+                    id: id,
+                    metadata: { file_path: file_path, line_number: line_number,
+                                rerun_file_path: rerun_file_path },
                     execution_result: execution_result)
   end
 
@@ -230,6 +240,109 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
         expect(formatter.payload["specs"].first["file_path"]).to eq("/elsewhere/orders_spec.rb")
       end
+    end
+  end
+
+  # `(file_path, line_number)` is the coordinate of the *code*. Two ordinary
+  # suite shapes — a table-driven loop, a shared example group — put several
+  # examples on one coordinate, so it cannot be the key. These pin the two
+  # fields that can be.
+  #
+  # What a double can prove here is that the formatter *records* both fields,
+  # relativizes them like every other path, and never repurposes the coordinate.
+  # It cannot prove that RSpec's real `id` is distinct across a loop, because the
+  # double is simply told what to answer — that half is in formatter_run_spec.rb,
+  # against a real `rspec` process.
+  describe "#payload — example identity" do
+    it "records RSpec's own example id" do
+      finish(build_example(id: "./spec/orders_spec.rb[1:2]"))
+
+      expect(formatter.payload["specs"].first["id"]).to eq("./spec/orders_spec.rb[1:2]")
+    end
+
+    it "keeps one row per example when several share a definition line" do
+      3.times { |i| finish(build_example(line_number: 4, id: "./spec/table_spec.rb[1:#{i + 1}]")) }
+
+      expect(formatter.payload["specs"].map { |spec| spec["id"] })
+        .to eq(["./spec/table_spec.rb[1:1]", "./spec/table_spec.rb[1:2]", "./spec/table_spec.rb[1:3]"])
+      expect(formatter.payload["specs"].map { |spec| spec["line_number"] }).to all(eq(4))
+    end
+
+    it "names the spec file that ran the example, not only the one that defined it" do
+      finish(build_example(file_path: "./spec/support/shared_examples.rb",
+                           rerun_file_path: "./spec/orders_spec.rb"))
+
+      expect(formatter.payload["specs"].first).to include(
+        "spec_file_path" => "spec/orders_spec.rb",
+        "file_path" => "spec/support/shared_examples.rb"
+      )
+    end
+
+    # The ordinary case, which is nearly every example: the two coincide, so a
+    # consumer that groups by `spec_file_path` groups by the file a reader would
+    # have named anyway.
+    it "reports the owning file as the definition file for an ordinary example" do
+      finish(build_example(file_path: "./spec/orders_spec.rb"))
+
+      expect(formatter.payload["specs"].first["spec_file_path"]).to eq("spec/orders_spec.rb")
+    end
+
+    it "strips the ./ prefix off the owning file, exactly as it does for file_path" do
+      finish(build_example(file_path: File.join(Dir.pwd, "spec", "orders_spec.rb"),
+                           rerun_file_path: "./spec/users_spec.rb"))
+
+      expect(formatter.payload["specs"].first).to include(
+        "spec_file_path" => "spec/users_spec.rb",
+        "file_path" => "spec/orders_spec.rb"
+      )
+    end
+
+    # RSpec defaults `:rerun_file_path` for every example it builds, so this is
+    # unreachable in a real run — but a null here would silently drop a whole
+    # file out of any by-file aggregate, and the definition site is the best
+    # answer available.
+    it "falls back to the definition file when the metadata carries no owning file" do
+      example = instance_double(RSpec::Core::Example,
+                                full_description: "user can order an item",
+                                id: "./spec/orders_spec.rb[1:1]",
+                                metadata: { file_path: "./spec/orders_spec.rb", line_number: 4 },
+                                execution_result: instance_double(RSpec::Core::Example::ExecutionResult,
+                                                                  run_time: 0.01, status: :passed))
+      finish(example)
+
+      expect(formatter.payload["specs"].first["spec_file_path"]).to eq("spec/orders_spec.rb")
+    end
+
+    # The annotation is read off the `it` line, so the coordinate has to keep
+    # meaning "definition site" however the example got there. A shared example
+    # inherits the intent written next to the shared `it`, and repurposing
+    # `file_path` to the including file would send the lookup to a line that
+    # holds something else entirely.
+    it "still asks the lookup about the definition site, not the owning file" do
+      finish(build_example(file_path: "./spec/support/shared_examples.rb",
+                           rerun_file_path: "./spec/orders_spec.rb",
+                           line_number: 12))
+
+      expect(annotations).to have_received(:intent_for)
+        .with(file: "spec/support/shared_examples.rb", line: 12)
+    end
+
+    # Additive means additive: the seven fields the platform already reads must
+    # come out of this change byte-identical for an ordinary example.
+    it "leaves every pre-existing field untouched" do
+      allow(annotations).to receive(:intent_for).and_return(intent)
+      finish(build_example(file_path: "./spec/orders_spec.rb", line_number: 42,
+                           run_time: 0.0109, status: :failed))
+
+      expect(formatter.payload["specs"].first).to include(
+        "file_path" => "spec/orders_spec.rb",
+        "line_number" => 42,
+        "name" => "user when signed in can order an item",
+        "duration" => 0.0109,
+        "outcome" => "failed",
+        "status" => "annotated",
+        "intent" => intent
+      )
     end
   end
 

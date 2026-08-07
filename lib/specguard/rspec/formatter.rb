@@ -65,18 +65,62 @@ module SpecGuard
   # cannot report on a gap you never recorded. Filtering to the annotated
   # minority here would make the very first run of a new adopter look empty.
   #
-  #   file_path    example.metadata[:file_path], relative to the project root
-  #   line_number  example.metadata[:line_number]
-  #   name         example.full_description — the composed describe/context/it
-  #   duration     example.execution_result.run_time, seconds, per example
-  #   outcome      example.execution_result.status — passed / failed / pending
-  #   status       "annotated" / "unannotated" — see {AnnotationLookup}
-  #   intent       the parsed annotation when annotated, null when not
+  #   id              example.id — this example's identity within the run
+  #   spec_file_path  the spec file that *ran* the example, relative to the root
+  #   file_path       example.metadata[:file_path], relative to the project root
+  #   line_number     example.metadata[:line_number]
+  #   name            example.full_description — the composed describe/context/it
+  #   duration        example.execution_result.run_time, seconds, per example
+  #   outcome         example.execution_result.status — passed / failed / pending
+  #   status          "annotated" / "unannotated" — see {AnnotationLookup}
+  #   intent          the parsed annotation when annotated, null when not
   #
   # `status` is not decoration: `Ingest::Payload` validates it against a
   # two-value enum for *every* spec and collects the failures globally, so a
   # payload missing the key is not a payload with a gap — it is a 400 with one
   # error per example.
+  #
+  # == Why `id` and `spec_file_path` exist alongside the coordinate
+  #
+  # `(file_path, line_number)` is the coordinate of the **code**, not of the
+  # **example**, and two entirely ordinary suite shapes put several examples on
+  # one coordinate:
+  #
+  #   * a table-driven loop — `CASES.each { |c| it("...#{c}") { ... } }` writes
+  #     the `it` once, so all N examples report the same line;
+  #   * a shared example group — every including file reports the coordinate of
+  #     `spec/support/shared.rb`, and the file that actually ran the example
+  #     appears nowhere at all.
+  #
+  # Measured on a probe suite of a 3-case loop plus a 2-example shared group
+  # included by two files: 7 examples, 3 distinct coordinates. A key that folds three examples onto one row cannot carry a per-example
+  # duration, cannot follow one test's outcome across runs, and hands the
+  # duplicate-cluster surface rows that look identical because the *key*
+  # collapsed them — a manufactured duplicate in the product's headline answer.
+  #
+  # RSpec already ships the fix. `Example#id` is
+  # `"#{metadata[:rerun_file_path]}[#{metadata[:scoped_id]}]"`
+  # (rspec-core 3.13.6, `example.rb:117` → `metadata.rb:105`), it is rooted at
+  # the *including* file rather than the defining one, and it is also RSpec's
+  # own re-run argument — so a row that turns up slow or flaky is directly
+  # actionable: `rspec './spec/table_spec.rb[1:2]'`.
+  #
+  # **`id` is unique within a run, not stable across refactors.** `scoped_id` is
+  # positional, so reordering examples changes it — exactly as `line_number`
+  # changes when a line is inserted above it. It is the run-local primary key
+  # and nothing more; matching one test across runs remains `name` plus file.
+  #
+  # `spec_file_path` is `metadata[:rerun_file_path]`, which RSpec defaults to
+  # the defining file (`metadata.rb:160`) and overrides with the *including*
+  # file for a shared example. It is therefore equal to `file_path` for an
+  # ordinary example and differs only for a shared one — which is what makes
+  # duration-by-file aggregate to the file that ran the test rather than to a
+  # `spec/support/` helper.
+  #
+  # `file_path` and `line_number` keep their existing meaning — the definition
+  # site — and are deliberately not repurposed: the annotation lookup reads
+  # `@intent:` from exactly that line, so they are the coordinate the intent
+  # came from.
   #
   # == Where the run goes
   #
@@ -332,6 +376,18 @@ module SpecGuard
       intent = never_fail_the_run { @annotations.intent_for(file: file_path, line: line_number) }
 
       {
+        # Not wrapped in `never_fail_the_run`, unlike the annotation lookup
+        # above. That guard is there because the lookup does file I/O; this is a
+        # memoized string interpolation over a Hash RSpec has already built, and
+        # a guard here could only ever add a way to emit an identity-less row
+        # silently. The outer guard at `#example_finished` still covers it.
+        "id" => example.id,
+        # `|| file_path` rather than a bare read: RSpec defaults
+        # `:rerun_file_path` for every example it builds, so the fallback is
+        # unreachable in a real run — but if a producer ever hands us metadata
+        # without it, the definition site is the best answer available and a
+        # null would silently drop a whole file out of any by-file aggregate.
+        "spec_file_path" => relative_path(metadata[:rerun_file_path]) || file_path,
         "file_path" => file_path,
         "line_number" => line_number,
         "name" => example.full_description,
