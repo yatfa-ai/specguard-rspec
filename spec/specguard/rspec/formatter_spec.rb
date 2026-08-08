@@ -825,7 +825,160 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
-  # Criterion 5. Each of these fails if its rescue is deleted.
+  # The delivery decision that comes before every other one: was anything
+  # actually measured?
+  #
+  # `rspec --dry-run` builds and reports every example without executing a
+  # body, so `duration` becomes the cost of construction (~1e-5s) and `outcome`
+  # becomes `passed` for code that never ran. Neither field carries a marker
+  # saying so, `Ingest::Payload` validates neither, and
+  # `Repository#latest_test_run` is last-writer-wins — so a lint job that
+  # inherits an environment-level API key replaces the repository's headline
+  # with all-green zeroes.
+  #
+  # Dry-run mode is a property of the process, so these examples stub the one
+  # seam that reads it. The end-to-end proof — a real `rspec --dry-run` against
+  # a real socket — is in formatter_run_spec.rb.
+  describe "refusing to deliver a dry run" do
+    def dry_run!(value = true)
+      configuration = instance_double(RSpec::Core::Configuration, dry_run?: value)
+      allow(formatter).to receive(:rspec_configuration).and_return(configuration)
+    end
+
+    # SPGD-154 criterion 5 ("the check is `::RSpec`-qualified and
+    # `respond_to?`-guarded"), and the only example here that names the *cause*
+    # rather than a downstream symptom.
+    #
+    # `SpecGuard::RSpec` is this gem's own namespace, so a bare
+    # `RSpec.configuration` inside `module SpecGuard` reaches this gem's
+    # Configuration — which has no `dry_run?`. Measured by mutating
+    # `#rspec_configuration` and running this suite: with the formatter's
+    # `respond_to?` guard in place that does not raise, it answers "not a dry
+    # run" for every run and silently reinstates the defect the guard exists to
+    # close. 23 examples fail suite-wide (`bundle exec rspec`, 601 examples);
+    # this is the only one that says which line is wrong. Of the other 22, four
+    # are process-level dry-run examples in formatter_run_spec.rb that can only
+    # report the symptom, and 18 belong to the message relay, which reads the
+    # same `#rspec_configuration` for `.formatters` — so most of that total is
+    # collateral from a seam this ticket shares rather than owns.
+    #
+    # (Mutating both — bare `RSpec` *and* no `respond_to?` — is the state the
+    # ticket warned about: a swallowed NoMethodError leaving a formatter that
+    # delivers nothing at all. That one is not subtle; 110 fail suite-wide.)
+    #
+    # Both totals are whole-suite figures, so an edit anywhere in the tree can
+    # move them without touching this file or the one it describes; the example
+    # named above is the part of this claim that does not rot.
+    it "reads the real RSpec's configuration, not this gem's same-named one" do
+      expect(formatter.send(:rspec_configuration)).to equal(::RSpec.configuration)
+    end
+
+    it "is asking a question this gem's own configuration cannot answer" do
+      expect(SpecGuard::RSpec.configuration).not_to respond_to(:dry_run?)
+      expect(::RSpec.configuration).to respond_to(:dry_run?)
+    end
+
+    # The control for everything below: this suite is not itself a dry run, so
+    # unstubbed the predicate must be false and delivery must be ordinary.
+    it "delivers normally when RSpec is not in dry-run mode" do
+      expect(formatter.send(:dry_run?)).to be(false)
+
+      finish(build_example)
+      formatter.close(nil)
+
+      expect(sink_lines.length).to eq(1)
+    end
+
+    context "when RSpec is in dry-run mode" do
+      before { dry_run!(true) }
+
+      it "appends nothing to the local sink" do
+        finish(build_example)
+        formatter.close(nil)
+
+        expect(sink_lines).to be_empty
+      end
+
+      it "issues no POST, even with an API key and an endpoint configured" do
+        StubIngestEndpoint.run do |server|
+          SpecGuard::RSpec.configure do |config|
+            config.endpoint = server.endpoint
+            config.api_key = "sgk_abc123"
+            config.timeout = 5
+          end
+
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(server.requests).to be_empty
+        end
+      end
+
+      it "says so on stderr, exactly once" do
+        3.times { finish(build_example) }
+        formatter.close(nil)
+
+        expect(errors.string).to include(described_class::DRY_RUN_WARNING_PREFIX)
+        expect(errors.string.lines.length).to eq(1)
+      end
+
+      # Only the *delivery* decision changes. Capture is left exactly as it
+      # was, so a caller — or a future replay path — can still inspect what the
+      # run looked like without anything having been written anywhere.
+      it "still captures the run, so #payload remains inspectable" do
+        finish(build_example)
+        formatter.stop(nil)
+        formatter.close(nil)
+
+        expect(formatter.payload["specs"].length).to eq(1)
+        expect(formatter.payload["duration_seconds"]).to be_a(Float)
+      end
+
+      it "does not raise out of close" do
+        expect { formatter.close(nil) }.not_to raise_error
+      end
+    end
+
+    # SPGD-154 criterion 5, second half ("a stubbed configuration without
+    # `dry_run?` still delivers normally"). An RSpec build lacking the
+    # predicate must fall through to *normal delivery* — the pre-existing
+    # behaviour — rather than to a NoMethodError that never_fail_the_run would
+    # swallow into silence.
+    context "when the RSpec configuration has no #dry_run? at all" do
+      before { allow(formatter).to receive(:rspec_configuration).and_return(Object.new) }
+
+      it "treats the run as an ordinary one" do
+        expect(formatter.send(:dry_run?)).to be(false)
+      end
+
+      it "delivers it, rather than swallowing a NoMethodError into silence" do
+        finish(build_example)
+        formatter.close(nil)
+
+        expect(sink_lines.length).to eq(1)
+        expect(errors.string).to be_empty
+      end
+    end
+  end
+
+  # SPGD-121 criterion 5: "a spec that fails if the rescue is removed".
+  #
+  # Deleting the `rescue` in `never_fail_the_run` fails 17 of this block's 19
+  # examples. The count is BLOCK-scoped and says nothing about the rest: the
+  # same mutation fails 18 in this file (the 18th is "survives a fallback write
+  # that fails too", above) and 23 suite-wide (the other 5 are process-level, in
+  # formatter_run_spec.rb's "when the sink cannot be written" and "when the
+  # annotation scanner blows up"). All four figures come from one `bundle exec
+  # rspec` of 601 examples, sliced by scope — not from four separate runs.
+  #
+  # The two examples that do NOT fail on deletion are "does NOT swallow an
+  # interrupt" and "does NOT swallow an interrupt raised from the lookup", and
+  # they are not slack in the guard — they pin the OPPOSITE mutation. Each fails
+  # if the rescue is BROADENED, measured both ways: `rescue Exception`, and
+  # adding `Interrupt` to the existing clause. Either one fails exactly those
+  # two examples suite-wide and nothing else, so they are the only thing
+  # standing between this rescue and the swallowed Ctrl-C that the formatter's
+  # "Ctrl-C must stay Ctrl-C" note calls out as deliberate.
   describe "never failing the run" do
     def unwritable_sink!
       blocker = File.join(tmpdir, "blocker")

@@ -218,7 +218,11 @@ module FormatterRunHelpers
     end
   RUBY
 
-  Run = Struct.new(:exit_status, :stdout, :stderr, :lines, keyword_init: true) do
+  # `sink_exists` is carried separately from `lines` because `lines` collapses
+  # absent-and-empty into the same `[]`: without it, "the sink was never
+  # created" and "the sink was created and left empty" are indistinguishable,
+  # and only the former is the property SPGD-154 criterion 2 asks for.
+  Run = Struct.new(:exit_status, :stdout, :stderr, :lines, :sink_exists, keyword_init: true) do
     def payload = JSON.parse(lines.last)
   end
 
@@ -311,9 +315,11 @@ module FormatterRunHelpers
   #   forward by hand — see the random-ordering example in the parity block.
   #   The seed is fixed rather than drawn so that a run and its control order
   #   their examples identically and the whole-stream diff stays meaningful.
+  # @param dry_run [Boolean] pass `--dry-run`, so RSpec builds and reports every
+  #   example without executing a single body.
   # @return [Run]
   def run_rspec(suite = nil, wiring: :rspec_flags, files: {}, prepare: nil, sabotage: false,
-                order: nil)
+                order: nil, dry_run: false)
     Dir.mktmpdir do |root|
       sources = suite ? { "sample_spec.rb" => suite }.merge(files) : files
       sources.each do |path, contents|
@@ -367,14 +373,17 @@ module FormatterRunHelpers
         *requires,
         *formats,
         *ordering,
+        *(dry_run ? ["--dry-run"] : []),
         *targets,
         chdir: root
       )
 
       sink = File.join(root, env.fetch("SPECGUARD_OUTPUT_PATH", DEFAULT_SINK) || DEFAULT_SINK)
-      lines = File.exist?(sink) ? File.readlines(sink, chomp: true) : []
+      sink_exists = File.exist?(sink)
+      lines = sink_exists ? File.readlines(sink, chomp: true) : []
 
-      Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines)
+      Run.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr, lines: lines,
+              sink_exists: sink_exists)
     end
   end
 
@@ -1395,6 +1404,121 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(run.lines.length).to eq(1)
         expect(run.stderr).to be_empty
         expect(run.exit_status).to eq(0)
+      end
+    end
+  end
+
+  # `rspec --dry-run` builds and reports every example without executing one
+  # body, and this is the only level at which that can be tested: dry-run mode
+  # is a property of the *process* RSpec is running in, so the suite you are
+  # reading cannot enter it without disabling itself.
+  #
+  # The dishonesty is worth stating exactly, because it is what the refusal is
+  # for. Run normally, MIXED_SUITE is `3 examples, 1 failure, 1 pending` and
+  # exits 1. Run with `--dry-run` it is `3 examples, 0 failures`, exits 0, and
+  # every example carries `outcome: "passed"` with a duration around 1e-5s —
+  # the cost of constructing an example, not of running one. Delivered, that is
+  # an all-green, near-instant run that overwrites a repository's headline and
+  # is indistinguishable from a fast, healthy suite.
+  #
+  # Each block below pairs the dry run with a *normal* run of the same suite
+  # through the same harness. Without that control, an example asserting "no
+  # POST arrived" and "no line was written" would pass just as happily if the
+  # child had died on an unrecognised flag, or if the stub had never come up.
+  describe "when rspec is invoked with --dry-run" do
+    describe "with an API key and an endpoint in scope" do
+      before(:context) do
+        StubIngestEndpoint.run(status: 202) do |server|
+          @dry = run_rspec(FormatterRunHelpers::MIXED_SUITE, dry_run: true,
+                           prepare: ->(_root) { transport_env(server) })
+          @dry_requests = server.requests
+
+          @normal = run_rspec(FormatterRunHelpers::MIXED_SUITE,
+                              prepare: ->(_root) { transport_env(server) })
+          @normal_requests = server.requests - @dry_requests
+        end
+      end
+
+      # The control, first: identical environment, identical suite, flag
+      # removed. If this ever goes empty the assertions below are vacuous.
+      it "delivers the same suite in the same environment without the flag" do
+        expect(@normal_requests.length).to eq(1)
+        expect(@normal_requests.first.json["specs"].length).to eq(3)
+      end
+
+      # SPGD-154 criterion 1: "`rspec --dry-run` with SPECGUARD_API_KEY and
+      # SPECGUARD_ENDPOINT set issues zero HTTP requests".
+      it "issues no HTTP request at all" do
+        expect(@dry_requests).to be_empty
+      end
+
+      # ...and the child really did run, with the flag really taking effect —
+      # so "no request" is a refusal rather than a process that never started.
+      it "still ran the suite, reporting the dry run's own all-green summary" do
+        expect(@dry.stdout).to include("3 examples, 0 failures")
+      end
+
+      it "writes no local fallback either — a refusal is not a delivery failure" do
+        expect(@dry.lines).to be_empty
+      end
+    end
+
+    describe "with no API key, so the local sink is the only candidate" do
+      before(:context) do
+        @dry = run_rspec(FormatterRunHelpers::GREEN_SUITE, dry_run: true)
+        @normal = run_rspec(FormatterRunHelpers::GREEN_SUITE)
+      end
+
+      # Control again: this suite, this harness, this sink, without the flag.
+      it "appends a line for the same suite without the flag" do
+        expect(@normal.lines.length).to eq(1)
+      end
+
+      # SPGD-154 criterion 2: "`rspec --dry-run` with no API key appends no
+      # line to log/test_results.jsonl (absent, or byte-identical to before)".
+      # A .jsonl of zero-duration all-green runs is the same
+      # corruption as a delivered one, deferred until something replays it.
+      it "appends nothing to log/test_results.jsonl" do
+        expect(@dry.lines).to be_empty
+      end
+
+      # ...and the child really did run, with the flag really taking effect —
+      # so "nothing was written" is a refusal rather than a process that never
+      # started.
+      it "still ran the suite, reporting the dry run's own all-green summary" do
+        expect(@dry.stdout).to include("1 example, 0 failures")
+      end
+
+      # The stronger half of the same criterion, and the reason this is a
+      # separate example: `lines` is `[]` for an absent sink *and* for an empty
+      # one, so only `sink_exists` can distinguish "never appended" from
+      # "appended nothing". `#append` is never reached at all.
+      it "does not even create the sink" do
+        expect(@dry.sink_exists).to be(false)
+        expect(@normal.sink_exists).to be(true)
+      end
+    end
+
+    # SPGD-154 criterion 4: "the dry run's own exit code is unchanged and at
+    # most one stderr line is emitted". The never-block-CI contract is not
+    # suspended by the refusal:
+    # a dry run is somebody's lint job, and it must exit on its own terms.
+    describe "the contract the refusal must not break" do
+      before(:context) do
+        @dry = run_rspec(FormatterRunHelpers::MIXED_SUITE, dry_run: true)
+      end
+
+      it "leaves the dry run's own exit status alone" do
+        expect(@dry.exit_status).to eq(0)
+      end
+
+      it "says so once on stderr, rather than leaving the user to wonder" do
+        expect(@dry.stderr.scan(/SpecGuard:/).length).to eq(1)
+        expect(@dry.stderr).to include("dry run")
+      end
+
+      it "leaves stdout to the human formatter" do
+        expect(@dry.stdout).not_to include("SpecGuard:")
       end
     end
   end
