@@ -531,10 +531,18 @@ module SpecGuard
           # point of this diagnostic is that the two halves are in different
           # places — one inside a binary, one inside an installed gem — and
           # neither is inspectable from where the other lives.
+          #
+          # The identity is named too, because the question that comes straight
+          # after "these differ" is "WHICH build is this, so I know which half
+          # to move" — and the path alone does not answer it: the same path can
+          # hold a different binary tomorrow. The probe already holds the
+          # version string, and this refusal happens above {#provenance}, so
+          # unless the error says it nothing in the run ever does.
           raise ValidatorError,
                 "#{describe} reports carrying schema sha256:#{reported}, but this gem vendors " \
                 "sha256:#{vendored} — the two halves would enforce different contracts, so this run " \
-                "would produce a verdict this gem cannot stand behind"
+                "would produce a verdict this gem cannot stand behind; the binary identifies itself " \
+                "as #{@identity}"
         end
 
         # This gem's own contract, digested from the file at runtime. Never a

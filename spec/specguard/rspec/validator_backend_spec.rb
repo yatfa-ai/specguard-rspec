@@ -4,6 +4,7 @@ require "tmpdir"
 require "fileutils"
 require "json"
 require "digest"
+require "open3"
 
 # The opt-in Go validator backend.
 #
@@ -1753,7 +1754,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # Both digests, in full. One of them lives inside a binary and the other
       # inside an installed gem, and neither is inspectable from where the other
       # lives — a message naming one would send the reader off to compute the
-      # other by hand.
+      # other by hand. The version string is named too: this refusal happens
+      # above the provenance line, so if the error does not say which build
+      # reported the foreign digest, nothing in the run does.
       it "names both digests, and the binary it read one of them from" do
         stub = diverging_stub
         _, stderr, = run_cli({ described_class::ENV_VAR => stub })
@@ -1762,6 +1765,16 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(error_lines(stderr).first).to include("the validator backend at #{stub}")
         expect(error_lines(stderr).first).to include("sha256:#{foreign_digest}")
         expect(error_lines(stderr).first).to include("sha256:#{vendored_digest}")
+        expect(error_lines(stderr).first).to include(identity_reporting(foreign_digest))
+      end
+
+      # The provenance line is not printed on this path — the refusal is raised
+      # inside .resolve, above the reporting — which is why the version string
+      # has to be in the error itself rather than left to the line beside it.
+      it "is the only place the run names the build, because provenance never prints" do
+        _, stderr, = run_cli({ described_class::ENV_VAR => diverging_stub })
+
+        expect(stderr).not_to include("specguard-lint: validated")
       end
 
       # The whole reason the check sits in #verify!: the divergence is settled
@@ -1938,9 +1951,24 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # detector. `schema_packaging_spec.rb` stays the single pin in this repo.
     it "computes the digest at runtime rather than writing a fourth copy of it" do
       root = File.expand_path("../../..", __dir__)
-      matches = Dir.chdir(root) { `git grep -l -- #{vendored_digest[0, 8]} lib/`.split("\n") }
+      # ANY 64-hex literal, not this one. The copy that would be the bug is a
+      # STALE pin — written down when canonical was some other value and left
+      # behind after it changed — and such a constant shares no characters with
+      # the digest that is correct today. Grepping for the current digest would
+      # catch only the harmless case and pass over the defect this whole slice
+      # exists to detect, re-created inside its own detector.
+      out, err, status = Open3.capture3("git", "grep", "-nIE", "[0-9a-fA-F]{64}", "--", "lib/", chdir: root)
 
-      expect(matches).to be_empty
+      # `git grep` exits 0 having found matches, 1 having searched and found
+      # none, and 128 when it could not search at all — not a checkout, an
+      # exported tree, a gem unpacked from a .gem file. The output is empty in
+      # two of those three, so an example that read the output alone would go
+      # green in an environment where it verified nothing: the vacuous green
+      # this file names elsewhere, reproduced inside the guard. The status is
+      # therefore asserted first, and separately.
+      expect([0, 1]).to include(status.exitstatus),
+                        "git grep could not search #{root} (exit #{status.exitstatus}): #{err}"
+      expect(out).to eq("")
     end
   end
 
