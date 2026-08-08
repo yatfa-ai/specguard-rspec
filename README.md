@@ -605,9 +605,9 @@ body is encoded on the wire, never what is in it.
 
 | Field | What it holds | Where it comes from |
 | --- | --- | --- |
-| `id` | RSpec's own example id, `spec/orders_spec.rb[1:2]` — the re-run argument | `example.id` |
-| `spec_file_path` | the spec file that **ran** the example, relative to the project root | `metadata[:rerun_file_path]` |
-| `file_path` | the spec file the example is **defined** in, relative to the project root | `metadata[:file_path]` |
+| `id` | RSpec's own example id, `./spec/orders_spec.rb[1:2]` — the re-run argument | `example.id` |
+| `spec_file_path` | the spec file that **ran** the example, relative to the project root when it lives under it — an absolute path when it does not, because a spec outside the working directory has no relative name | `metadata[:rerun_file_path]` |
+| `file_path` | the spec file the example is **defined** in, on the same terms | `metadata[:file_path]` |
 | `line_number` | the line it is defined on | `metadata[:line_number]` |
 | `name` | the composed `describe`/`context`/`it` string | `example.full_description` |
 | `duration` | seconds that one example took | `execution_result.run_time` |
@@ -626,10 +626,22 @@ so a header added later cannot quietly slip past this paragraph.
 
 ### Test names and annotations are free text, and that is the point
 
-`name`, `file_path`, `spec_file_path` and `intent` are written by your
-developers, in prose. They **will** carry internal product detail — feature
-names, customer names, the shape of work you have not shipped — because a suite
-describes the system it tests.
+`name` and `intent` are written by your developers, in prose; `file_path` and
+`spec_file_path` are the names they gave the files. They **will** carry internal
+product detail — feature names, customer names, the shape of work you have not
+shipped — because a suite describes the system it tests.
+
+The paths are the one part of this that is not authored but **machine-derived**,
+and it is worth knowing where that can go further than you meant. A spec under
+the project root reports a project-relative name and nothing more. A spec run
+from *outside* it has no relative name, so its real location is what travels —
+`/home/build-agent-07/…`, `/var/lib/jenkins/workspace/acme-payments-nightly/…` —
+in `spec_file_path`, in `file_path`, and in `id`, which is that same path plus a
+position. Ordinary suites never hit this; a spec vendored outside the tree, a
+shard splitter that expands its arguments to absolute paths, or an IDE runner
+will. That discloses a build machine's directory layout, which is a different
+category from prose, so it is named here rather than folded into the paragraph
+above.
 
 SpecGuard is built on that and cannot be built without it. The product answers
 "what does this suite actually cover, and where are the gaps" — a question whose
@@ -658,18 +670,31 @@ export SPECGUARD_ENDPOINT=https://specguard.internal.example.com
   stay on your machine.
 - **No test output.** Nothing your suite printed to stdout or stderr, and
   nothing any other formatter wrote, is read or forwarded.
-- **No environment.** The formatter and its transport read a fixed list of
-  variables and no others: the ones named in the envelope table above, which
-  fill `commit_sha`, `branch`, `ci_run_id` and `shard_id`; plus four that
-  configure the gem itself rather than describing your suite —
-  `SPECGUARD_ENDPOINT` (where to send the run), `SPECGUARD_OUTPUT_PATH` (where
-  to write the local file when there is no key), `SPECGUARD_TIMEOUT` (how long
-  to wait), and `SPECGUARD_API_KEY`, which leaves the machine only as the
-  bearer token described above. The other three are never sent. Nothing else
-  from your environment is read or transmitted, and there is no general
+- **No environment.** SpecGuard's own code reads a fixed list of variables and
+  no others: the ones named in the envelope table above, which fill
+  `commit_sha`, `branch`, `ci_run_id` and `shard_id`; plus four that configure
+  the gem itself rather than describing your suite — `SPECGUARD_ENDPOINT` (where
+  to send the run), `SPECGUARD_OUTPUT_PATH` (where to write the local file when
+  there is no key), `SPECGUARD_TIMEOUT` (how long to wait), and
+  `SPECGUARD_API_KEY`, which leaves the machine only as the bearer token
+  described above. The other three are never sent, and there is no general
   environment capture to be caught by. (The linter is a separate program that
   sends nothing at all; it reads one variable of its own,
   `SPECGUARD_VALIDATE_INTENT`, documented above.)
+- **One exception, and it is about the route rather than the contents: your
+  proxy settings are read.** Sending the run goes through Ruby's `Net::HTTP`,
+  which resolves a proxy from the environment the way every Ruby HTTP client
+  does — so if your network requires a proxy, the run takes it, without
+  SpecGuard being told about it. `http_proxy` (or `HTTP_PROXY`) is the variable
+  that does it, **including for an `https://` endpoint**: `Net::HTTP` resolves
+  the proxy against an `http` URL whatever the transport, which means setting
+  only `https_proxy` will *not* proxy your run. `no_proxy` (or `NO_PROXY`)
+  suppresses it per host. In a CGI environment (`REQUEST_METHOD` set)
+  `CGI_HTTP_PROXY` is read instead and the uppercase spelling is ignored. None
+  of these is ever transmitted, and none of them changes a byte of what is sent
+  — they decide only **where it goes**, which is worth knowing alongside
+  *"If this cannot leave your perimeter, run SpecGuard inside it"* above, since
+  `SPECGUARD_ENDPOINT` is not the only thing that determines the destination.
 
 ---
 

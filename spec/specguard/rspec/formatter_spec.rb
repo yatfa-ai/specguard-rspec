@@ -600,6 +600,65 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # The key-set pin above says *which* fields travel. This one says what two of
+  # them can contain, because the README makes a claim about that too and the
+  # claim is not the obvious one.
+  #
+  # README's "What SpecGuard collects" used to describe `spec_file_path` and
+  # `file_path` as "relative to the project root", full stop. That is only true
+  # of specs under the working directory. `#relative_path` delegates to
+  # `::RSpec::Core::Metadata.relative_path`, which returns an **absolute** path
+  # for a file outside it — so a spec vendored elsewhere, or handed to RSpec as
+  # an absolute argument by a shard splitter or an IDE runner, sends its real
+  # location off the machine in three fields at once. The section now says so,
+  # and a reader deciding whether this may cross their perimeter is entitled to
+  # have that be a maintained claim rather than a sentence someone once wrote.
+  #
+  # These examples call RSpec's own `relative_path` for real rather than
+  # stubbing it — the behaviour under test belongs to rspec-core, so a double
+  # here would only pin this file's belief about it. The absolute fixture is a
+  # state the real producer genuinely reaches: it was reproduced end to end
+  # before this was written, running a two-file suite with one spec inside a
+  # project and one outside it, and the outside example transmitted
+  # `/tmp/rp/outside/outside_spec.rb` in `id`, `spec_file_path` and `file_path`.
+  #
+  # **If one of these fails, the paths this gem transmits changed shape.** Fix
+  # the two path rows and the machine-derived-paths paragraph in the README
+  # section named above before touching the expectation.
+  describe "the disclosed path values" do
+    it "strips the leading ./ for a spec under the project root, as the table says" do
+      finish(build_example(file_path: "./spec/orders_spec.rb"))
+
+      spec = formatter.payload["specs"].first
+
+      expect(spec.values_at("spec_file_path", "file_path"))
+        .to eq(["spec/orders_spec.rb", "spec/orders_spec.rb"])
+    end
+
+    # The `id` row quotes `./spec/orders_spec.rb[1:2]` with the `./` intact,
+    # unlike the two rows above it. That is not an inconsistency in the docs:
+    # `#capture` writes `example.id` raw and never passes it through
+    # `#relative_path`, so the prefix survives on the wire. Pinned because the
+    # README quotes a literal value, and a quoted value that stops being true is
+    # worse than no example at all.
+    it "transmits RSpec's example id verbatim, ./ prefix and all" do
+      finish(build_example(file_path: "./spec/orders_spec.rb", id: "./spec/orders_spec.rb[1:2]"))
+
+      expect(formatter.payload["specs"].first["id"]).to eq("./spec/orders_spec.rb[1:2]")
+    end
+
+    it "transmits an absolute path for a spec outside the project root" do
+      outside = "/tmp/vendored-suite/outside_spec.rb"
+
+      finish(build_example(file_path: outside))
+
+      spec = formatter.payload["specs"].first
+
+      expect(spec.values_at("id", "spec_file_path", "file_path"))
+        .to eq(["#{outside}[1:1]", outside, outside])
+    end
+  end
+
   describe "the JSONL sink" do
     # Criterion 2. Every example in this block runs with no API key, which is
     # the local-development default, and none of them may reach the network.
