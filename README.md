@@ -581,6 +581,80 @@ delivery, so if that shard is retried its numbers are added again rather than
 replacing what was there. If your suite shards and you re-run it, name the
 shards.
 
+## What SpecGuard collects
+
+Everything below is the whole of it. `Transport#deliver` sends the payload
+verbatim — there is no filtering layer between what the formatter captures and
+what leaves the machine — so this list *is* the request body, and a spec pins
+it so that adding a field without updating this section fails the build.
+
+**The run envelope — six fields, once per process:**
+
+| Field | What it holds | Where it comes from |
+| --- | --- | --- |
+| `commit_sha` | the commit the suite ran against | your CI provider's variable, or `git rev-parse HEAD` |
+| `branch` | the branch name; `null` on a detached checkout | your CI provider's variable, or `git symbolic-ref --short HEAD` |
+| `ci_run_id` | your provider's build id, so shards of one run fold together; `null` on a laptop | `GITHUB_RUN_ID`, `CI_PIPELINE_ID`, `CIRCLE_WORKFLOW_ID`, `BUILDKITE_BUILD_ID`, `BUILD_TAG` |
+| `shard_id` | which slice of that run this process is; `null` when unsharded | `TEST_ENV_NUMBER`, `CI_NODE_INDEX`, `CIRCLE_NODE_INDEX`, `BUILDKITE_PARALLEL_JOB`, or `SPECGUARD_SHARD_ID` |
+| `duration_seconds` | wall clock for the whole run | measured by the formatter |
+| `specs` | one object per example that finished — the nine fields below | the run |
+
+**Each example — nine fields, one object per example, annotated or not:**
+
+| Field | What it holds | Where it comes from |
+| --- | --- | --- |
+| `id` | RSpec's own example id, `spec/orders_spec.rb[1:2]` — the re-run argument | `example.id` |
+| `spec_file_path` | the spec file that **ran** the example, relative to the project root | `metadata[:rerun_file_path]` |
+| `file_path` | the spec file the example is **defined** in, relative to the project root | `metadata[:file_path]` |
+| `line_number` | the line it is defined on | `metadata[:line_number]` |
+| `name` | the composed `describe`/`context`/`it` string | `example.full_description` |
+| `duration` | seconds that one example took | `execution_result.run_time` |
+| `outcome` | `passed`, `failed` or `pending` | `execution_result.status` |
+| `status` | `annotated` or `unannotated` | whether an `@intent:` was found for that line |
+| `intent` | the parsed `@intent:` annotation; `null` when there is none | the annotation you wrote in the spec file |
+
+The API key travels as a bearer token in the `Authorization` header. That is the
+only other thing in the request.
+
+### Test names and annotations are free text, and that is the point
+
+`name`, `file_path`, `spec_file_path` and `intent` are written by your
+developers, in prose. They **will** carry internal product detail — feature
+names, customer names, the shape of work you have not shipped — because a suite
+describes the system it tests.
+
+SpecGuard is built on that and cannot be built without it. The product answers
+"what does this suite actually cover, and where are the gaps" — a question whose
+entire input is what your tests say they cover. A mode that shipped anonymised
+coordinates would not be a lighter SpecGuard; it would be a SpecGuard that
+cannot answer anything. So there is no opt-out, no field-level redaction and no
+name-scrubbing switch, and none is planned. This is a deliberate product
+decision, stated here so you can make yours.
+
+### If this cannot leave your perimeter, run SpecGuard inside it
+
+Self-hosting is the supported answer, and it needs no code change — point
+`SPECGUARD_ENDPOINT` at your own deployment and every byte described above goes
+there instead:
+
+```bash
+export SPECGUARD_ENDPOINT=https://specguard.internal.example.com
+```
+
+### What is never collected
+
+- **No source code.** Not your application's, and not your tests' — no example
+  body, no `let`, no fixture, no diff of any of it.
+- **No failure messages and no backtraces.** A failing example contributes the
+  string `failed` and nothing else; the exception, its message and its stack
+  stay on your machine.
+- **No test output.** Nothing your suite printed to stdout or stderr, and
+  nothing any other formatter wrote, is read or forwarded.
+- **No environment.** The formatter reads a fixed list of provider variables to
+  fill `commit_sha`, `branch`, `ci_run_id` and `shard_id` — the ones named in
+  the table above — and sends nothing else from your environment. There is no
+  general environment capture to be caught by.
+
 ---
 
 <p align="center">

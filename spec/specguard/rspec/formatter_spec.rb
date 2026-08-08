@@ -552,6 +552,54 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # The README's **"What SpecGuard collects"** section enumerates every field
+  # this gem transmits — six in the envelope, nine per example — with a line
+  # each on what it holds and where it comes from. That enumeration is a promise
+  # to a reader deciding whether this data may leave their perimeter, and a
+  # promise only holds if breaking it breaks something.
+  #
+  # These two examples are that something. Nothing else in this file can be:
+  # every other payload assertion here is `include`/`have_key`, which is
+  # deliberately additive and stays green when a field is added. Correct for
+  # them, useless for this — so these pin the **exact** key set with `eq` over
+  # sorted keys, and a field added to `#payload` or `#capture` turns the suite
+  # red instead of leaving the README describing a payload that no longer
+  # exists.
+  #
+  # The hazard is measured rather than hypothetical: this payload has gained
+  # fields in nearly every slice of the formatter's build-out — `ci_run_id` and
+  # `shard_id` in one, `id` and `spec_file_path` in another.
+  #
+  # **If one of these just failed, you added or removed a transmitted field.**
+  # That is allowed; shipping it undisclosed is not. Add the field to the right
+  # table in the README section named above, then add it here. The section is
+  # named rather than cited by line number on purpose — a line reference rots
+  # the first time anything above it moves.
+  describe "the disclosed key set" do
+    let(:envelope_keys) { %w[branch ci_run_id commit_sha duration_seconds shard_id specs] }
+
+    let(:spec_keys) do
+      %w[duration file_path id intent line_number name outcome spec_file_path status]
+    end
+
+    it "transmits exactly the run-envelope fields the README discloses" do
+      formatter.stop(nil)
+
+      expect(formatter.payload.keys.sort).to eq(envelope_keys)
+    end
+
+    # Both annotation outcomes, and `eq` over the whole mapped array rather than
+    # `all(eq(...))`: an empty `specs` satisfies `all` vacuously, which would
+    # make this pin report success having checked no example at all.
+    it "transmits exactly the per-example fields the README discloses" do
+      allow(annotations).to receive(:intent_for).and_return(intent, nil)
+      2.times { |i| finish(build_example(name: "example #{i}", line_number: i + 1)) }
+
+      expect(formatter.payload["specs"].map { |spec| spec.keys.sort })
+        .to eq([spec_keys, spec_keys])
+    end
+  end
+
   describe "the JSONL sink" do
     # Criterion 2. Every example in this block runs with no API key, which is
     # the local-development default, and none of them may reach the network.
