@@ -1361,10 +1361,22 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(runner.identity).to eq(odd)
       end
 
+      # Criterion 6's lower half: the probe belongs to verify!, not to
+      # construction, so nothing that merely names a Runner costs a process.
+      #
+      # The second half of this example is what makes the first half mean
+      # anything. `version_probes` answers [] for an args log that does not
+      # exist yet, which is indistinguishable from a Runner that stayed quiet —
+      # so resolving the SAME stub afterwards proves the log is readable and
+      # the counter moves. Without it this passes on a broken instrument.
       it "does not invoke the binary at all before it has been resolved" do
-        described_class::Runner.new(File.join(tmpdir, "validate-intent-stub"))
+        path = stub_validator
 
+        described_class::Runner.new(path)
         expect(version_probes).to be_empty
+
+        described_class.resolve(env: { described_class::ENV_VAR => path })
+        expect(version_probes.length).to eq(1)
       end
     end
 

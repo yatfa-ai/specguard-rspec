@@ -152,8 +152,11 @@ module SpecGuard
     # it — and {Runner#provenance} renders the answer for the one stderr line
     # {CLI} prints per run. Three properties make that safe:
     #
-    #   * it is asked ONCE per run and memoized, so it cannot become a
-    #     per-batch cost on a large audit;
+    #   * it is asked ONCE per run, so it cannot become a per-batch cost on a
+    #     large audit. Not by memoizing the answer — {Runner#verify!} re-probes
+    #     every time it is called, exactly as it re-runs the three file checks
+    #     beside it — but because {ValidatorBackend.resolve} is the only thing
+    #     that calls {Runner#verify!} and {CLI} resolves once per run;
     #   * the answer is passed through VERBATIM. A line the gem composed about
     #     the binary would be a claim by the gem; the point is to carry the
     #     binary's own statement, which is the only thing that can distinguish
@@ -250,6 +253,11 @@ module SpecGuard
         # The binary's own `--version` line, or nil when it could not report
         # one. Populated by {#verify!}; nil before it runs, which is why nothing
         # constructs a Runner without it (see {ValidatorBackend.resolve}).
+        #
+        # Assigned unconditionally rather than memoized: a second {#verify!}
+        # re-probes, in step with the file checks it sits among, which also
+        # re-run. "Once per run" is a property of the single {#verify!} call
+        # {ValidatorBackend.resolve} makes, not of a cache here.
         #
         # @return [String, nil]
         attr_reader :identity
