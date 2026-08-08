@@ -153,6 +153,23 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     { file: file, line: line, ok: true, kind: nil, errors: [] }
   end
 
+  # A stub whose report is a clean run over `spec/fixtures/order_spec.rb` —
+  # the fixture both CLI-level describes below drive the binary with. It lives
+  # here beside {stub_validator} and {document} rather than in either of them
+  # because it was byte-identical in both: two copies of one fixture builder
+  # means a fixture change has to land twice, or the two blocks quietly stop
+  # describing the same binary.
+  #
+  # `paths` and `run_cli` are deliberately NOT lifted with it. Every describe
+  # in this file declares its own — seven of them, each with a different
+  # fixture list and a different argv shape — so a single inherited pair would
+  # be shadowed almost everywhere it appeared and would make the file less
+  # readable, not less repetitive. This one is a fixture; those are local
+  # plumbing.
+  def clean_stub(**stub)
+    stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
+  end
+
   def run_backend(paths, **stub)
     described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**stub) }).check(paths)
   end
@@ -1317,10 +1334,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       provenance_lines(stderr).first
     end
 
-    def clean_stub(**stub)
-      stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
-    end
-
     # ---------------------------------------------------------------------- #
     # THE PROBE. Once, before selection, and incapable of failing the run.
     describe "the identity probe" do
@@ -1584,6 +1597,167 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       expect(lines).to all(be_a(String))
       expect(lines.uniq.length).to eq(4)
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # `--require-validator`: making the provenance line ACTIONABLE.
+  #
+  # The line above says which implementation ran. Nothing could act on it — it
+  # is stderr prose, and there was no flag, variable or exit code with which a
+  # caller could say "I asked for the binary; fail if I did not get it."
+  #
+  # The named-but-broken cases were never the gap: `SPECGUARD_VALIDATE_INTENT`
+  # pointing at a missing or unusable binary already raises out of #verify! and
+  # exits 2. The gap is the variable that never arrived at all — a mistyped
+  # name, a conditional CI step that did not run, an unloaded environment file.
+  # The run then passes, validated by the OTHER implementation, and looks
+  # exactly like the run that was asked for.
+  #
+  # And the two implementations are not interchangeable on every input: their
+  # JSON parsers accept different languages, so on a documented input class the
+  # two backends disagree on the EXIT CODE with nothing in the report to say so.
+  # A gate whose failure states are indistinguishable — for the third time.
+  describe "--require-validator" do
+    let(:paths) { %w[spec/fixtures/order_spec.rb] }
+
+    def run_cli(env, argv)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
+      [stdout.string, stderr.string, code]
+    end
+
+    def error_lines(stderr)
+      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE CASE THAT DID NOT EXIST BEFORE. Exit 2, not 1: "the linter could not
+    # do its job" is the band a named-but-missing binary already lands in, and
+    # a 1 would report a malformed annotation that nobody wrote.
+    describe "when the backend did not run" do
+      it "exits 2 with an unset variable" do
+        _, _, code = run_cli({}, ["--require-validator", *paths])
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      end
+
+      it "names the variable and says it is unset" do
+        _, stderr, = run_cli({}, ["--require-validator", *paths])
+
+        expect(error_lines(stderr))
+          .to eq(["specguard-lint: error: --require-validator was given, but " \
+                  "SPECGUARD_VALIDATE_INTENT is unset, so this run would have been validated in Ruby"])
+      end
+
+      # Asking for the binary and turning it off in the same breath is a
+      # contradiction, and a contradiction resolved in the caller's favour
+      # silently is the whole defect. So it is a 2, and it says which of the two
+      # nil causes happened rather than collapsing them the way .resolve does.
+      it "exits 2 on a blank value too, in the provenance line's own words" do
+        stdout, stderr, code = run_cli({ described_class::ENV_VAR => "" }, ["--require-validator", *paths])
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(error_lines(stderr))
+          .to eq(["specguard-lint: error: --require-validator was given, but " \
+                  "SPECGUARD_VALIDATE_INTENT is set but blank, which means off, " \
+                  "so this run would have been validated in Ruby"])
+        expect(stdout).to be_empty
+      end
+
+      it "treats a whitespace-only value as blank, matching .resolve" do
+        _, stderr, code = run_cli({ described_class::ENV_VAR => "   " }, ["--require-validator", *paths])
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(stderr).to include("is set but blank, which means off")
+      end
+
+      # The two sentences describe the same two states, so they must use the
+      # same two words. Asserted by construction rather than by eye: the
+      # parenthetical of the provenance line is a substring of the failure.
+      it "reuses the provenance line's vocabulary verbatim" do
+        [{}, { described_class::ENV_VAR => "" }].each do |env|
+          _, stderr, = run_cli(env, ["--require-validator", *paths])
+          reason = provenance_lines(stderr).first[/validated in Ruby \((.*)\)\z/, 1]
+
+          expect(reason).not_to be_nil
+          expect(error_lines(stderr).first).to include(reason)
+        end
+      end
+
+      # Placement. The provenance line still comes first — stderr carries what
+      # DID validate the run before the reason that was not good enough — and
+      # the raise sits before selection, so nothing is selected, scanned or
+      # reported. A refusal that still printed "checked 1 @intent annotation"
+      # would be a verdict from the implementation the caller just refused.
+      it "reports the provenance first, then refuses" do
+        _, stderr, = run_cli({}, ["--require-validator", *paths])
+
+        expect(stderr.lines.first).to eq("specguard-lint: validated in Ruby " \
+                                         "(SPECGUARD_VALIDATE_INTENT is unset)\n")
+        expect(stderr.lines.last).to start_with("specguard-lint: error: ")
+      end
+
+      it "selects, scans and reports nothing" do
+        stdout, stderr, = run_cli({}, ["--require-validator", *paths])
+
+        expect(stdout).to be_empty
+        expect(stderr).not_to include("checked")
+        expect(stderr).not_to include("selected")
+      end
+
+      # It is a refusal by the linter, not a verdict about anyone's
+      # annotations, and not a crash either.
+      it "does not reach the malformed-annotation code or the internal backstop" do
+        _, stderr, code = run_cli({}, ["--require-validator", *paths])
+
+        expect(code).not_to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+        expect(stderr).not_to include("internal error")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE ASSERTION THAT HOLDS COSTS NOTHING. The flag is an assertion about the
+    # configuration, so on the configuration it asserts, it must be invisible.
+    describe "when the backend did run" do
+      it "changes nothing about a run the binary validated" do
+        stub = clean_stub
+        without = run_cli({ described_class::ENV_VAR => stub }, paths)
+        with = run_cli({ described_class::ENV_VAR => stub }, ["--require-validator", *paths])
+
+        expect(with).to eq(without)
+      end
+
+      it "is satisfied by a binary that cannot report its identity" do
+        stub = clean_stub(version_stdout: "", version_exit: 1)
+        _, stderr, code = run_cli({ described_class::ENV_VAR => stub }, ["--require-validator", *paths])
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(error_lines(stderr)).to be_empty
+      end
+
+      # The flag adds no failure mode of its own to the named-but-broken case:
+      # that was already a hard 2 out of #verify!, and it still is, with its own
+      # message rather than this one.
+      it "leaves a named-but-unusable binary failing for its own reason" do
+        missing = File.join(tmpdir, "not-there")
+        _, with_flag, code = run_cli({ described_class::ENV_VAR => missing }, ["--require-validator", *paths])
+        _, without_flag, = run_cli({ described_class::ENV_VAR => missing }, paths)
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(with_flag).to eq(without_flag)
+        expect(with_flag).not_to include("--require-validator")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # WITHOUT THE FLAG, NOTHING MOVED. The backend stays opt-in and off by
+    # default — the binary is a gitignored build artifact with no release, so
+    # default-on would turn every existing user's working linter into an error.
+    it "is off unless asked for" do
+      expect(run_cli({}, paths)[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+      expect(run_cli({ described_class::ENV_VAR => "" }, paths)[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
     end
   end
 end
