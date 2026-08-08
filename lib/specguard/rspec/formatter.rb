@@ -557,6 +557,14 @@ module SpecGuard
     # option: rspec-core reads it throughout the example it is running, so the
     # double gets asked things like `dry_run?` and the example dies inside
     # RSpec rather than inside this class.
+    #
+    # The `::` is load-bearing and this is the only place it can be wrong.
+    # Inside `module SpecGuard` a bare `RSpec.configuration` reaches *this
+    # gem's* Configuration, which has no `dry_run?` — see {#dry_run?} for what
+    # that costs. Keeping every reader of the real configuration funnelled
+    # through this one method is what gives that hazard a single site to be
+    # pinned by a test, and formatter_spec.rb pins it with an `equal`
+    # assertion against `::RSpec.configuration`.
     def rspec_configuration
       ::RSpec.configuration
     end
@@ -709,46 +717,52 @@ module SpecGuard
     # resolves to `SpecGuard::RSpec.configuration` — *this gem's* Configuration,
     # whose accessors are `commit_sha`, `branch`, `run_id`, `shard_id`,
     # `output_path`, `endpoint`, `api_key` and `timeout`, and which has no
-    # `dry_run?`. Note that several methods here — {#payload}, {#deliver},
-    # {#append} — legitimately call `SpecGuard::RSpec.configuration` for this
-    # gem's own settings, so both spellings appear in this file and mean
-    # different things.
+    # `dry_run?`. Note that four methods here — {#payload}, {#deliver},
+    # {#append} and {#warn_delivery_failure} — legitimately call
+    # `SpecGuard::RSpec.configuration` for this gem's own settings, so both
+    # spellings appear in this file and mean different things.
     #
     # The mis-spelling's consequence depends on the `respond_to?` below, and
-    # both halves were measured by mutating this method and running the suite:
+    # both halves were measured by mutating {#rspec_configuration} and running
+    # `bundle exec rspec` (601 examples on the tree this landed on):
     #
     #   bare `RSpec`, respond_to? kept     this gem's Configuration answers
     #                                      `respond_to?(:dry_run?) => false`, so
     #                                      every run is treated as ordinary and
     #                                      the defect this method closes is
-    #                                      silently reinstated. 5 examples fail,
-    #                                      all of them dry-run ones.
+    #                                      silently reinstated. 23 fail
+    #                                      suite-wide; the one that names *this*
+    #                                      cause rather than a downstream
+    #                                      symptom is formatter_spec.rb's
+    #                                      "reads the real RSpec's
+    #                                      configuration, not this gem's
+    #                                      same-named one". The other 22 are
+    #                                      symptoms: 4 further dry-run ones, and
+    #                                      18 from the message relay, which
+    #                                      reads this same method for
+    #                                      `.formatters`.
     #   bare `RSpec`, respond_to? removed  NoMethodError inside `close`'s
     #                                      {#never_fail_the_run}, swallowed — a
     #                                      formatter that delivers *nothing*, on
     #                                      every run, behind one warning line,
-    #                                      while the suite still passes. 84
-    #                                      examples fail.
+    #                                      while the suite still passes. 110
+    #                                      fail suite-wide.
+    #
+    # Both totals are whole-suite figures and will move with any edit anywhere
+    # in the tree; the named example above is the durable half of the claim.
     #
     # So `respond_to?` is not only there for an RSpec build without the
     # predicate: it is what keeps a mis-spelling from escalating into deleting
-    # all telemetry. Neither state is acceptable, and the extracted
-    # {#rspec_configuration} gives the `::` exactly one place to be wrong and
-    # one place to be pinned — formatter_spec.rb asserts it is `equal` to
-    # `::RSpec.configuration`, which is the only assertion that names the cause
-    # rather than a downstream symptom.
+    # all telemetry. Neither state is acceptable, and {#rspec_configuration}
+    # gives the `::` exactly one place to be wrong and one place to be pinned —
+    # formatter_spec.rb asserts it is `equal` to `::RSpec.configuration`, which
+    # is the only assertion that names the cause rather than a downstream
+    # symptom.
     def dry_run?
       configuration = rspec_configuration
       return false unless configuration.respond_to?(:dry_run?)
 
       configuration.dry_run?
-    end
-
-    # The real RSpec's configuration, as opposed to this gem's. Its own method
-    # so that the `::` above has exactly one place to be wrong, and one place to
-    # be pinned by a test. See {#dry_run?}.
-    def rspec_configuration
-      ::RSpec.configuration
     end
 
     # Said rather than done silently, and through the same one-shot budget as

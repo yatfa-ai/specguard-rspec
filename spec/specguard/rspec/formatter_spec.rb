@@ -855,13 +855,20 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # `#rspec_configuration` and running this suite: with the formatter's
     # `respond_to?` guard in place that does not raise, it answers "not a dry
     # run" for every run and silently reinstates the defect the guard exists to
-    # close. Five examples fail, four of them process-level ones in
-    # formatter_run_spec.rb that can only report the symptom; this is the one
-    # that says which line is wrong.
+    # close. 23 examples fail suite-wide (`bundle exec rspec`, 601 examples);
+    # this is the only one that says which line is wrong. Of the other 22, four
+    # are process-level dry-run examples in formatter_run_spec.rb that can only
+    # report the symptom, and 18 belong to the message relay, which reads the
+    # same `#rspec_configuration` for `.formatters` — so most of that total is
+    # collateral from a seam this ticket shares rather than owns.
     #
     # (Mutating both — bare `RSpec` *and* no `respond_to?` — is the state the
     # ticket warned about: a swallowed NoMethodError leaving a formatter that
-    # delivers nothing at all. That one is not subtle; 85 examples fail.)
+    # delivers nothing at all. That one is not subtle; 110 fail suite-wide.)
+    #
+    # Both totals are whole-suite figures, so an edit anywhere in the tree can
+    # move them without touching this file or the one it describes; the example
+    # named above is the part of this claim that does not rot.
     it "reads the real RSpec's configuration, not this gem's same-named one" do
       expect(formatter.send(:rspec_configuration)).to equal(::RSpec.configuration)
     end
@@ -956,12 +963,13 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
   # SPGD-121 criterion 5: "a spec that fails if the rescue is removed".
   #
-  # Deleting the `rescue` in `never_fail_the_run` fails 15 of this block's 17
+  # Deleting the `rescue` in `never_fail_the_run` fails 17 of this block's 19
   # examples. The count is BLOCK-scoped and says nothing about the rest: the
-  # same mutation fails 16 in this file (the 16th is "survives a fallback write
-  # that fails too", above) and 21 suite-wide (the other 5 are process-level, in
+  # same mutation fails 18 in this file (the 18th is "survives a fallback write
+  # that fails too", above) and 23 suite-wide (the other 5 are process-level, in
   # formatter_run_spec.rb's "when the sink cannot be written" and "when the
-  # annotation scanner blows up").
+  # annotation scanner blows up"). All four figures come from one `bundle exec
+  # rspec` of 601 examples, sliced by scope — not from four separate runs.
   #
   # The two examples that do NOT fail on deletion are "does NOT swallow an
   # interrupt" and "does NOT swallow an interrupt raised from the lookup", and
