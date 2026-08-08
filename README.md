@@ -33,8 +33,101 @@ reference is checked by running the two side by side rather than asserted in a c
 `tests/parity/run_ruby_parity.sh` in
 [open-test-intent](https://github.com/yatfa-ai/open-test-intent) runs `specguard-lint` and the
 Go validator over a shared corpus and requires identical findings, ordering and exit codes.
-Two read-failure messages are ratified as different there, with the reasons; everything else
-matches byte for byte.
+A handful of differences are ratified as such there, each with its reason and each asserted to
+*still* differ; everything else matches byte for byte. They are the same ones described under
+the backend below — two read failures, a parse-failure message, and one that is not about
+wording at all.
+
+### Optional: the Go validator as a backend
+
+Set `SPECGUARD_VALIDATE_INTENT` to a `validate-intent` binary and `specguard-lint` will hand the
+selected files to it (`--source --json`) instead of validating them in Ruby, then render the same
+report from its findings:
+
+```bash
+SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed
+```
+
+**Off by default, and unset means unchanged.** The binary is not shipped with this gem and is not
+published anywhere yet, so the Ruby path stays the default and stays supported — this is for people
+who already build or vendor the validator and would rather run one implementation than two. A blank
+value counts as unset.
+
+What it does *not* change: the selection, the report format, or the summary-line format. What it
+*can* change is narrower than an earlier version of this section claimed, and the difference is
+worth stating precisely rather than reassuringly.
+
+For every payload both JSON parsers accept, the two backends agree completely: the same finding
+against the same file at the same line, the same classification, the same counts and the same exit
+code. **The messages in the table below differ in their trailing text only** — the rows *are* the
+enumeration, not a sample of it, and each is asserted in both directions, so closing one fails the
+suite rather than leaving a stale claim here — in
+`spec/specguard/rspec/validator_backend_spec.rb` and in the parity harness above:
+
+| input | Ruby path | Go backend |
+|---|---|---|
+| a payload that is still not JSON after normalisation | `unexpected character: 'unit' at line 1 column 102` | `Expecting value: line 1 column 102 (char 101)` |
+| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
+| a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
+| a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
+
+The first row is the one you are most likely to actually see: `parse` is one of the three things
+the linter reports, and **every** malformed-JSON annotation renders differently under the backend.
+The Ruby path interpolates Ruby's `JSON::ParserError`; the validator reproduces CPython's `json`
+diagnostic, and the backend passes that through unaltered rather than inventing a third spelling.
+Both agree on which annotation broke, and on the line and column — only the prose moves. The other
+rows are read failures and need an unreadable path to reach at all.
+
+#### The difference that is not about wording
+
+The two JSON parsers do not accept the same language. CPython's `json` — which the validator
+reproduces deliberately — accepts three things Ruby's `JSON.parse` refuses:
+
+1. the non-finite literals `NaN`, `Infinity` and `-Infinity`;
+2. a high surrogate escape (`\ud800`–`\udbff`) not followed by a low one;
+3. nesting deeper than Ruby's `max_nesting: 100` default.
+
+That list is exhaustive, and it was derived rather than guessed: 89,108 documents, including every
+one of the 65,536 single `\uXXXX` escapes, through both parsers. (A *lone low* surrogate is fine on
+both — the rule is narrower than "surrogate escapes".) The sweep is also **symmetric**: the other
+direction — documents Ruby accepts and CPython refuses — was swept too and is **empty**, so the
+list above is the whole difference between the two parsers and not just the half we went looking
+for. That matters, because a member of the reverse set would show up as the mirror of the first
+shape below: the Ruby path reporting a schema violation where the backend reports a parse failure.
+
+On such a payload the backend does not word the failure differently; it does not have the same
+failure. It parses the payload and validates it, so you get a schema violation with `-> ` reason
+lines where the Ruby path gives you one `— could not parse annotation:` line. The file, the line,
+the counts and the exit code still agree.
+
+And if that payload is otherwise **schema-valid** — reachable only through the surrogate case,
+since a number and a container cannot fill a slot the schema declares as a string — the backend
+finds nothing wrong and **exits 0 where the Ruby path exits 1**. This is the one input on which
+the two backends disagree about whether your suite passes. It is enumerated and asserted from both
+sides, in the same places as the rows above.
+
+Both are ratified rather than fixed, and the reason is scope: `allow_nan: true` and
+`max_nesting: false` would close two of the three, but the surrogate case has no such option and
+would mean porting CPython's string decoder into this gem — and all three would change what the
+**default** Ruby path does, which the slice that added this backend deliberately holds fixed. See
+`Scanner#parse` for the full reasoning; whether the gem should adopt CPython's acceptance grammar
+is left open there rather than settled.
+
+**If you go and count them.** The parity harness numbers this same enumeration two ways, and both
+numbers are correct, so it is worth saying which is which before you follow the link. It *asserts*
+them as six entries, `(i)`–`(vi)`, under "8b. the six enumerated backend differences" — the rows of
+the table above, plus the two shapes the acceptance set takes. It *groups* them in its header as
+four mechanisms, `(a)`–`(d)`, because the two unreadable-path rows share one cause and the two
+acceptance-set shapes share another. Six entries, four mechanisms, one enumeration.
+
+Those two totals live in that harness, which asserts them. This page does not restate them beside
+the table, because a count kept in two places is a count that will eventually disagree with itself
+— which is exactly how an earlier revision of this section came to announce three messages directly
+above four rows.
+
+Every way the backend can fail — the binary is missing, will not execute, exits with something that
+is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
+my job" code. It never becomes exit 1, which means "an annotation is malformed" and nothing else.
 
 ## The formatter — `SpecGuard::RSpecFormatter`
 

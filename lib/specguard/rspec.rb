@@ -33,6 +33,17 @@ module SpecGuard
     # without re-deriving the distinction from an error message.
     class UsageError < Error; end
 
+    # The opt-in Go validator backend could not produce a verdict — the binary
+    # named by `SPECGUARD_VALIDATE_INTENT` is missing, will not execute, exited
+    # with a code that is not a verdict, or emitted something this cannot read
+    # as a report.
+    #
+    # Typed separately from {UsageError} because the two are different
+    # accusations ("you invoked me wrongly" vs "the tool I was told to use is
+    # broken"), and rescued *beside* it in {CLI#run} because the answer to both
+    # is the same and non-negotiable: exit 2, never 1. See {ValidatorBackend}.
+    class ValidatorError < Error; end
+
     # The vendored canonical OpenTestIntent schema, copied byte-for-byte from
     # open-test-intent so this gem has **no cross-repo runtime dependency**.
     # It ships packaged (it lives under `lib/`, which the gemspec includes);
@@ -54,4 +65,5 @@ require_relative "rspec/file_selector"
 require_relative "rspec/violation_renderer"
 require_relative "rspec/schema"
 require_relative "rspec/linter"
+require_relative "rspec/validator_backend"
 require_relative "rspec/cli"

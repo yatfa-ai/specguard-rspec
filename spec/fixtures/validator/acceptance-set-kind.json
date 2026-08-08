@@ -1,0 +1,90 @@
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": {
+    "files": 1,
+    "annotations": 8,
+    "failed": 7
+  },
+  "findings": [
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 30,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 31,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: additional property 'x' is not allowed"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 32,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: additional property 'x' is not allowed"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 33,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: additional property 'x' is not allowed"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 34,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "entity: expected type string, got number"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 35,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: missing required property 'entity'",
+        "<root>: missing required property 'action'",
+        "<root>: missing required property 'behavior'",
+        "<root>: missing required property 'layer'",
+        "<root>: additional property 'a' is not allowed"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 36,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: missing required property 'entity'",
+        "<root>: missing required property 'action'",
+        "<root>: missing required property 'behavior'",
+        "<root>: missing required property 'layer'",
+        "<root>: additional property 'a' is not allowed"
+      ]
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_kind_spec.rb",
+      "line": 37,
+      "ok": false,
+      "kind": "schema",
+      "errors": [
+        "<root>: additional property 'x' is not allowed"
+      ]
+    }
+  ]
+}

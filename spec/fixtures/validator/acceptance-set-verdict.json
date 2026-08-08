@@ -1,0 +1,40 @@
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": true,
+  "summary": {
+    "files": 1,
+    "annotations": 4,
+    "failed": 0
+  },
+  "findings": [
+    {
+      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
+      "line": 27,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
+      "line": 28,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
+      "line": 29,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
+      "line": 30,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    }
+  ]
+}
