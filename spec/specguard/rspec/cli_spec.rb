@@ -140,6 +140,271 @@ RSpec.describe SpecGuard::RSpec::CLI do
     end
   end
 
+  # `--json` is the second renderer over the same Array<Linter::Result> the text
+  # report is built from (SPGD-305). What is asserted here is what a CONSUMER
+  # depends on: that stdout is one document and nothing else, that every field
+  # the Result carries survives — `kind` above all, the field the prose renderer
+  # destroys — and that `errors` is always a list so nobody has to branch on its
+  # type. The exit-code half of the contract lives in exit_contract_spec.rb, and
+  # the proof that the default path did not move lives in
+  # regression_targets_spec.rb.
+  describe "--json" do
+    def run_json(*argv)
+      cli.run(["--json", *argv])
+      JSON.parse(out)
+    end
+
+    def findings_for(*argv) = run_json(*argv).fetch("findings")
+
+    it "emits exactly one JSON document on stdout" do
+      run_json(fixture_path("broken_intent_spec.rb"))
+
+      expect { JSON.parse(out) }.not_to raise_error
+      expect(out.scan(/^\{$/).length).to eq(1)
+    end
+
+    # The prose renderer's whole output has to LEAVE, not be joined by a
+    # document. A consumer piping stdout into a parser gets a syntax error the
+    # moment either survives.
+    it "puts none of the human report on stdout" do
+      run_json(fixture_path("broken_intent_spec.rb"))
+
+      expect(out).not_to include("FAIL")
+      expect(out).not_to include("malformed")
+    end
+
+    # There are TWO `checked …` lines, not one — a leading spec-file count from
+    # #report_selection and a trailing annotation count from #summary_line. The
+    # parity harness in open-test-intent warns in its header that handling only
+    # the trailing one is the trap here, so both are asserted gone.
+    it "removes BOTH `checked ...` lines, the leading one as well as the trailing" do
+      run_json(fixture_path("order_spec.rb"))
+
+      expect(out).not_to include("checked")
+    end
+
+    # Neither line is LOST, though: the leading count becomes summary.files and
+    # the trailing one summary.annotations, computed once by the CLI and handed
+    # to whichever renderer runs. A document that quietly dropped them would let
+    # "checked nothing" read as "all clean" — in structured form.
+    it "carries both counts into the document instead of dropping them" do
+      report = run_json(fixture_path("order_spec.rb"), fixture_path("broken_intent_spec.rb"))
+
+      expect(report["summary"]).to eq("files" => 2, "annotations" => 12, "failed" => 5)
+    end
+
+    it "names the protocol it validated against, and the mode the port calls this" do
+      report = run_json(fixture_path("order_spec.rb"))
+
+      expect(report["schema"]).to eq("open-test-intent.v1.json")
+      expect(report["mode"]).to eq("source")
+    end
+
+    # The document must not be able to name a schema the gem does not carry.
+    it "declares the schema it actually vendors" do
+      expect(SpecGuard::RSpec::JSONReporter::SCHEMA_ID)
+        .to eq(File.basename(SpecGuard::RSpec::SCHEMA_PATH))
+    end
+
+    describe "every Linter::Result field survives the renderer" do
+      # The four kinds, each reached the way a user reaches it. `kind` is
+      # carried precisely because "a failed extraction and an unparseable
+      # payload both land in `problem`, which makes the two indistinguishable
+      # downstream once flattened to prose" (Finding) — so a renderer that
+      # dropped it would leave the document no better than the prose.
+      def kinds_in(dir)
+        File.write(File.join(dir, "extraction_spec.rb"), "# @intent:\n")
+        File.write(File.join(dir, "parse_spec.rb"), "# @intent: {layer: request}\n")
+        File.write(File.join(dir, "schema_spec.rb"),
+                   %(# @intent: { entity: "Order", action: "total", behavior: "sums", layer: "unit" }\n))
+        %w[extraction_spec.rb parse_spec.rb schema_spec.rb].map { |name| File.join(dir, name) } +
+          [File.join(dir, "gone_spec.rb")]
+      end
+
+      it "sets `kind` on a finding of each of the four kinds" do
+        Dir.mktmpdir do |dir|
+          findings = findings_for(*kinds_in(dir))
+
+          expect(findings.map { |finding| finding["kind"] })
+            .to eq(%w[extraction parse schema read])
+        end
+      end
+
+      # `:0` is not somewhere a reader can go. The text renderer already drops
+      # it (Linter::Result#location); the document has to drop it too, or every
+      # CI annotation and editor quickfix built on this points at a line that
+      # does not exist.
+      it "gives a read failure a null line rather than the 0 sentinel" do
+        Dir.mktmpdir do |dir|
+          finding = findings_for(File.join(dir, "gone_spec.rb")).first
+
+          expect(finding["line"]).to be_nil
+          expect(finding).to include("ok" => false, "kind" => "read")
+        end
+      end
+
+      it "keeps the line number on findings that have one" do
+        finding = findings_for(fixture_path("broken_intent_spec.rb")).first
+
+        expect(finding["line"]).to eq(9)
+      end
+
+      it "echoes the file path back exactly as it was given" do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, "gone_spec.rb")
+
+          expect(findings_for(path).first["file"]).to eq(path)
+        end
+      end
+
+      it "reports a passing annotation as a finding with no kind" do
+        finding = findings_for(fixture_path("order_spec.rb")).first
+
+        expect(finding).to include("ok" => true, "kind" => nil, "errors" => [])
+      end
+    end
+
+    # report.go:23-26 is explicit that a consumer must never have to branch on
+    # the type of `errors`. The gem's Result keeps `problem` (one sentence) and
+    # `reasons` (a list) mutually exclusive, so this is the one place the two
+    # collapse — and the collapse must not leak either shape.
+    describe "`errors` is always a list of strings" do
+      it "carries every schema reason, not the first" do
+        errors = findings_for(fixture_path("broken_intent_spec.rb")).first["errors"]
+
+        expect(errors).to eq([
+                               "<root>: missing required property 'entity'",
+                               "<root>: additional property 'entiity' is not allowed"
+                             ])
+      end
+
+      it "wraps a single `problem` sentence in a list rather than emitting a bare string" do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, "typo_spec.rb")
+          File.write(path, "# @intent:\n")
+
+          expect(findings_for(path).first["errors"])
+            .to eq(["no '{...}' object literal follows the @intent: token"])
+        end
+      end
+
+      it "is an empty list, never null, on a passing finding" do
+        findings = findings_for(fixture_path("order_spec.rb"))
+
+        expect(findings.map { |finding| finding["errors"] }).to all(eq([]))
+      end
+    end
+
+    describe "the document's own consistency" do
+      # `ok` is derived from the exit code the text path would also have
+      # produced rather than recomputed from the findings, following
+      # report.go:84-89, so the two renderers cannot disagree about the verdict.
+      it "mirrors the exit code in `ok`" do
+        expect(cli.run(["--json", fixture_path("order_spec.rb")])).to eq(0)
+        expect(JSON.parse(out)["ok"]).to be(true)
+      end
+
+      it "reports ok: false for the run that exits 1" do
+        expect(cli.run(["--json", fixture_path("broken_intent_spec.rb")])).to eq(1)
+        expect(JSON.parse(out)["ok"]).to be(false)
+      end
+
+      # summary.failed counts every failing FINDING — read failures included,
+      # as the port's Emit does — so it always equals the number of entries a
+      # consumer would find with "ok" => false. It is deliberately NOT the text
+      # summary's "M malformed", which excludes unread files and reports them in
+      # its own clause.
+      it "makes summary.failed equal the number of failing findings" do
+        Dir.mktmpdir do |dir|
+          report = run_json(fixture_path("broken_intent_spec.rb"), File.join(dir, "gone_spec.rb"))
+
+          expect(report.dig("summary", "failed"))
+            .to eq(report["findings"].count { |finding| finding["ok"] == false })
+          expect(report.dig("summary", "failed")).to eq(6)
+        end
+      end
+
+      # An unreadable file contributed no annotation site, in the document for
+      # the same reason it gets its own clause in the text summary: counting it
+      # would report annotations that were never read.
+      it "does not count an unread file as an annotation site" do
+        Dir.mktmpdir do |dir|
+          report = run_json(File.join(dir, "a_spec.rb"), File.join(dir, "b_spec.rb"))
+
+          expect(report["summary"]).to eq("files" => 2, "annotations" => 0, "failed" => 2)
+        end
+      end
+    end
+
+    # Diagnostics about the linter itself do not move: the SPGD-247 provenance
+    # line and every warning stay on stderr, byte for byte. A document on stdout
+    # is a report about the CODE, not a reason to relocate the commentary.
+    describe "stderr is untouched" do
+      it "still writes exactly one provenance line naming the implementation" do
+        described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--json", fixture_path("order_spec.rb")])
+
+        expect(err).to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n")
+      end
+
+      it "still warns loudly about an empty selection" do
+        Dir.mktmpdir { |dir| Dir.chdir(dir) { cli.run(["--json"]) } }
+
+        expect(err).to include("warning", "selected 0 spec files")
+      end
+
+      # A run that selected nothing still owes stdout a document — a consumer
+      # parsing stdout must not get an empty string, which is the one thing it
+      # cannot tell apart from a crash.
+      it "still emits a document when nothing was selected" do
+        Dir.mktmpdir { |dir| Dir.chdir(dir) { cli.run(["--json"]) } }
+
+        expect(JSON.parse(out))
+          .to include("ok" => true, "findings" => [],
+                      "summary" => { "files" => 0, "annotations" => 0, "failed" => 0 })
+      end
+    end
+
+    # DECISION (SPGD-305, recorded rather than defaulted into): no exit-2 path
+    # emits a document. Those runs produced no verdicts, and a document is a
+    # report about what was checked — `{"ok": false, "findings": []}` for a run
+    # that checked nothing is this project's signature vacuous-green shape with
+    # a schema wrapped round it. The prose goes to stderr, where diagnostics
+    # about the linter already live, and the exit code says the rest.
+    describe "a run that could not produce verdicts emits no document" do
+      it "says nothing on stdout when the flags are misused" do
+        expect(cli.run(["--json", "--changed", fixture_path("order_spec.rb")])).to eq(2)
+
+        expect(out).to be_empty
+        expect(err).to include("specguard-lint: error: --changed cannot be combined with explicit files")
+      end
+
+      # `--json --require-validator` with the variable unset. Both flags are
+      # about the run rather than the report, and the failure is prose on
+      # stderr exactly as it is without `--json`.
+      it "reports an unmet --require-validator as prose on stderr, not as a document" do
+        code = described_class.new(stdout: stdout, stderr: stderr, env: {})
+                              .run(["--json", "--require-validator", fixture_path("order_spec.rb")])
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(out).to be_empty
+        expect(err).to include("specguard-lint: error: --require-validator was given")
+      end
+
+      it "says nothing on stdout when the schema will not load" do
+        stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
+
+        expect(cli.run(["--json", fixture_path("order_spec.rb")])).to eq(2)
+        expect(out).to be_empty
+      end
+    end
+
+    it "documents itself in the usage text" do
+      cli.run(["--help"])
+
+      expect(out).to include("--json")
+    end
+  end
+
   describe "reading files" do
     it "reports an unreadable file rather than aborting the whole run" do
       Dir.mktmpdir do |dir|

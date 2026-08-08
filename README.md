@@ -38,6 +38,80 @@ A handful of differences are ratified as such there, each with its reason and ea
 the backend below — two read failures, a parse-failure message, and one that is not about
 wording at all.
 
+### Machine-readable output (`--json`)
+
+The human report is for humans. `--json` emits **one JSON document on stdout** instead, so a CI
+step or an agent gets *which file, which line, which rule* as data rather than a prose format to
+regex and a 3-valued exit code. The flag can go anywhere on the command line.
+
+```bash
+bundle exec specguard-lint --json spec/models/order_spec.rb
+```
+```json
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": { "files": 1, "annotations": 2, "failed": 2 },
+  "findings": [
+    { "file": "spec/models/order_spec.rb", "line": 24, "ok": false, "kind": "schema",
+      "errors": ["<root>: additional property 'entiity' is not allowed"] },
+    { "file": "spec/models/order_spec.rb", "line": 31, "ok": false, "kind": "extraction",
+      "errors": ["unterminated object literal (an annotation must fit on one line)"] }
+  ]
+}
+```
+
+This is the **same document** `validate-intent --json --source` emits, key for key — the gem
+already *consumes* it when the Go backend is on, and a consumer of both tools should not need two
+parsers for one protocol. It is not byte-identical (Ruby does not escape non-ASCII where Python's
+`json.dumps` does); it is key-, type- and value-identical, which is what a parser sees.
+
+| field                 | meaning |
+| --------------------- | ------- |
+| `schema`              | the OpenTestIntent schema version the payloads were validated against |
+| `mode`                | always `"source"` — annotations in spec sources, the port's name for what this tool does. Not the *selection* mode (`--changed` vs named files), which the document has no field for |
+| `ok`                  | whether the run passed — derived from the exit code, not recomputed, so the two renderers cannot disagree |
+| `summary.files`       | spec files selected: the number the text report's leading `checked N spec file(s)` line states |
+| `summary.annotations` | annotation sites examined: the number its trailing summary line states. A site whose payload could not be captured or parsed still counts; a file that could not be read contributes none |
+| `summary.failed`      | findings with `"ok": false`, read failures included. Note this is **not** the text summary's `M malformed`, which counts malformed annotations and reports unread files in its own clause |
+
+Every finding has the same five keys:
+
+| field    | meaning |
+| -------- | ------- |
+| `file`   | the path, echoed back exactly as it was given |
+| `line`   | the annotation's line number; **`null`** where the finding is not line-scoped — a read failure saw no line of the file, and `file:0` would point CI annotations and editor quickfix at a line that does not exist |
+| `ok`     | whether this finding passed |
+| `kind`   | *how* it failed; `null` when it passed |
+| `errors` | every violated rule, or the single problem — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type |
+
+`kind` is the field the prose renderer destroys: a failed extraction and an unparseable payload
+both read as one sentence after `FAIL … — `, and only `kind` tells them apart.
+
+| `kind` | means |
+| ------ | ----- |
+| `schema` | parsed fine, violated the OpenTestIntent schema |
+| `extraction` | an `@intent:` token whose object literal could not be captured (missing or unbalanced braces, or spread across lines) |
+| `parse` | the payload was captured but is not JSON even after normalisation |
+| `read` | the file could not be read at all (missing, unopenable, or not valid UTF-8), so no annotation in it was ever seen |
+
+The port has a fifth kind, `no-match`, that cannot appear here: its arguments are globs and this
+tool's are paths, so a path that matches nothing is a `read` failure of that path.
+
+Three things worth knowing:
+
+- **Exit codes are identical with and without the flag**, and the default output is unchanged.
+  `--json` is a second renderer over the same checks, not a second code path — it is pinned that
+  way in `spec/specguard/rspec/exit_contract_spec.rb` and
+  `spec/specguard/rspec/regression_targets_spec.rb`.
+- **A run that could not produce verdicts emits no document.** Bad flags, `--changed` outside a
+  repository, an unloadable schema, an unmet `--require-validator` — all still exit `2` with prose
+  on stderr. Those runs checked nothing, and `{"ok": false, "findings": []}` is exactly how a
+  gate that checked nothing gets mistaken for one that found nothing.
+- **The provenance line stays on stderr** and is deliberately *not* duplicated into the document
+  (see below). Redirect `2>` to keep it; stdout is the document and nothing else.
+
 ### Optional: the Go validator as a backend
 
 Set `SPECGUARD_VALIDATE_INTENT` to a `validate-intent` binary and `specguard-lint` will hand the
@@ -112,7 +186,10 @@ Three things worth knowing about it:
 
 * **stdout is untouched.** The line is on stderr, beside the other diagnostics about the linter
   itself, so the findings and the two `checked …` lines are still byte-identical across the two
-  backends and still safe to pipe.
+  backends and still safe to pipe. Under `--json` it stays exactly where it is and is **not**
+  copied into the document: that would be the first key by which this gem's document differs from
+  the port's, and it would give provenance two homes that can disagree about one fact — the hole
+  this line was added to close, not to widen.
 * **The identity is the binary's own.** It comes from `<binary> --version`, asked once per run
   before any file is selected, and is passed through verbatim rather than reworded — that is the
   only thing that can tell two builds of the validator apart.
