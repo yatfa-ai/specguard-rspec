@@ -115,12 +115,15 @@ is left open there rather than settled.
 
 **If you go and count them.** The parity harness numbers this same enumeration two ways, and both
 numbers are correct, so it is worth saying which is which before you follow the link. It *asserts*
-them as six entries, `(i)`–`(vi)`, under "8b. the six enumerated backend differences" — the four
-rows of the table above, plus the two shapes the acceptance set takes. It *groups* them in its
-header as four mechanisms, `(a)`–`(d)`, because the two missing-path rows share one cause and the
-two acceptance-set shapes share another. Six entries, four mechanisms, one enumeration. This page
-deliberately states neither total in prose: the table and the two shapes below it are the count,
-and a number repeated beside them is just a second thing to keep true.
+them as six entries, `(i)`–`(vi)`, under "8b. the six enumerated backend differences" — the rows of
+the table above, plus the two shapes the acceptance set takes. It *groups* them in its header as
+four mechanisms, `(a)`–`(d)`, because the two unreadable-path rows share one cause and the two
+acceptance-set shapes share another. Six entries, four mechanisms, one enumeration.
+
+Those two totals live in that harness, which asserts them. This page does not restate them beside
+the table, because a count kept in two places is a count that will eventually disagree with itself
+— which is exactly how an earlier revision of this section came to announce three messages directly
+above four rows.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
