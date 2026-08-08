@@ -6,6 +6,11 @@
 # pinned individually — rather than only via the corpus counts — so a regression
 # names the specific behavior it broke instead of just moving a total from 7
 # to 6.
+#
+# The second group in this file (`the default output path`) pins something
+# else entirely, and shares the file for the reason both groups exist: they are
+# regression targets, held to the byte, for behaviour that has already been
+# ratified elsewhere and must not move by accident.
 RSpec.describe "permissive-syntax regression targets" do
   def intent_from(line)
     findings = SpecGuard::RSpec::Scanner.scan_text(line, file: "example_spec.rb")
@@ -84,5 +89,97 @@ RSpec.describe "permissive-syntax regression targets" do
 
     expect { SpecGuard::RSpec::Scanner.scan_text(line, file: "evil_spec.rb") }.not_to raise_error
     expect(intent_from(line)["entity"]).to eq('#{raise \'code executed\'}')
+  end
+end
+
+# SPGD-305's HARD CONSTRAINT, pinned rather than trusted: without `--json`,
+# stdout, stderr and the exit code are byte-identical to what `70ea201` — the
+# commit before the second renderer existed — produced.
+#
+# Why a byte lock and not "the flag defaults to false, so it is inert"
+# ====================================================================
+# Adding `--json` did not only add a branch. It moved the leading
+# `checked N spec file(s)` line inside a conditional in `CLI#report_selection`,
+# and it replaced `CLI#report_results`'s body with a partition shared by two
+# renderers. Both edits are on the default path, and both are the kind that
+# drifts by a space or a newline without any example noticing: the existing
+# suite asserts with `include`, which is blind to a line's position, to a line
+# appearing twice, and to anything gained around it.
+#
+# The lock is also not only this suite's business. open-test-intent's
+# `tests/parity/run_ruby_parity.sh` runs this linter and the Go port from the
+# same working directory over the same relative paths and requires "every byte
+# of every FAIL block, in order, plus the exit code" to match, after exactly
+# five named normalisation rules. Two of those rules exist to strip the two
+# `checked …` lines below; a drift in either one diffs on every case in the
+# harness, and the harness gates the roadmap's thin-wrapper clause. That script
+# needs a Go binary and a checkout of the other repository, so it cannot run
+# here — this is the half of the guarantee that can.
+#
+# The three runs cover every shape the default renderer can print: the summary
+# line alone, a FAIL block with schema reasons AND one with a `problem`, and the
+# unread-file clause with its line-less FAIL. Paths are RELATIVE, so the
+# expected bytes are stable; the first example fails loudly if the suite is not
+# running from the gem root, without which the rest would be comparing piles of
+# read failures.
+RSpec.describe "the default output path, byte for byte" do
+  def run(*paths)
+    stdout = StringIO.new
+    stderr = StringIO.new
+    code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: {}).run(paths)
+    [stdout.string, stderr.string, code]
+  end
+
+  # The one line every run writes to stderr since SPGD-247. It is part of the
+  # default path and so it is pinned here too, not normalised away.
+  PROVENANCE = "specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n"
+
+  it "is running where the relative fixture paths resolve" do
+    expect(%w[spec/fixtures/order_spec.rb spec/fixtures/broken_intent_spec.rb])
+      .to all(satisfy { |path| File.file?(path) })
+  end
+
+  it "prints exactly this for a clean file" do
+    stdout, stderr, code = run("spec/fixtures/order_spec.rb")
+
+    expect(stdout).to eq(<<~OUT)
+      specguard-lint: checked 1 spec file
+      specguard-lint: checked 7 @intent annotations, 0 malformed
+    OUT
+    expect(stderr).to eq(PROVENANCE)
+    expect(code).to eq(0)
+  end
+
+  it "prints exactly this for the malformed corpus" do
+    stdout, stderr, code = run("spec/fixtures/order_spec.rb", "spec/fixtures/broken_intent_spec.rb")
+
+    expect(stdout).to eq(<<~OUT)
+      specguard-lint: checked 2 spec files
+      FAIL  spec/fixtures/broken_intent_spec.rb:9
+              -> <root>: missing required property 'entity'
+              -> <root>: additional property 'entiity' is not allowed
+      FAIL  spec/fixtures/broken_intent_spec.rb:15
+              -> layer: value 'model' is not one of ['unit', 'integration', 'request', 'system']
+      FAIL  spec/fixtures/broken_intent_spec.rb:21
+              -> <root>: missing required property 'layer'
+              -> behavior: string is 4 char(s), minLength is 15
+      FAIL  spec/fixtures/broken_intent_spec.rb:28 — unterminated object literal (an annotation must fit on one line)
+      FAIL  spec/fixtures/broken_intent_spec.rb:34 — no '{...}' object literal follows the @intent: token
+      specguard-lint: checked 12 @intent annotations, 5 malformed
+    OUT
+    expect(stderr).to eq(PROVENANCE)
+    expect(code).to eq(1)
+  end
+
+  it "prints exactly this for a file it could not read" do
+    stdout, stderr, code = run("spec/fixtures/gone_spec.rb")
+
+    expect(stdout).to eq(<<~OUT)
+      specguard-lint: checked 1 spec file
+      FAIL  spec/fixtures/gone_spec.rb — could not read file: No such file or directory @ rb_sysopen - spec/fixtures/gone_spec.rb
+      specguard-lint: checked 0 @intent annotations, 0 malformed; 1 file could not be read
+    OUT
+    expect(stderr).to eq(PROVENANCE)
+    expect(code).to eq(1)
   end
 end

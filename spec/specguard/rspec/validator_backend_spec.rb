@@ -773,6 +773,66 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(go_stdout).to include("checked 12 @intent annotations, 5 malformed")
       expect(go_stdout.lines.count { |line| line.start_with?("FAIL  ") }).to eq(5)
     end
+
+    # SPGD-305's fifth criterion. `--json` is a second renderer hanging off the
+    # same single branch in CLI#check, so it inherits the guarantee this whole
+    # section exists to assert — but "inherits it" is a claim about a design,
+    # and the text report needed the same claim tested. The document is compared
+    # BYTE for byte rather than parsed and compared as data: key order and
+    # formatting are what a consumer diffing two CI runs actually sees, and a
+    # renderer that reordered its keys on one arm would pass a Hash comparison.
+    describe "the --json document" do
+      def run_json_cli(env)
+        stdout = StringIO.new
+        stderr = StringIO.new
+        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(["--json", *paths])
+        [stdout.string, stderr.string, code]
+      end
+
+      def go_env = { described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) }
+
+      it "is identical on both backends" do
+        ruby_stdout, = run_json_cli({})
+        go_stdout, = run_json_cli(go_env)
+
+        expect(go_stdout).to eq(ruby_stdout)
+      end
+
+      it "exits with the same code on both backends" do
+        *, ruby_code = run_json_cli({})
+        *, go_code = run_json_cli(go_env)
+
+        expect(go_code).to eq(ruby_code)
+        expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+      end
+
+      # Same non-vacuity argument as above, and it bites harder here: an empty
+      # `findings` array inside an otherwise well-formed envelope is a document
+      # that parses, validates, and says nothing — two of those compare equal.
+      it "compared a document that actually contains findings" do
+        go_stdout, = run_json_cli(go_env)
+        report = JSON.parse(go_stdout)
+
+        expect(report.dig("summary", "annotations")).to eq(12)
+        expect(report.dig("summary", "failed")).to eq(5)
+        expect(report["findings"].length).to eq(12)
+      end
+
+      # The one thing that must NOT match, for the reason it must not match in
+      # the text report either: the provenance line is what tells the two runs
+      # apart when nothing else about them does. It stays on stderr under
+      # `--json` — it is not folded into the document — so a consumer reading
+      # stdout gets one clean document and the answer to "which implementation"
+      # stays exactly one line, in exactly one place.
+      it "leaves the provenance line on stderr, as the only thing that differs" do
+        _, ruby_stderr, = run_json_cli({})
+        _, go_stderr, = run_json_cli(go_env)
+
+        expect(stderr_beyond_provenance(go_stderr)).to be_empty
+        expect(stderr_beyond_provenance(ruby_stderr)).to be_empty
+        expect(go_stderr).not_to eq(ruby_stderr)
+      end
+    end
   end
 
   # ------------------------------------------------------------------------ #

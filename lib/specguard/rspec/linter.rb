@@ -92,8 +92,18 @@ module SpecGuard
         # comments — would point at a line that does not exist.
         #
         # This is what makes `kind` load-bearing rather than decorative.
+        #
+        # The rule is a predicate rather than an inline comparison because it
+        # now has two renderers: {CLI#report_failure} prints `file` instead of
+        # `file:0`, and {JSONReporter} emits `"line": null` for the same
+        # findings. Spelling `kind == Finding::KIND_READ` in both would let one
+        # of them keep emitting the sentinel after the rule changed here.
+        def line_scoped?
+          kind != Finding::KIND_READ
+        end
+
         def location
-          kind == Finding::KIND_READ ? file : "#{file}:#{line}"
+          line_scoped? ? "#{file}:#{line}" : file
         end
       end
 

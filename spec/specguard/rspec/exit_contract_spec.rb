@@ -218,6 +218,58 @@ RSpec.describe "the specguard-lint exit contract" do
     end
   end
 
+  # SPGD-305. `--json` is a second RENDERER over the same Linter::Result list,
+  # so the contract above must be completely indifferent to it. That is easy to
+  # believe and cheap to break — the flag touches #report_selection and
+  # #report_results, both of which sit on the path to the return value — so it
+  # is asserted at all three codes rather than argued for.
+  #
+  # The pairs run the SAME argv twice and compare the two codes to each other as
+  # well as to the expected one. A regression that moved both (say, a renderer
+  # that started swallowing an exception) would satisfy "they agree" alone.
+  describe "--json changes the renderer and nothing about the exit code" do
+    def code_for(argv, chdir: nil)
+      run = lambda do
+        SpecGuard::RSpec::CLI.new(stdout: StringIO.new, stderr: StringIO.new).run(argv)
+      end
+
+      chdir ? Dir.mktmpdir { |dir| Dir.chdir(dir) { run.call } } : run.call
+    end
+
+    ORDER = File.join(FixtureHelpers::FIXTURE_ROOT, "order_spec.rb")
+    BROKEN = File.join(FixtureHelpers::FIXTURE_ROOT, "broken_intent_spec.rb")
+
+    {
+      "a clean file" => [0, [ORDER], false],
+      "nothing selected at all" => [0, [], true],
+      "malformed annotations" => [1, [BROKEN], false],
+      "a file that could not be read" => [1, ["gone_spec.rb"], true],
+      "an unknown flag" => [2, ["--bogus"], false],
+      "--changed combined with explicit files" => [2, ["--changed", ORDER], false],
+      "--changed outside a git repository" => [2, ["--changed"], true]
+    }.each do |name, (expected, argv, in_tmpdir)|
+      it "exits #{expected} either way on #{name}" do
+        plain = code_for(argv, chdir: in_tmpdir)
+        json = code_for(["--json", *argv], chdir: in_tmpdir)
+
+        expect(json).to eq(plain)
+        expect(json).to eq(expected)
+      end
+    end
+
+    # `--require-validator` is the one exit-2 path that is about the run rather
+    # than the arguments, and it is reached before any renderer is chosen.
+    it "exits 2 on an unmet --require-validator with and without the flag" do
+      plain = SpecGuard::RSpec::CLI.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+                                   .run(["--require-validator", fixture_path("order_spec.rb")])
+      json = SpecGuard::RSpec::CLI.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+                                  .run(["--json", "--require-validator", fixture_path("order_spec.rb")])
+
+      expect(json).to eq(plain)
+      expect(json).to eq(2)
+    end
+  end
+
   describe "#run never raises, whatever it is handed" do
     # The contract is only worth something if the process cannot exit any other
     # way. Every argv shape that has a plausible path to an exception.
@@ -262,6 +314,15 @@ RSpec.describe "the specguard-lint exit contract" do
 
     it "exits 2 on --changed outside a git repository" do
       Dir.mktmpdir { |dir| expect(lint("--changed", chdir: dir)).to eq(2) }
+    end
+
+    # The library returning the same code under --json is necessary but not
+    # sufficient for the same reason the rest of this section exists: what CI
+    # reads is the process's exit status.
+    it "exits 0, 1 and 2 identically under --json" do
+      expect(lint("--json", fixture_path("order_spec.rb"))).to eq(0)
+      expect(lint("--json", fixture_path("broken_intent_spec.rb"))).to eq(1)
+      expect(lint("--json", "--bogus")).to eq(2)
     end
   end
 end

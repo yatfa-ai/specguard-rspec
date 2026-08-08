@@ -72,6 +72,28 @@ module SpecGuard
     # backstop and reading as an `internal error:`. Either way it is a 2, and
     # that is the property that matters — a broken tool must not borrow the
     # code that means "your annotations are malformed".
+    #
+    # == Two renderers, and what `--json` does NOT touch
+    #
+    # `--json` (SPGD-305) replaces the human report on stdout with one JSON
+    # document over the very same {Linter::Result} list — see {JSONReporter}.
+    # It is a renderer, so the three things that are the contract are untouched
+    # by it: the exit code (the decision below is one expression, evaluated on
+    # both paths), stderr (the provenance line and every warning are byte-for-
+    # byte what they were), and the default path (without the flag, stdout is
+    # what it was, pinned as a regression lock in
+    # `spec/specguard/rspec/regression_targets_spec.rb`).
+    #
+    # No exit-2 path emits a document, and that is a decision rather than an
+    # omission. Every `rescue` below means the linter produced NO VERDICTS —
+    # bad flags, `--changed` outside a repository, an unloadable schema, an
+    # unmet `--require-validator`. A document is a report about what was
+    # checked; emitting `{"ok": false, "findings": []}` for a run that checked
+    # nothing would hand a stdout-reading consumer the project's signature
+    # defect — an empty clean-looking report standing in for "could not check" —
+    # and dressing it as structure would make it *more* convincing, not less.
+    # Those runs write prose to stderr, where diagnostics about the linter
+    # already live, and say what happened with the exit code.
     class CLI
       BANNER = "Usage: specguard-lint [options] [files...]"
 
@@ -134,12 +156,19 @@ module SpecGuard
         schema = Schema.load if backend.nil?
 
         selection = select(options)
-        report_selection(selection)
+        report_selection(selection, json: options[:json])
 
         results = check(selection.files, backend: backend, schema: schema)
-        report_results(results)
 
-        results.any?(&:failed?) ? EXIT_MALFORMED : EXIT_OK
+        # Computed once, here, and handed to whichever renderer runs. `--json`
+        # is a second renderer over this list, not a second code path: the exit
+        # code below is the same expression it always was, and the document's
+        # `ok` is derived FROM it rather than recomputed from the findings, so
+        # the two renderers cannot disagree about whether the run passed.
+        code = results.any?(&:failed?) ? EXIT_MALFORMED : EXIT_OK
+        report_results(results, files: selection.count, json: options[:json], ok: code == EXIT_OK)
+
+        code
       rescue UsageError, ValidatorError => e
         @stderr.puts "specguard-lint: error: #{e.message}"
         EXIT_MISUSE
@@ -273,11 +302,17 @@ module SpecGuard
       # "checked nothing". The exit code is not the lever here — the contract
       # fixes 0 for "no annotations" — which is exactly why the warning has to
       # carry the weight.
-      def report_selection(selection)
+      #
+      # Under `--json` the count is not dropped, it MOVES: stdout carries one
+      # document and nothing else, and this line's number is that document's
+      # `summary.files`. The warnings are diagnostics about the linter rather
+      # than findings, so they stay on stderr exactly as they are — a run that
+      # selected nothing is still loud, in both renderers.
+      def report_selection(selection, json:)
         if selection.empty?
           @stderr.puts "specguard-lint: warning: selected 0 spec files — #{empty_reason(selection)}"
           @stderr.puts "specguard-lint: warning: #{selection.note}" if selection.note
-        else
+        elsif !json
           @stdout.puts "specguard-lint: checked #{selection.count} spec file#{'s' unless selection.count == 1}" \
                        "#{" changed since #{selection.base}" if selection.mode == :changed}"
         end
@@ -334,14 +369,37 @@ module SpecGuard
       #     is still impossible to mistake for "all clean".
       #   * findings go to **stdout**, where the reference puts them and where
       #     lint findings conventionally go. Diagnostics about the linter
-      #     itself (warnings, misuse, schema failure) stay on stderr, and the
-      #     exit code — not the stream — is the machine-readable signal.
-      def report_results(results)
-        failures = results.reject(&:ok?)
+      #     itself (warnings, misuse, schema failure) stay on stderr.
+      #
+      # That second bullet used to end "…and the exit code — not the stream —
+      # is the machine-readable signal." It justified the STREAM SPLIT, which
+      # stands unchanged; but read as a claim about the tool it is now false,
+      # and it was already dated when it was written. It comes from SPGD-82,
+      # before the Go port grew `--json` (SPGD-102), and a 3-valued exit code
+      # was then genuinely the only structured thing a consumer could read.
+      # SPGD-305 gives this renderer a sibling: with `--json`, stdout carries
+      # one JSON document — file, line, kind, errors — and the exit code is one
+      # signal of two rather than the only one. Nothing moved off stderr to make
+      # that true; see {JSONReporter}.
+      #
+      # == Two renderers, one result list
+      #
+      # The partition below is computed ONCE and handed to whichever renderer
+      # runs. Both the text summary line and the document's `summary` are
+      # statements about the same numbers, and a linter whose two renderers can
+      # disagree about how much it checked is worse than one that only prints
+      # prose: the disagreement is unfalsifiable from outside the process.
+      def report_results(results, files:, json:, ok:)
+        annotations, unread = results.partition { |result| result.kind != Finding::KIND_READ }
 
-        failures.each { |result| report_failure(result) }
+        if json
+          @stdout.puts JSONReporter.render(results, files: files, annotations: annotations.length, ok: ok)
+          return
+        end
 
-        @stdout.puts summary_line(*results.partition { |result| result.kind != Finding::KIND_READ })
+        results.reject(&:ok?).each { |result| report_failure(result) }
+
+        @stdout.puts summary_line(annotations, unread)
       end
 
       # The summary line exists for one reason — so "checked nothing" can never
@@ -369,7 +427,7 @@ module SpecGuard
       end
 
       def parse_options(argv)
-        options = { changed: false, base: nil, root: Dir.pwd, files: [], require_validator: false }
+        options = { changed: false, base: nil, root: Dir.pwd, files: [], require_validator: false, json: false }
 
         parser = OptionParser.new do |o|
           o.banner = BANNER
@@ -381,6 +439,9 @@ module SpecGuard
           o.on("--require-validator",
                "Fail (exit 2) unless #{ValidatorBackend::ENV_VAR} named a usable validator binary") do
             options[:require_validator] = true
+          end
+          o.on("--json", "Emit one JSON document on stdout instead of the human report") do
+            options[:json] = true
           end
           o.on("-v", "--version", "Print the version and exit") do
             @stdout.puts "specguard-rspec #{VERSION}"
