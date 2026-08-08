@@ -586,7 +586,9 @@ shards.
 Everything below is the whole of it. `Transport#deliver` sends the payload
 verbatim — there is no filtering layer between what the formatter captures and
 what leaves the machine — so this list *is* the request body, and a spec pins
-it so that adding a field without updating this section fails the build.
+it so that adding a field without updating this section fails the build. A run
+big enough to be worth compressing is gzipped in transit; that changes how the
+body is encoded on the wire, never what is in it.
 
 **The run envelope — six fields, once per process:**
 
@@ -595,7 +597,7 @@ it so that adding a field without updating this section fails the build.
 | `commit_sha` | the commit the suite ran against | your CI provider's variable, or `git rev-parse HEAD` |
 | `branch` | the branch name; `null` on a detached checkout | your CI provider's variable, or `git symbolic-ref --short HEAD` |
 | `ci_run_id` | your provider's build id, so shards of one run fold together; `null` on a laptop | `GITHUB_RUN_ID`, `CI_PIPELINE_ID`, `CIRCLE_WORKFLOW_ID`, `BUILDKITE_BUILD_ID`, `BUILD_TAG` |
-| `shard_id` | which slice of that run this process is; `null` when unsharded | `TEST_ENV_NUMBER`, `CI_NODE_INDEX`, `CIRCLE_NODE_INDEX`, `BUILDKITE_PARALLEL_JOB`, or `SPECGUARD_SHARD_ID` |
+| `shard_id` | which slice of that run this process is; `null` when unsharded | `SPECGUARD_SHARD_ID` if you set it, else `TEST_ENV_NUMBER`, `CI_NODE_INDEX`, `CIRCLE_NODE_INDEX`, `BUILDKITE_PARALLEL_JOB` |
 | `duration_seconds` | wall clock for the whole run | measured by the formatter |
 | `specs` | one object per example that finished — the nine fields below | the run |
 
@@ -613,8 +615,14 @@ it so that adding a field without updating this section fails the build.
 | `status` | `annotated` or `unannotated` | whether an `@intent:` was found for that line |
 | `intent` | the parsed `@intent:` annotation; `null` when there is none | the annotation you wrote in the spec file |
 
-The API key travels as a bearer token in the `Authorization` header. That is the
-only other thing in the request.
+Two request headers say something about you rather than about the request: the
+API key travels as a bearer token in `Authorization`, and `User-Agent` names
+this gem and its version (`specguard-rspec/<version>`), so the platform can tell
+its clients apart. The rest are ordinary HTTP plumbing that describe the message
+itself and carry nothing about your code or your suite — `Content-Type`,
+`Accept`, `Content-Length`, `Host`, `Accept-Encoding`, and `Content-Encoding:
+gzip` on a run large enough to be compressed. A spec pins that header set too,
+so a header added later cannot quietly slip past this paragraph.
 
 ### Test names and annotations are free text, and that is the point
 

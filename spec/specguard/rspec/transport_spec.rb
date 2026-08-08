@@ -90,6 +90,38 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(payload.to_json.bytesize).to be < described_class::GZIP_THRESHOLD_BYTES
       expect(request.headers["content-encoding"]).to be_nil
     end
+
+    # == Why `eq` over the sorted key set, and not another `headers[...]` check
+    #
+    # README's "What SpecGuard collects" enumerates the request headers and
+    # tells a customer that exactly two of them — `Authorization` and
+    # `User-Agent` — say anything about them, and that the rest are plumbing
+    # carrying nothing about their code. That is a claim a security review
+    # reads before deciding whether this data may leave their perimeter, so it
+    # has to be a *maintained* claim rather than a snapshot of the day it was
+    # written.
+    #
+    # Every other header assertion in this file is additive: they each name one
+    # header and pass regardless of what else was sent. A header added to
+    # `#build_request` tomorrow — a project id, a tenant hint, an experiment
+    # flag — ships green through all of them with the README still promising
+    # this list. Comparing the *whole* sorted key set is the only shape that
+    # cannot: it fails, and names the header that appeared.
+    #
+    # That drift is measured, not hypothetical. `Content-Encoding` arrived with
+    # SPGD-175 and `Accept-Encoding` is a `Net::HTTP` default that
+    # `#build_request` never mentions — both are on the wire, and neither is
+    # visible from reading `#build_request` alone. Hence the assertion is made
+    # against what the stub server actually received.
+    #
+    # If this fails: update the header list in README's "What SpecGuard
+    # collects" to match what is now sent, then update this list. Do not update
+    # this list alone — the disclosure is the point of the pin.
+    it "sends exactly the headers the README discloses, and no others" do
+      expect(request.headers.keys.sort).to eq(
+        %w[accept accept-encoding authorization content-length content-type host user-agent]
+      )
+    end
   end
 
   # A 20,000-example run serializes to 7,354,782 bytes (7.01 MiB), and `#post`
@@ -163,6 +195,17 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # under-large one hands the inflater a truncated stream.
     it "sets Content-Length to what it actually wrote" do
       expect(captured.headers["content-length"]).to eq(captured.body.bytesize.to_s)
+    end
+
+    # The compressed path's half of the pin above. A large run is the shape a
+    # security review is most likely to capture off a proxy, and it is the one
+    # that carries the extra header — so the README's list is only honest if
+    # *this* set is pinned too, not just the identity one.
+    it "sends exactly the headers the README discloses, plus the gzip one" do
+      expect(captured.headers.keys.sort).to eq(
+        %w[accept accept-encoding authorization content-encoding content-length
+           content-type host user-agent]
+      )
     end
 
     # The claim the header alone cannot make. A transport that set
