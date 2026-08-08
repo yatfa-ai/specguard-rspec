@@ -45,21 +45,50 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     end
   end
 
+  # The `--version` line the real binary prints, recorded from
+  # `cmd/validate-intent/version.go`'s VersionLine format. The stub answers this
+  # unless a test asks it not to.
+  def stub_identity
+    "validate-intent 1.4.0 (go1.22.12 linux/arm64)"
+  end
+
   # A stand-in for `validate-intent`: it records the argument vector it was
   # given, prints a canned stdout/stderr, and exits with a canned code. Written
   # as /bin/sh with the payloads in separate files so nothing here has to be
   # quoted into a script.
-  def stub_validator(stdout: "", stderr: "", exit_code: 0, name: "validate-intent-stub")
+  #
+  # It branches on `--version` because the real binary does, from ANY argv
+  # position (`cmd/validate-intent/main.go` loops the whole vector before
+  # anything else). A stub that replayed the report document for every argument
+  # vector would answer the identity probe with a report — which is not a thing
+  # the real binary can do, so a spec built on it would be testing nothing.
+  #
+  # `version_stdout: ""`/`version_exit: 1` is the PRE-SLICE-6 binary: no
+  # `--version` flag at all, so it reads the word as a filename, says "no
+  # file(s) match" on stderr and exits 1.
+  def stub_validator(stdout: "", stderr: "", exit_code: 0, name: "validate-intent-stub",
+                     version_stdout: stub_identity, version_stderr: "", version_exit: 0)
     out_file = File.join(tmpdir, "#{name}.out")
     err_file = File.join(tmpdir, "#{name}.err")
+    vout_file = File.join(tmpdir, "#{name}.vout")
+    verr_file = File.join(tmpdir, "#{name}.verr")
     File.write(out_file, stdout)
     File.write(err_file, stderr)
+    File.write(vout_file, version_stdout.empty? ? "" : "#{version_stdout}\n")
+    File.write(verr_file, version_stderr)
 
     path = File.join(tmpdir, name)
     File.write(path, <<~SH)
       #!/bin/sh
       printf '%s\\n' "$@" >> #{args_log(name)}
       echo >> #{args_log(name)}
+      for arg in "$@"; do
+        if [ "$arg" = "--version" ]; then
+          cat #{vout_file}
+          cat #{verr_file} >&2
+          exit #{version_exit}
+        fi
+      done
       cat #{out_file}
       cat #{err_file} >&2
       exit #{exit_code}
@@ -73,10 +102,37 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # Every invocation's argument vector, one array per invocation.
-  def recorded_invocations(name = "validate-intent-stub")
+  def all_invocations(name = "validate-intent-stub")
     return [] unless File.exist?(args_log(name))
 
     File.read(args_log(name)).split("\n\n", -1).reject(&:empty?).map { |block| block.split("\n") }
+  end
+
+  # The CHECK invocations — the identity probe is filtered out so that every
+  # assertion about the argument vector, the batching and the file order goes on
+  # meaning what it meant before the probe existed. Assertions ABOUT the probe
+  # use {version_probes}.
+  def recorded_invocations(name = "validate-intent-stub")
+    all_invocations(name).reject { |args| args.include?("--version") }
+  end
+
+  # The identity probe's invocations. Criterion 6 — "at most once per run" — is
+  # a statement about the length of this list.
+  def version_probes(name = "validate-intent-stub")
+    all_invocations(name).select { |args| args.include?("--version") }
+  end
+
+  # Every run now prints exactly one line naming the validator that produced its
+  # verdicts, and that line is the ONE thing about the two backends' stderr that
+  # is supposed to differ. So the cross-backend comparisons below split stderr
+  # in two: this is the rest of it, which must still match byte for byte, and
+  # {provenance_lines} is the line itself.
+  def stderr_beyond_provenance(stderr)
+    stderr.lines.reject { |line| line.start_with?("specguard-lint: validated ") }.join
+  end
+
+  def provenance_lines(stderr)
+    stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: validated ") }
   end
 
   # A minimal well-formed `--source --json` document.
@@ -641,14 +697,16 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(go_stdout).to eq(ruby_stdout)
     end
 
-    # Both must be silent on stderr. A backend that explained itself there
-    # would be a difference the stdout comparison cannot see.
-    it "prints the same stderr, byte for byte" do
+    # Both are silent on stderr APART from the one line naming the validator —
+    # and that line is the single thing that must NOT match, because it is what
+    # tells the two runs apart when nothing else about them does.
+    it "prints the same stderr apart from the line naming the validator" do
       _, ruby_stderr, = run_cli({})
       _, go_stderr, = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
 
-      expect(go_stderr).to eq(ruby_stderr)
-      expect(go_stderr).to be_empty
+      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+      expect(stderr_beyond_provenance(go_stderr)).to be_empty
+      expect(go_stderr).not_to eq(ruby_stderr)
     end
 
     it "exits with the same code" do
@@ -765,11 +823,11 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
     end
 
-    it "says nothing on stderr on either backend" do
+    it "says nothing on stderr on either backend beyond the line naming the validator" do
       (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
 
-      expect(go_stderr).to eq(ruby_stderr)
-      expect(go_stderr).to be_empty
+      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+      expect(stderr_beyond_provenance(go_stderr)).to be_empty
     end
 
     # The other side of the ratification. If these ever agree, the difference
@@ -994,11 +1052,11 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
       end
 
-      it "says nothing on stderr on either backend" do
+      it "says nothing on stderr on either backend beyond the line naming the validator" do
         (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
 
-        expect(go_stderr).to eq(ruby_stderr)
-        expect(go_stderr).to be_empty
+        expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+        expect(stderr_beyond_provenance(go_stderr)).to be_empty
       end
 
       # The half that is NOT shared, and the reason this needs its own shape
@@ -1099,7 +1157,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       # What DOES still agree, so the entry is honest about its shared half
       # rather than claiming there is none: both read the same file and find
-      # the same four annotations in it, and neither says anything on stderr.
+      # the same four annotations in it, and neither says anything on stderr
+      # beyond the line naming which of them produced the verdicts.
       it "agrees on the file and on how many annotations are in it" do
         (ruby_stdout, ruby_stderr, *), (go_stdout, go_stderr, *) = both_ways
         selection = ->(stdout) { stdout.lines.first.chomp }
@@ -1108,8 +1167,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(selection.call(go_stdout)).to eq("specguard-lint: checked 1 spec file")
         expect(go_stdout).to include("checked 4 @intent annotations")
         expect(ruby_stdout).to include("checked 4 @intent annotations")
-        expect(go_stderr).to eq(ruby_stderr)
-        expect(go_stderr).to be_empty
+        expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+        expect(stderr_beyond_provenance(go_stderr)).to be_empty
       end
 
       # The boundary, and the reason the fixture carries four annotations
@@ -1213,6 +1272,306 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
       expect(stderr.string).to include("--changed cannot be combined with explicit files")
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # NAMING THE IMPLEMENTATION THAT PRODUCED THE VERDICTS.
+  #
+  # Everything above this point establishes that the two backends produce the
+  # same bytes for the same corpus. That is the property the slice wanted, and
+  # it is also the problem: with the report identical, a run validated by the Go
+  # port and a run validated by Linter were indistinguishable from their output,
+  # so "which validator did this CI job actually run" had no answer.
+  #
+  # `validator_backend.rb` had already refused to leave that question open in
+  # the two places it can be decided before a binary runs — a named-but-missing
+  # binary is a hard exit 2, and a bare command name is refused rather than
+  # PATH-resolved, both because "a run that succeeded against a different
+  # validator" is undetectable downstream. This closes the same hole for every
+  # binary that DOES resolve, and the assertions below are about the four ways
+  # that can go wrong:
+  #
+  #   * saying nothing on the Ruby arm, which would make the line's ABSENCE
+  #     ambiguous between "the Ruby path" and "a gem too old to say";
+  #   * composing a sentence ABOUT the binary instead of carrying the binary's
+  #     own words, which cannot distinguish two builds this gem has never heard
+  #     of;
+  #   * letting a binary that cannot self-report cost a verdict, or an exit
+  #     code, or a byte of stdout;
+  #   * reporting "unavailable" by omitting the line — the silent-omission shape
+  #     this project keeps naming, which would read exactly like a run nobody
+  #     looked at.
+  describe "naming the validator that produced the verdicts" do
+    let(:paths) { %w[spec/fixtures/order_spec.rb] }
+
+    def run_cli(env, argv = paths)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
+      [stdout.string, stderr.string, code]
+    end
+
+    def provenance_of(env, argv = paths)
+      _, stderr, = run_cli(env, argv)
+      provenance_lines(stderr).first
+    end
+
+    def clean_stub(**stub)
+      stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE PROBE. Once, before selection, and incapable of failing the run.
+    describe "the identity probe" do
+      it "asks the binary who it is" do
+        described_class.resolve(env: { described_class::ENV_VAR => stub_validator })
+
+        expect(version_probes).to eq([["--version"]])
+      end
+
+      # Criterion 6, and the reason it is asked in #verify! rather than beside
+      # the report: an audit of a large suite runs many batches, and an identity
+      # probe per batch would be a per-file cost for a per-run fact.
+      it "asks once per run, not once per batch" do
+        paths = Array.new(1_500) { |i| format("spec/models/example_%05d_spec.rb", i) }
+        run_backend(paths, stdout: document(paths.map { |path| ok_finding(file: path) }))
+
+        expect(recorded_invocations.length).to be > 1
+        expect(version_probes.length).to eq(1)
+      end
+
+      # Before selection, so the line lands above the empty-selection warnings
+      # and a run that dies mid-way still said what was about to validate it.
+      it "asks before it asks for any verdict" do
+        run_backend(["a_spec.rb"], stdout: document([ok_finding]))
+
+        expect(all_invocations.first).to eq(["--version"])
+      end
+
+      # Criterion 3. The identity is the binary's statement, not the gem's, so
+      # the gem must not know its format — a build that words it differently is
+      # still telling the truth about which build it is.
+      it "carries the binary's own line through verbatim" do
+        odd = "some-other-validator 9.9.9-rc1+build.7 [experimental]"
+        runner = described_class.resolve(
+          env: { described_class::ENV_VAR => stub_validator(version_stdout: odd) }
+        )
+
+        expect(runner.identity).to eq(odd)
+      end
+
+      it "does not invoke the binary at all before it has been resolved" do
+        described_class::Runner.new(File.join(tmpdir, "validate-intent-stub"))
+
+        expect(version_probes).to be_empty
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # "IDENTITY UNAVAILABLE" IS NOT A FAILURE TO OBTAIN A VERDICT.
+    #
+    # `--version` arrived in open-test-intent slice 6. An older build reads it
+    # as a filename, reports "no file(s) match" on stderr and exits 1 — and it
+    # validates perfectly well. Every shape below must therefore leave the
+    # findings, the exit code and stdout exactly as they were.
+    describe "a binary that cannot report its identity" do
+      def unidentified(**extra)
+        described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**extra) })
+      end
+
+      it "treats a pre-slice-6 binary's `no file(s) match` refusal as unavailable" do
+        runner = unidentified(version_stdout: "", version_stderr: "error: no file(s) match '--version'\n",
+                              version_exit: 1)
+
+        expect(runner.identity).to be_nil
+      end
+
+      it "treats a silent success as unavailable rather than as an empty identity" do
+        expect(unidentified(version_stdout: "").identity).to be_nil
+      end
+
+      # The one shape check, and it is about the single line the CLI promises
+      # per run rather than about the port's format. A `--version` answering
+      # with a report document is answering a different question.
+      it "refuses an answer that is more than one line" do
+        expect(unidentified(version_stdout: "validate-intent 1.4.0\nand another thing").identity).to be_nil
+      end
+
+      it "refuses an answer longer than the line budget" do
+        giant = "v#{'9' * SpecGuard::RSpec::ValidatorBackend::Runner::IDENTITY_MAX_BYTES}"
+
+        expect(unidentified(version_stdout: giant).identity).to be_nil
+      end
+
+      # An escape sequence in a CI log is somebody else's colour scheme at best
+      # and a forged extra line at worst.
+      it "refuses an answer carrying control characters" do
+        expect(unidentified(version_stdout: "validate-intent \e[31m1.4.0\e[0m").identity).to be_nil
+      end
+
+      it "refuses an answer that is not valid text" do
+        expect(unidentified(version_stdout: "validate-intent \xFF\xFE").identity).to be_nil
+      end
+
+      # Regression: `String#strip` raises Encoding::CompatibilityError on an
+      # invalid byte sequence, so testing the shape before the encoding turned
+      # a binary with an odd `--version` into `internal error:` and an exit 2 —
+      # the linter reporting itself broken because it could not read a line it
+      # does not need.
+      it "does not let an unreadable answer become an internal error" do
+        stub = clean_stub(version_stdout: "validate-intent \xFF\xFE")
+        stdout, stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stderr).not_to include("internal error")
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # THE POINT. Not a ValidatorError, not an exit 2 — the "everything that
+      # can go wrong here is exit 2" band is for failures to obtain a VERDICT,
+      # and this is not one.
+      it "still resolves, and still validates" do
+        stub = clean_stub(version_stdout: "", version_exit: 1)
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # Criterion 4, stated as the comparison that proves it: the ONLY thing
+      # that moves is the wording of the provenance line.
+      it "produces the same stdout and the same exit code as a binary that can" do
+        identified = run_cli({ described_class::ENV_VAR => clean_stub(name: "with-version") })
+        anonymous = run_cli({ described_class::ENV_VAR =>
+                              clean_stub(name: "without-version", version_stdout: "", version_exit: 1) })
+
+        expect(anonymous[0]).to eq(identified[0])
+        expect(anonymous[2]).to eq(identified[2])
+      end
+
+      # Criterion 4's other half, and the one that matters most: unavailable is
+      # reported IN WORDS. A run that dropped the line instead would look
+      # exactly like a run nobody ever taught to print one.
+      it "says so in words, and still names the binary it could not identify" do
+        stub = clean_stub(version_stdout: "", version_exit: 1)
+
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .to eq("specguard-lint: validated by the binary at #{stub} " \
+                 "(SPECGUARD_VALIDATE_INTENT), which could not report its identity")
+      end
+
+      it "still prints exactly one such line" do
+        stub = clean_stub(version_stdout: "", version_exit: 1)
+        _, stderr, = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(provenance_lines(stderr).length).to eq(1)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    describe "the line, with the backend active" do
+      it "names the binary's own identity and the path it was resolved from" do
+        stub = clean_stub
+
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .to eq("specguard-lint: validated by #{stub_identity} at #{stub} (SPECGUARD_VALIDATE_INTENT)")
+      end
+
+      # Criterion 2. The findings and the two `checked …` lines are the product
+      # and are pinned byte-for-byte across the backends above; a line about the
+      # linter's own configuration must not join them.
+      it "goes on stderr, leaving stdout untouched" do
+        stdout, = run_cli({ described_class::ENV_VAR => clean_stub })
+
+        expect(stdout).not_to include("validated")
+        expect(stdout).not_to include(stub_identity)
+      end
+
+      it "prints exactly one such line per run" do
+        _, stderr, = run_cli({ described_class::ENV_VAR => clean_stub })
+
+        expect(provenance_lines(stderr).length).to eq(1)
+      end
+
+      # Placement, asserted rather than assumed: emitted right after resolution,
+      # so it is above the selection warnings and reads as the premise of
+      # everything that follows rather than as a footnote to it.
+      it "comes before the empty-selection warning" do
+        stub = stub_validator
+        stderr = nil
+        Dir.mktmpdir { |dir| Dir.chdir(dir) { _, stderr, = run_cli({ described_class::ENV_VAR => stub }, []) } }
+
+        expect(stderr.lines.first).to start_with("specguard-lint: validated by ")
+        expect(stderr).to include("selected 0 spec files")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE ARM THAT IS EASY TO FORGET. A line that appeared only when the backend
+    # was on would make its absence mean either "validated in Ruby" or "a gem
+    # from before this line existed" — which is not an answer, and the default
+    # configuration is the one nearly every run uses.
+    describe "the line, with the backend off" do
+      it "states positively that the Ruby path produced the verdicts" do
+        expect(provenance_of({}))
+          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)")
+      end
+
+      # Criterion 5. ValidatorBackend.resolve deliberately collapses unset and
+      # blank — `SPECGUARD_VALIDATE_INTENT=` in a CI environment file is
+      # somebody turning the backend OFF — and returns nil for both, so this
+      # distinction cannot come from the backend and is read from the
+      # environment. Somebody who set the variable and got the Ruby path anyway
+      # needs to see that the VALUE, not the wiring, is why.
+      it "distinguishes a blank value from an unset one" do
+        expect(provenance_of({ described_class::ENV_VAR => "" }))
+          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)")
+      end
+
+      it "treats a whitespace-only value as blank, matching .resolve" do
+        expect(provenance_of({ described_class::ENV_VAR => "   " }))
+          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)")
+      end
+
+      it "prints exactly one such line per run" do
+        _, stderr, = run_cli({})
+
+        expect(provenance_lines(stderr).length).to eq(1)
+      end
+
+      # Criterion 2 from the other side: the wording of the off arm's line is
+      # the only thing that moves between an unset and a blank variable.
+      it "leaves stdout and the exit code identical either way" do
+        unset = run_cli({})
+        blank = run_cli({ described_class::ENV_VAR => "" })
+
+        expect(blank[0]).to eq(unset[0])
+        expect(blank[2]).to eq(unset[2])
+        expect(blank[1]).not_to eq(unset[1])
+      end
+
+      it "goes on stderr, leaving stdout untouched" do
+        stdout, = run_cli({})
+
+        expect(stdout).not_to include("validated")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # Criterion 1 has no exceptions worth having: a run that says nothing about
+    # its validator is the state this slice exists to remove, so the sweep is
+    # over every arm at once rather than one assertion per arm.
+    it "states which implementation validated the run, on every arm" do
+      envs = [{},
+              { described_class::ENV_VAR => "" },
+              { described_class::ENV_VAR => clean_stub(name: "identified") },
+              { described_class::ENV_VAR => clean_stub(name: "anonymous", version_stdout: "", version_exit: 1) }]
+
+      lines = envs.map { |env| provenance_of(env) }
+
+      expect(lines).to all(be_a(String))
+      expect(lines.uniq.length).to eq(4)
     end
   end
 end

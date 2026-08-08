@@ -48,14 +48,38 @@ report from its findings:
 SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed
 ```
 
-**Off by default, and unset means unchanged.** The binary is not shipped with this gem and is not
+**Off by default.** The binary is not shipped with this gem and is not
 published anywhere yet, so the Ruby path stays the default and stays supported — this is for people
 who already build or vendor the validator and would rather run one implementation than two. A blank
 value counts as unset.
 
-What it does *not* change: the selection, the report format, or the summary-line format. What it
-*can* change is narrower than an earlier version of this section claimed, and the difference is
-worth stating precisely rather than reassuringly.
+#### Every run says which implementation validated it
+
+Because the two backends produce the same report, the report alone cannot tell you which one ran.
+So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
+
+```
+specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT)
+specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
+specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
+```
+
+Three things worth knowing about it:
+
+* **stdout is untouched.** The line is on stderr, beside the other diagnostics about the linter
+  itself, so the findings and the two `checked …` lines are still byte-identical across the two
+  backends and still safe to pipe.
+* **The identity is the binary's own.** It comes from `<binary> --version`, asked once per run
+  before any file is selected, and is passed through verbatim rather than reworded — that is the
+  only thing that can tell two builds of the validator apart.
+* **A binary that cannot answer still validates.** `--version` arrived in a later slice of the
+  validator; an older build reads it as a filename and exits 1. That costs nothing — same findings,
+  same exit code, same stdout — and the line says so in words
+  (`… which could not report its identity`) rather than going missing.
+
+What the backend does *not* change: the selection, the report format, or the summary-line format.
+What it *can* change is narrower than an earlier version of this section claimed, and the difference
+is worth stating precisely rather than reassuringly.
 
 For every payload both JSON parsers accept, the two backends agree completely: the same finding
 against the same file at the same line, the same classification, the same counts and the same exit
