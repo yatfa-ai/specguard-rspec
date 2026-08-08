@@ -96,16 +96,37 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # `version_stdout: ""`/`version_exit: 1` is the PRE-SLICE-6 binary: no
   # `--version` flag at all, so it reads the word as a filename, says "no
   # file(s) match" on stderr and exits 1.
+  #
+  # The `--schema-source` defaults are the PRE-SLICE-19 binary, recorded from
+  # one (`spec/fixtures/validator/schema-source-probes.json`, case
+  # `unsupported`): the flag is read as a filename too. That is the default on
+  # purpose, and it is the opposite of the choice {stub_identity} makes above.
+  # There, a stub without a digest would have left the matched band untested
+  # everywhere; here, a stub that answers `--schema-source` would leave the
+  # FALLBACK untested everywhere — and the fallback is the criterion "a binary
+  # without the flag behaves byte-identically to the release before it" whose
+  # proof is every other example in this file continuing to pass unchanged.
+  # The enforced path has a section of its own, driven from recordings.
+  #
+  # `schema_source_stdout` is written VERBATIM, without the trailing newline
+  # `version_stdout` gets, so a recorded answer can be replayed byte for byte.
   def stub_validator(stdout: "", stderr: "", exit_code: 0, name: "validate-intent-stub",
-                     version_stdout: stub_identity, version_stderr: "", version_exit: 0)
+                     version_stdout: stub_identity, version_stderr: "", version_exit: 0,
+                     schema_source_stdout: "",
+                     schema_source_stderr: "error: no file(s) match '--schema-source'\n",
+                     schema_source_exit: 1)
     out_file = File.join(tmpdir, "#{name}.out")
     err_file = File.join(tmpdir, "#{name}.err")
     vout_file = File.join(tmpdir, "#{name}.vout")
     verr_file = File.join(tmpdir, "#{name}.verr")
+    sout_file = File.join(tmpdir, "#{name}.sout")
+    serr_file = File.join(tmpdir, "#{name}.serr")
     File.write(out_file, stdout)
     File.write(err_file, stderr)
     File.write(vout_file, version_stdout.empty? ? "" : "#{version_stdout}\n")
     File.write(verr_file, version_stderr)
+    File.write(sout_file, schema_source_stdout)
+    File.write(serr_file, schema_source_stderr)
 
     path = File.join(tmpdir, name)
     File.write(path, <<~SH)
@@ -117,6 +138,13 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
           cat #{vout_file}
           cat #{verr_file} >&2
           exit #{version_exit}
+        fi
+      done
+      for arg in "$@"; do
+        if [ "$arg" = "--schema-source" ]; then
+          cat #{sout_file}
+          cat #{serr_file} >&2
+          exit #{schema_source_exit}
         fi
       done
       cat #{out_file}
@@ -138,18 +166,23 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     File.read(args_log(name)).split("\n\n", -1).reject(&:empty?).map { |block| block.split("\n") }
   end
 
-  # The CHECK invocations — the identity probe is filtered out so that every
+  # The CHECK invocations — the two probes are filtered out so that every
   # assertion about the argument vector, the batching and the file order goes on
-  # meaning what it meant before the probe existed. Assertions ABOUT the probe
-  # use {version_probes}.
+  # meaning what it meant before they existed. Assertions ABOUT the probes use
+  # {version_probes} and {schema_source_probes}.
   def recorded_invocations(name = "validate-intent-stub")
-    all_invocations(name).reject { |args| args.include?("--version") }
+    all_invocations(name).reject { |args| (args & %w[--version --schema-source]).any? }
   end
 
   # The identity probe's invocations. Criterion 6 — "at most once per run" — is
   # a statement about the length of this list.
   def version_probes(name = "validate-intent-stub")
     all_invocations(name).select { |args| args.include?("--version") }
+  end
+
+  # The enforced-schema probe's invocations, under the same once-per-run rule.
+  def schema_source_probes(name = "validate-intent-stub")
+    all_invocations(name).select { |args| args.include?("--schema-source") }
   end
 
   # Every run now prints exactly one line naming the validator that produced its
@@ -2037,6 +2070,629 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect([0, 1]).to include(status.exitstatus),
                         "git grep could not search #{root} (exit #{status.exitstatus}): #{err}"
       expect(out).to eq("")
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # THE SCHEMA A RUN ENFORCES — the question the section above asks badly.
+  #
+  # `--version`'s digest names the schema the binary CARRIES. `LoadSchema`
+  # (open-test-intent, `cmd/validate-intent/fileio.go`) gives a
+  # `schemas/open-test-intent.v1.json` found beside the executable priority over
+  # the compiled-in copy and falls back to it only on ENOENT, and `--version`
+  # returns some thirty lines above that decision. So the comparison above is
+  # wrong in both directions, and the first of the two is the one that matters:
+  #
+  #   * embedded copy ours, file beside it somebody else's — `--version` reports
+  #     a matching digest, the guard returns `:matched` and says nothing, and
+  #     the run is validated against bytes the gem never saw. The guard passes
+  #     in precisely the case it was built to refuse;
+  #   * embedded copy stale, file beside it ours — refused, for a run that
+  #     would have been correct.
+  #
+  # Slice 19 added `--schema-source`, which calls the real loader and prints
+  # `schema <origin> sha256:<hex>` for the bytes a verdict run would load.
+  #
+  # EVERY BINARY ANSWER IN THIS SECTION IS RECORDED FROM A REAL BINARY —
+  # `spec/fixtures/validator/schema-source-probes.json`, which documents how
+  # each tree was built — and that is not a preference. The probe degrades
+  # silently by design: output it cannot read is indistinguishable from a binary
+  # too old to have the flag, so a parse bug produces no failure anywhere. It
+  # reverts the guard to comparing the carried digest and the suite goes green,
+  # which is the defect this whole section exists to close, re-created inside
+  # the fix. A hand-written line that happens to fit the pattern would be green
+  # on both sides of that bug; a recording cannot be.
+  describe "the schema a run enforces" do
+    let(:paths) { %w[spec/fixtures/order_spec.rb] }
+
+    def run_cli(env, argv = paths)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
+      [stdout.string, stderr.string, code]
+    end
+
+    def provenance_of(env, argv = paths)
+      _, stderr, = run_cli(env, argv)
+      provenance_lines(stderr).first
+    end
+
+    def error_lines(stderr)
+      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
+    end
+
+    def recorded_probes
+      @recorded_probes ||= JSON.parse(File.read("spec/fixtures/validator/schema-source-probes.json"))
+    end
+
+    def recorded(name)
+      recorded_probes.fetch("cases").fetch(name)
+    end
+
+    def recorded_source(name)
+      recorded(name).fetch("schema_source").fetch("stdout")
+    end
+
+    # A stub answering both flags exactly as the recorded binary answered them,
+    # over a clean report for the fixture the CLI examples lint.
+    def recorded_stub(name, **overrides)
+      version = recorded(name).fetch("version")
+      source = recorded(name).fetch("schema_source")
+
+      clean_stub(name: "recorded-#{name}",
+                 version_stdout: version.fetch("stdout").chomp,
+                 version_stderr: version.fetch("stderr"),
+                 version_exit: version.fetch("exit"),
+                 schema_source_stdout: source.fetch("stdout"),
+                 schema_source_stderr: source.fetch("stderr"),
+                 schema_source_exit: source.fetch("exit"),
+                 **overrides)
+    end
+
+    # The same recorded binary with the flag taken away — the recorded answer of
+    # a build that predates it. This is what the gem saw before this section
+    # existed, and several examples below are only meaningful next to it.
+    def without_schema_source
+      old = recorded("unsupported").fetch("schema_source")
+
+      { schema_source_stdout: old.fetch("stdout"),
+        schema_source_stderr: old.fetch("stderr"),
+        schema_source_exit: old.fetch("exit") }
+    end
+
+    def resolve_recorded(name, **overrides)
+      described_class.resolve(env: { described_class::ENV_VAR => recorded_stub(name, **overrides) })
+    end
+
+    # The extraction open-test-intent's own comment prescribes for this line:
+    # "the digest is LAST and is the only token after the origin, so
+    # `${line##* }` yields `sha256:<hex>` whatever the origin contains", and the
+    # origin is everything between `schema ` and that final space. Spelled out
+    # here rather than borrowed from the gem, because an expectation computed by
+    # the code under test asserts that the code agrees with itself.
+    def shell_extraction(line)
+      text = line.chomp
+
+      { origin: text.sub(/\Aschema /, "").sub(/ \S+\z/, ""),
+        digest: text.split(" ").last.delete_prefix("sha256:") }
+    end
+
+    # Does `line` read these fragments, in this order, with anything at all
+    # allowed between them? Used to compare a README sample against a real
+    # message whose digests and host paths the sample elides. Order and
+    # single-line containment are both load bearing: a fragment short enough to
+    # appear somewhere else in the file (", loaded from ") would otherwise be
+    # answered by a different sample entirely.
+    def in_order?(line, fragments)
+      cursor = 0
+
+      fragments.all? do |fragment|
+        found = line.index(fragment, cursor)
+        cursor = found + fragment.length if found
+
+        !found.nil?
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE PARSE, against the bytes it will meet in the field.
+    describe "reading the real binary's answer" do
+      # Both origin shapes the flag can print: an absolute path, and the
+      # literal `<embedded schema>` when nothing on disk shadowed the embed.
+      # The path one was recorded under a directory whose name contains a
+      # SPACE, which is why the origin cannot be read as a single token.
+      #
+      # `disk_wins` is absent here because it refuses to resolve — there is no
+      # Runner to ask. Its parse is asserted through the digest and origin its
+      # refusal names, in the divergence group below, which is the only place
+      # that parse can be observed.
+      %w[embedded on_disk embed_differs].each do |name|
+        it "extracts the origin and the digest from the recorded `#{name}` line" do
+          expect(resolve_recorded(name).enforced_schema).to eq(shell_extraction(recorded_source(name)))
+        end
+      end
+
+      it "recorded an origin that is not a single token, so the parse cannot be `split`" do
+        expect(shell_extraction(recorded_source("on_disk"))[:origin]).to include(" ")
+      end
+
+      it "recorded the embedded origin as the label, not as a path" do
+        expect(shell_extraction(recorded_source("embedded"))[:origin]).to eq("<embedded schema>")
+      end
+
+      # THE FALSIFIER for scope item 5. The identity pattern was proposed for
+      # this surface unchanged; it matches it never, because it requires
+      # `schema` immediately followed by `sha256:` and the origin sits between
+      # them. Reusing it would have made every probe unreadable — and, under the
+      # degrade rule, silent. The second half is the positive control: the same
+      # pattern on the surface it WAS written for, so this example fails when
+      # the patterns are confused rather than when either is merely absent.
+      it "is not readable by the identity pattern, which is why there are two" do
+        pattern = SpecGuard::RSpec::ValidatorBackend::Runner::SCHEMA_DIGEST_PATTERN
+
+        expect(recorded_source("embedded")[pattern, 1]).to be_nil
+        expect(recorded_source("on_disk")[pattern, 1]).to be_nil
+        expect(recorded("embedded").fetch("version").fetch("stdout")[pattern, 1]).to eq(vendored_digest)
+      end
+
+      # The recordings are pinned bytes and the vendored schema is a file in
+      # this repo; if canonical ever moves, they stop describing each other and
+      # every example below would compare two digests that were never meant to
+      # be equal. Said here, once, with the instruction attached — rather than
+      # left to be diagnosed from four confusing failures.
+      it "still describes the schema this gem vendors" do
+        expect(shell_extraction(recorded_source("embedded"))[:digest]).to eq(vendored_digest),
+                                                                         "spec/fixtures/validator/" \
+                                                                         "schema-source-probes.json is stale: " \
+                                                                         "re-record it from a binary built at the " \
+                                                                         "current open-test-intent, following the " \
+                                                                         "`recorded_from.how` steps it carries."
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # BAND: ENFORCED AND EQUAL.
+    describe "a binary whose runs load the schema this gem vendors" do
+      it "records the contract as enforced, from the embedded copy" do
+        expect(resolve_recorded("embedded").schema_contract).to eq(:enforced)
+      end
+
+      it "records the contract as enforced, from a file beside the binary" do
+        expect(resolve_recorded("on_disk").schema_contract).to eq(:enforced)
+      end
+
+      it "runs normally, changing neither stdout nor the exit code" do
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => recorded_stub("embedded") })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # Scope items 3 and 4. The hedge existed because the gem could not know
+      # what the run enforced; on this path it now can, so the line says which
+      # schema was loaded and from where instead of disclaiming the question.
+      it "names the origin, and drops the hedge it no longer needs" do
+        stub = recorded_stub("on_disk")
+        origin = shell_extraction(recorded_source("on_disk"))[:origin]
+
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .to eq("specguard-lint: validated by #{recorded('on_disk').fetch('version').fetch('stdout').chomp} " \
+                 "at #{stub} (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, " \
+                 "loaded from #{origin}")
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .not_to include("not necessarily the one this run enforced")
+      end
+
+      # THE MIRROR CASE, and it is a false REFUSAL rather than a false pass:
+      # this binary's embedded schema is not the gem's, so comparing the carried
+      # digest exits 2 on a run whose loaded schema is exactly right. Asserted
+      # against the same recording with the flag removed, so the two arms differ
+      # in one fact and nothing else.
+      it "no longer refuses a binary whose embedded copy is stale but whose runs load ours" do
+        with_flag = run_cli({ described_class::ENV_VAR => recorded_stub("embed_differs") })
+        without_flag = run_cli({ described_class::ENV_VAR =>
+                                 recorded_stub("embed_differs", name: "recorded-embed-differs-old",
+                                                                **without_schema_source) })
+
+        expect(with_flag[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(without_flag[2]).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # BAND: ENFORCED AND DIFFERENT. The case this ticket exists for.
+    describe "a binary whose runs load a schema this gem does not vendor" do
+      # The premise, stated as an assertion rather than assumed: this recorded
+      # binary's CARRIED digest is the gem's. Without this, the examples below
+      # would pass against a recording that merely diverges on both digests —
+      # which the guard already caught — and the regression they exist to pin
+      # would go untested.
+      it "carries the digest the gem vendors, so the old comparison saw nothing wrong" do
+        carried = recorded("disk_wins").fetch("version").fetch("stdout")[
+          SpecGuard::RSpec::ValidatorBackend::Runner::SCHEMA_DIGEST_PATTERN, 1
+        ]
+
+        expect(carried).to eq(vendored_digest)
+        expect(shell_extraction(recorded_source("disk_wins"))[:digest]).not_to eq(vendored_digest)
+      end
+
+      it "refuses to resolve" do
+        expect { resolve_recorded("disk_wins") }.to raise_error(SpecGuard::RSpec::ValidatorError)
+      end
+
+      it "exits 2, not 1 — this is not a verdict about anyone's annotations" do
+        _, _, code = run_cli({ described_class::ENV_VAR => recorded_stub("disk_wins") })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      end
+
+      # Both digests and the ORIGIN. The origin is the half the carried message
+      # never had to carry: `<embedded schema>` and a path on this host are
+      # fixed by entirely different actions, and without it the reader is told
+      # the two disagree and not where to go.
+      it "names both digests, the origin, and the build it read them from" do
+        stub = recorded_stub("disk_wins")
+        enforced = shell_extraction(recorded_source("disk_wins"))
+        _, stderr, = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(error_lines(stderr).length).to eq(1)
+        expect(error_lines(stderr).first).to include("the validator backend at #{stub}")
+        expect(error_lines(stderr).first).to include("sha256:#{enforced[:digest]}")
+        expect(error_lines(stderr).first).to include("sha256:#{vendored_digest}")
+        expect(error_lines(stderr).first).to include(enforced[:origin])
+        expect(error_lines(stderr).first).to include(recorded("disk_wins").fetch("version").fetch("stdout").chomp)
+      end
+
+      it "fails before anything is selected or scanned" do
+        stdout, stderr, = run_cli({ described_class::ENV_VAR => recorded_stub("disk_wins") })
+
+        expect(recorded_invocations("recorded-disk_wins")).to be_empty
+        expect(stdout).to eq("")
+        expect(stderr).not_to include("selected")
+      end
+
+      # THE REGRESSION, pinned as a difference rather than as a state. One
+      # recording, two runs, one fact changed: with the flag answered the run is
+      # refused, and with it taken away — which is all the gem could see before
+      # this change — the identical binary sails through with exit 0 and a
+      # provenance line saying the contract matched. Delete the enforced
+      # comparison and this example fails; nothing else in the file would.
+      it "was a silent pass when only the carried digest could be compared" do
+        refused = run_cli({ described_class::ENV_VAR => recorded_stub("disk_wins") })
+        as_before = run_cli({ described_class::ENV_VAR =>
+                              recorded_stub("disk_wins", name: "recorded-disk-wins-old", **without_schema_source) })
+
+        expect(refused[2]).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(as_before[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(provenance_lines(as_before[1]).first).to include("reports carrying the schema this gem vendors")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # DEGRADE, NEVER REFUSE. The rule the identity probe already documents, and
+    # the reason a gem shipping this can be installed beside binaries that have
+    # never heard of the flag.
+    describe "a binary that cannot answer --schema-source" do
+      it "falls back to the carried digest, recorded from a pre-slice-19 build" do
+        runner = resolve_recorded("unsupported")
+
+        expect(runner.enforced_schema).to be_nil
+        expect(runner.schema_contract).to eq(:matched)
+      end
+
+      # Criterion: a binary without the flag is byte-identical to the release
+      # before this change. The literal below is that release's sentence,
+      # written out rather than compared against another run of this code --
+      # two runs of the same build agree with each other whatever it prints, so
+      # a self-comparison would pass on a wording change and assert nothing.
+      #
+      # The broader half of the same criterion is not here and cannot be: it is
+      # that the ~880 other examples in this suite, all of which resolve a stub
+      # with no `--schema-source`, still pass having been changed in no way.
+      it "prints the sentence the release before the flag printed, unchanged" do
+        stub = recorded_stub("unsupported")
+        stdout, stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(provenance_lines(stderr))
+          .to eq(["specguard-lint: validated by " \
+                  "#{recorded('unsupported').fetch('version').fetch('stdout').chomp} at #{stub} " \
+                  "(SPECGUARD_VALIDATE_INTENT), which reports carrying the schema this gem vendors — " \
+                  "the contract it carries, not necessarily the one this run enforced"])
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # And the stderr it wrote answering a flag it does not have goes nowhere
+      # near the run's own stderr. `no file(s) match '--schema-source'` in a CI
+      # log would be read as the linter failing to find a file somebody named.
+      it "does not leak the refusal the old binary wrote to stderr" do
+        _, stderr, = run_cli({ described_class::ENV_VAR => recorded_stub("unsupported") })
+
+        expect(stderr).not_to include("no file(s) match")
+      end
+
+      # `--schema-source` exits 2 with the "could not load schema" diagnostic
+      # when a schema exists beside the binary and will not load. That is a real
+      # failure and it is not this check's to report: `check`/`run` reaches it a
+      # moment later from the verdict path, with the message that belongs to it.
+      # Turning it into a schema-CONTRACT error here would rename a broken
+      # installation into a divergence that does not exist.
+      it "treats an unloadable schema as unavailable rather than as a divergence" do
+        runner = resolve_recorded("unloadable")
+
+        expect(runner.enforced_schema).to be_nil
+        expect(runner.schema_contract).to eq(:matched)
+      end
+
+      it "leaves the unloadable schema to fail on the verdict path, with its own diagnostic" do
+        broken = recorded("unloadable").fetch("schema_source")
+        stub = recorded_stub("unloadable", name: "unloadable-run", stdout: "",
+                             stderr: broken.fetch("stderr"), exit_code: broken.fetch("exit"))
+        _, stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(error_lines(stderr).first).to include("could not load schema")
+      end
+
+      # The shapes no recording can produce, held to the identity probe's rules
+      # for the identity probe's reasons: a second line, an escape sequence or a
+      # NUL would break or forge the one line the CLI prints per run.
+      {
+        "an empty answer" => "",
+        "a second line" => "schema <embedded schema> sha256:%<digest>s\nand another thing",
+        "a control character" => "schema <embedded\e[31m schema> sha256:%<digest>s",
+        "an invalid byte sequence" => "schema \xFF\xFE sha256:%<digest>s",
+        "a report document" => '{"mode":"source","findings":[]}',
+        "a line with no origin" => "schema sha256:%<digest>s",
+        "a line with anything in front of it" => "warning: schema <embedded schema> sha256:%<digest>s",
+        "an origin-only line" => "schema <embedded schema>",
+        "sixty-five hex digits" => "schema <embedded schema> sha256:%<digest>s0",
+        "a truncated digest" => "schema <embedded schema> sha256:%<digest>.62s",
+        "trailing text after the digest" => "schema <embedded schema> sha256:%<digest>s (fresh)"
+      }.each_with_index do |(what, template), index|
+        it "treats #{what} as unavailable rather than as an answer" do
+          runner = described_class.resolve(
+            env: { described_class::ENV_VAR =>
+                   stub_validator(name: "shape-#{index}", schema_source_exit: 0, schema_source_stderr: "",
+                                  schema_source_stdout: format(template, digest: vendored_digest)) }
+          )
+
+          expect(runner.enforced_schema).to be_nil
+          expect(runner.schema_contract).to eq(:matched)
+        end
+      end
+
+      it "treats an answer longer than the line budget as unavailable" do
+        giant = "schema #{'x' * SpecGuard::RSpec::ValidatorBackend::Runner::SCHEMA_SOURCE_MAX_BYTES} " \
+                "sha256:#{vendored_digest}"
+        runner = described_class.resolve(
+          env: { described_class::ENV_VAR =>
+                 stub_validator(schema_source_exit: 0, schema_source_stderr: "", schema_source_stdout: giant) }
+        )
+
+        expect(runner.enforced_schema).to be_nil
+      end
+
+      # A path is allowed to be long — PATH_MAX is 4096 on Linux — so the budget
+      # that suits a version string would reject correct answers from correctly
+      # installed binaries. Asserted from the other side of the boundary so the
+      # constant cannot quietly shrink back to the identity probe's.
+      it "accepts an origin far longer than a version line is allowed to be" do
+        origin = "/#{'d' * 400}/schemas/open-test-intent.v1.json"
+        runner = described_class.resolve(
+          env: { described_class::ENV_VAR =>
+                 stub_validator(schema_source_exit: 0, schema_source_stderr: "",
+                                schema_source_stdout: "schema #{origin} sha256:#{vendored_digest}\n") }
+        )
+
+        expect(runner.enforced_schema).to eq(origin: origin, digest: vendored_digest)
+      end
+
+      # The greedy read the constant documents, asserted rather than described:
+      # a directory really can be named `sha256:<64-hex>`, and the answer is
+      # still the LAST such token -- the reading Go's own comment prescribes for
+      # the shell one-liner (`${line##* }`). A non-greedy origin would take the
+      # first and compare a digest nobody reported.
+      it "reads the digest as the last token, even when the origin ends in one" do
+        origin = "/schemas/sha256:#{'a' * 64}"
+        runner = described_class.resolve(
+          env: { described_class::ENV_VAR =>
+                 stub_validator(schema_source_exit: 0, schema_source_stderr: "",
+                                schema_source_stdout: "schema #{origin} sha256:#{vendored_digest}\n") }
+        )
+
+        expect(runner.enforced_schema).to eq(origin: origin, digest: vendored_digest)
+        expect(runner.schema_contract).to eq(:enforced)
+      end
+
+      it "reads an upper-case digest as the same digest, never as a divergence" do
+        runner = described_class.resolve(
+          env: { described_class::ENV_VAR =>
+                 stub_validator(schema_source_exit: 0, schema_source_stderr: "",
+                                schema_source_stdout: "schema <embedded schema> " \
+                                                      "sha256:#{vendored_digest.upcase}\n") }
+        )
+
+        expect(runner.schema_contract).to eq(:enforced)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE PROBE ITSELF: once per run, after the identity, and never before the
+    # backend has been asked for at all.
+    describe "the enforced-schema probe" do
+      it "asks the binary exactly once, with exactly that flag" do
+        described_class.resolve(env: { described_class::ENV_VAR => stub_validator })
+
+        expect(schema_source_probes).to eq([["--schema-source"]])
+      end
+
+      it "asks once per run, not once per batch" do
+        paths = Array.new(1_500) { |i| format("spec/models/example_%05d_spec.rb", i) }
+        run_backend(paths, stdout: document(paths.map { |path| ok_finding(file: path) }))
+
+        expect(recorded_invocations.length).to be > 1
+        expect(schema_source_probes.length).to eq(1)
+      end
+
+      it "asks before it asks for any verdict, and after the identity" do
+        run_backend(["a_spec.rb"], stdout: document([ok_finding]))
+
+        expect(all_invocations.first(2)).to eq([["--version"], ["--schema-source"]])
+      end
+
+      # The second half is what makes the first mean anything: an args log that
+      # does not exist yet answers [] too, so a Runner that stayed quiet and a
+      # broken instrument look identical without it.
+      it "does not invoke the binary before the backend has been resolved" do
+        path = stub_validator
+
+        described_class::Runner.new(path)
+        expect(schema_source_probes).to be_empty
+
+        described_class.resolve(env: { described_class::ENV_VAR => path })
+        expect(schema_source_probes.length).to eq(1)
+      end
+
+      # The default configuration, and the one nearly every run uses. A probe
+      # that ran with the backend off would be a process per run spent on a
+      # binary nobody named.
+      it "does not run at all with the backend off" do
+        expect(described_class.resolve(env: {})).to be_nil
+        expect(run_cli({})[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(all_invocations).to be_empty
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE PRODUCT DOES NOT MOVE. Which band a run lands in is stderr prose about
+    # the linter's own configuration; the findings and the two `checked …` lines
+    # are the product.
+    it "leaves stdout byte-identical across every band that is not a refusal" do
+      stdouts = %w[embedded on_disk unsupported unloadable embed_differs]
+                .map { |name| run_cli({ described_class::ENV_VAR => recorded_stub(name) }) }
+
+      expect(stdouts.map(&:first).uniq.length).to eq(1)
+      expect(stdouts.map(&:last).uniq).to eq([SpecGuard::RSpec::CLI::EXIT_OK])
+    end
+
+    # Each band is a different statement and must be worded as one: an operator
+    # reading "could not check" has something to fix, and one reading "enforces
+    # the schema this gem vendors" does not.
+    it "words the enforced, carried and could-not-check bands differently" do
+      lines = %w[embedded unsupported].map { |name| provenance_of({ described_class::ENV_VAR => recorded_stub(name) }) }
+      lines << provenance_of({ described_class::ENV_VAR =>
+                               clean_stub(name: "digestless", version_stdout: "validate-intent 1.4.0") })
+      lines << provenance_of({ described_class::ENV_VAR =>
+                               clean_stub(name: "anonymous", version_stdout: "", version_exit: 1) })
+
+      expect(lines.uniq.length).to eq(4)
+      expect(lines.first).to include("reports enforcing the schema this gem vendors, loaded from ")
+    end
+
+    # The two probes are independent processes and fail independently, so the
+    # line has to be able to say both things. Without this the identity-less arm
+    # returns early and reports that the contract "could not be checked" on a
+    # run where it was checked and passed — a false statement, and the more
+    # alarming direction of false.
+    it "still names the enforced schema when the binary could not identify itself" do
+      stub = recorded_stub("embedded", name: "enforced-anonymous", version_stdout: "", version_exit: 1)
+      runner = described_class.resolve(env: { described_class::ENV_VAR => stub })
+
+      expect(runner.schema_contract).to eq(:enforced)
+      expect(provenance_of({ described_class::ENV_VAR => stub }))
+        .to eq("specguard-lint: validated by the binary at #{stub} (SPECGUARD_VALIDATE_INTENT), " \
+               "which could not report its identity — it reports enforcing the schema this gem vendors, " \
+               "loaded from <embedded schema>")
+    end
+
+    it "refuses on the enforced digest even when the binary could not identify itself" do
+      stub = recorded_stub("disk_wins", name: "diverged-anonymous", version_stdout: "", version_exit: 1)
+      _, stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      expect(error_lines(stderr).first).to include("the binary could not identify itself")
+    end
+
+    # The unreadable-vendored-schema band, reached through the new arm. A
+    # missing operand is not a difference, so it is still not a refusal — and
+    # the binary's half is deliberately left in place: with both halves gone
+    # there would be no comparison to have and this would pass for the wrong
+    # reason. The recording used is the DIVERGING one, so a gem that read a
+    # vendored digest here at all would refuse and fail this example.
+    it "does not refuse when the gem cannot read its own vendored schema" do
+      stub = recorded_stub("disk_wins", name: "no-vendored-copy")
+      stub_const("SpecGuard::RSpec::SCHEMA_PATH", File.join(tmpdir, "not-vendored.json"))
+      stdout, _stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+      expect(described_class.resolve(env: { described_class::ENV_VAR => stub }).schema_contract).to eq(:unreadable)
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+      expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE README SAYS THE SAME THING, and this is what makes that checkable.
+    #
+    # The failure being prevented is specific and has happened here before: a
+    # sample block updated in HALF — the new clause appended while the identity
+    # string above it stayed stale — which reads as documentation and is worse
+    # than a sample nobody touched. Every string below is EXTRACTED from a real
+    # run rather than typed, so the only way to satisfy it is to put the words
+    # the code actually emits into the file.
+    it "documents every clause it can print, in the README, in the words it prints them" do
+      readme = File.read("README.md")
+      bands = { "embedded" => recorded_stub("embedded"), "unsupported" => recorded_stub("unsupported") }
+      bands["digestless"] = clean_stub(name: "readme-digestless", version_stdout: "validate-intent 1.4.0")
+      bands["anonymous"] = clean_stub(name: "readme-anonymous", version_stdout: "", version_exit: 1)
+
+      bands.each_value do |stub|
+        clause = provenance_of({ described_class::ENV_VAR => stub })[/\(SPECGUARD_VALIDATE_INTENT\)(.*)\z/, 1]
+
+        expect(clause).not_to be_empty
+        expect(readme).to include(clause), "README.md does not carry the clause this gem prints: #{clause.inspect}"
+      end
+    end
+
+    # The fifth clause needs the gem's half of the comparison taken away, so it
+    # is asserted here rather than folded into the loop above.
+    it "documents the unreadable-vendored-copy clause too" do
+      stub_const("SpecGuard::RSpec::SCHEMA_PATH", File.join(tmpdir, "not-vendored.json"))
+      clause = provenance_of({ described_class::ENV_VAR => recorded_stub("embedded") })[
+        /\(SPECGUARD_VALIDATE_INTENT\)(.*)\z/, 1
+      ]
+
+      expect(clause).to include("could not read its own vendored copy")
+      expect(File.read("README.md")).to include(clause)
+    end
+
+    # And the refusal, whose sample block elides both digests and rewrites the
+    # host-specific paths. Everything BETWEEN those is fixed text, and it is
+    # obtained by masking the volatile tokens out of a really-raised error and
+    # splitting on the holes -- so the fragments cannot be transcribed slightly
+    # wrong, and the ", loaded from " clause in the MIDDLE is covered rather
+    # than only the tail. Masking runs longest-first: the identity string
+    # contains a digest, so replacing the digest first would leave it unmasked.
+    #
+    # The fragments are matched IN ORDER AND WITHIN ONE LINE, not against the
+    # file. Against the file, ", loaded from " is satisfied by the provenance
+    # sample two paragraphs above it -- so deleting it from the refusal sample
+    # would leave this green, which is an assertion answered by neighbouring
+    # prose rather than by the thing it names.
+    it "documents the refusal in the words the refusal uses" do
+      stub = recorded_stub("disk_wins")
+      enforced = shell_extraction(recorded_source("disk_wins"))
+      _, stderr, = run_cli({ described_class::ENV_VAR => stub })
+      volatile = [recorded("disk_wins").fetch("version").fetch("stdout").chomp, stub,
+                  enforced[:origin], enforced[:digest], vendored_digest]
+      masked = volatile.reduce(error_lines(stderr).first) { |line, token| line.gsub(token, "\u0000") }
+      fragments = masked.split("\u0000").reject(&:empty?)
+      samples = File.read("README.md").lines.map(&:chomp)
+                    .select { |line| line.start_with?("specguard-lint: error: the validator backend at") }
+
+      expect(fragments.length).to be >= 4
+      expect(samples).not_to be_empty
+      expect(samples.any? { |sample| in_order?(sample, fragments) })
+        .to be(true), "no README sample of a backend refusal reads, in order: #{fragments.inspect}"
     end
   end
 

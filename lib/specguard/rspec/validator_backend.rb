@@ -204,26 +204,58 @@ module SpecGuard
     # this file already argues for, and for the same reason — a divergence is
     # not a verdict about anyone's annotations.
     #
-    # Three bands, and the boundaries between them are the whole design:
+    # == CARRIED is not ENFORCED, and only one of them is the question
     #
-    #   * REPORTED AND EQUAL — the run proceeds and {Runner#provenance} says the
-    #     contract matched. The wording may NOT say the run *enforced* it, and
-    #     that is not pedantry: `LoadSchema` (`cmd/validate-intent/fileio.go`)
-    #     gives a `schemas/open-test-intent.v1.json` found beside the executable
-    #     priority over the embedded copy, and `--version` returns above that
-    #     decision and never reaches it. The digest is the contract the artifact
-    #     CARRIES. Claiming more would be this gem inventing a guarantee out of
-    #     an answer that does not contain one.
+    # The paragraphs above are how this check was first built, and they compare
+    # the wrong digest. `--version` reports the schema the artifact CARRIES —
+    # `SchemaSHA256` is a pure fold of the compiled-in bytes — while `LoadSchema`
+    # (`cmd/validate-intent/fileio.go`) gives a `schemas/open-test-intent.v1.json`
+    # found beside the executable priority over that copy and falls back to it
+    # only on ENOENT. `--version` returns some thirty lines above that decision
+    # and never reaches it; the binary's own `--help` trailer says the digest
+    # "is not a claim about what a given run enforced".
     #
-    #   * REPORTED AND DIFFERENT — {ValidatorError}, exit 2, naming BOTH
-    #     digests. This is the one addition to the exit-2 band, and it belongs
-    #     there for the reason the band exists: a verdict produced under a
-    #     different contract is not a verdict this gem can stand behind, and
+    # So the carried digest is the one answer that cannot settle the question,
+    # and asking it fails in BOTH directions:
+    #
+    #   * a binary whose embedded schema is ours, sitting beside a `schemas/`
+    #     file that is not, reports a matching digest — the guard returns
+    #     `:matched` and stays silent — and then enforces different bytes. That
+    #     is precisely the case this check exists to refuse, passing;
+    #   * the mirror: a binary whose embedded schema differs from ours but whose
+    #     on-disk schema IS ours gets refused, for a run that would have been
+    #     correct. Planting a schema beside the binary is not exotic — it is how
+    #     open-test-intent's own `tests/parity/run_parity.sh` operates.
+    #
+    # open-test-intent slice 19 added `--schema-source`, which calls the REAL
+    # loader and prints `schema <origin> sha256:<hex>` for the bytes a verdict
+    # run on this host would load. It is the only surface that answers the
+    # question, so {Runner#verify!} asks it — once per run, beside the identity
+    # probe — and the comparison uses the ENFORCED digest whenever one comes
+    # back, falling back to the carried digest, unchanged, when it does not.
+    #
+    # The bands, and the boundaries between them are the whole design:
+    #
+    #   * ENFORCED AND EQUAL — the run proceeds, and {Runner#provenance} says so
+    #     WITHOUT the hedge below, naming the origin the bytes were loaded from.
+    #     This arm may state what the run enforces because that is the question
+    #     `--schema-source` answers.
+    #
+    #   * ENFORCED AND DIFFERENT — {ValidatorError}, exit 2, naming BOTH digests
+    #     and the origin. This is the one addition to the exit-2 band, and it
+    #     belongs there for the reason the band exists: a verdict produced under
+    #     a different contract is not a verdict this gem can stand behind, and
     #     nothing downstream can notice — the report is a normal report, the
     #     exit code is a normal exit code, and the findings are whatever the
     #     other contract implies. Note this is the OPPOSITE of the identity
     #     rule above rather than an exception to it: "I could not ask" stays
     #     out of the band, "I asked and the answer was wrong" goes in.
+    #
+    #   * CARRIED AND EQUAL, CARRIED AND DIFFERENT — the fallback, reached only
+    #     when `--schema-source` did not answer, and byte for byte what this
+    #     file did before it was asked: the same two outcomes, the same two
+    #     messages, and the hedge kept on the matched arm because on that path
+    #     it is still true.
     #
     #   * NOT REPORTED — never a refusal, in any of its three shapes: a
     #     pre-slice-17 build whose `--version` carries no digest token, a binary
@@ -231,6 +263,32 @@ module SpecGuard
     #     read its own vendored schema. Each says so IN WORDS in its own
     #     wording, because "could not check" and "checked and clean" are two
     #     different statements and a checker owes both.
+    #
+    # == The rule the second probe inherits, and the one it cannot
+    #
+    # A binary predating slice 19 reads `--schema-source` as a filename, writes
+    # "no file(s) match" to stderr and exits 1; a binary whose schema exists and
+    # cannot be loaded exits 2 with the "could not load schema" diagnostic that
+    # belongs to it, which {#check} reaches a moment later anyway. Both are the
+    # identity probe's rule unchanged — a non-zero exit, empty output or output
+    # this cannot read is "unavailable" and never a {ValidatorError} — so with
+    # the flag absent the run is byte-identical to the one before this existed.
+    #
+    # That rule is also why {SCHEMA_SOURCE_PATTERN} is pinned against RECORDED
+    # output of the real binary in `spec/fixtures/validator/schema-source-probes.json`
+    # rather than against a hand-written line. A parse bug does not announce
+    # itself here: every miss reads as "this binary is too old", the guard
+    # silently reverts to comparing the carried digest, and the run goes green —
+    # the exact defect this file is closing, re-created inside the fix.
+    #
+    # What two probes CANNOT promise is what one probe did. {#verify_schema_contract!}
+    # reads {#identity} rather than re-asking, so the digest it compared and the
+    # name in the provenance line come from the same process; a second probe is
+    # a second process, so the enforced digest carries no such guarantee. It
+    # says what a run STARTED at that moment would load, which is the strongest
+    # thing any answer to this question can say — the schema beside a binary can
+    # change between two lines of a shell script — and the identity/carried pair
+    # keeps the promise it always had.
     #
     # That third shape is the one judgment call here, so it is recorded rather
     # than left to be re-derived. {Schema.load}'s precedent is that an
@@ -344,6 +402,53 @@ module SpecGuard
         # a spelling of the same digest and must not be reported as divergence.
         SCHEMA_DIGEST_PATTERN = /\bschema sha256:(\h{64})\b/i
 
+        # The flag that answers what a run ENFORCES. Named as a constant for
+        # the reason `schemaSourceFlag` is one on the other side of the seam:
+        # the probe passes it, the diagnostics quote it, and the specs assert
+        # the argument vector — three places that must spell it the same way.
+        SCHEMA_SOURCE_FLAG = "--schema-source"
+
+        # `--schema-source` writes ONE line: `schema <origin> sha256:<64-hex>`,
+        # where the origin is either an absolute path or the literal
+        # `<embedded schema>` (`cmd/validate-intent/schemasource.go`,
+        # `SchemaSourceLine`).
+        #
+        # This is a SECOND pattern rather than a reuse of {SCHEMA_DIGEST_PATTERN},
+        # and the difference is not cosmetic: that one requires `schema`
+        # IMMEDIATELY followed by `sha256:`, which is how `--version` writes it,
+        # and the origin interposed here means it matches this surface never.
+        # Reusing it would have made every probe unreadable, every run fall back
+        # to the carried digest, and nothing go red — see the module comment.
+        #
+        # Anchored to the WHOLE line, unlike the identity token. There, the
+        # digest is one token inside a line that is otherwise the binary's own
+        # business; here the line IS the answer, so anything around it means
+        # this is not the surface being read and the run belongs in the
+        # unavailable band. Both captures matter: the digest is compared, and
+        # the origin is what lets {#provenance} say WHICH schema was enforced
+        # rather than that one was.
+        #
+        # The trailing anchor is what makes the digest the LAST `sha256:` token
+        # on the line rather than the first — the same reading Go's own comment
+        # prescribes for the shell (`${line##* }` "yields `sha256:<hex>`
+        # whatever the origin contains"). A path may contain spaces, and one may
+        # even be NAMED like this tail; ending the match at the end of the line
+        # is what keeps the answer the last token in both cases. (The origin is
+        # also captured greedily, but that is not what decides it: only one
+        # token can end the line.)
+        SCHEMA_SOURCE_PATTERN = /\Aschema (?<origin>\S(?:.*\S)?) sha256:(?<digest>\h{64})\z/i
+
+        # The `--schema-source` probe's renderability budget, and the reason it
+        # is not {IDENTITY_MAX_BYTES}. This line carries a filesystem path,
+        # which POSIX allows up to `PATH_MAX` (4096 on Linux) all by itself, so
+        # the 200-byte budget that suits a one-line version string would reject
+        # legitimate answers from correctly-installed binaries. It still bounds
+        # the line, for the same reason the other one does: a binary answering
+        # with a report document or a megabyte of anything is answering a
+        # different question, and its output would break the line rather than
+        # fill it.
+        SCHEMA_SOURCE_MAX_BYTES = 8 * 1024
+
         attr_reader :path
 
         # The binary's own `--version` line, or nil when it could not report
@@ -360,17 +465,36 @@ module SpecGuard
 
         # The result of the schema-contract comparison, one of:
         #
-        #   :matched       — the binary reported a digest and it is ours
+        #   :enforced      — the binary reported the schema its runs LOAD, and
+        #                    it is ours. The strong arm: this one is an answer
+        #                    about the contract a verdict would be produced
+        #                    under, not about the bytes the artifact carries
+        #   :matched       — `--schema-source` did not answer, so the carried
+        #                    digest was compared instead, and it is ours
         #   :unreported    — it named itself but carries no digest token
         #   :unidentified  — it could not name itself at all
         #   :unreadable    — we could not read our own vendored schema
         #
-        # There is no `:diverged` member: that band raises out of {#verify!}, so
-        # no Runner ever exists holding it. Populated by {#verify!} beside
-        # {#identity}, and nil before it runs for the same reason.
+        # There is no `:diverged` member: both comparisons raise out of
+        # {#verify!} on a difference, so no Runner ever exists holding one.
+        # Populated by {#verify!} beside {#identity}, and nil before it runs for
+        # the same reason.
         #
         # @return [Symbol, nil]
         attr_reader :schema_contract
+
+        # What `--schema-source` answered: `{origin:, digest:}`, or nil when the
+        # binary could not answer it — a build predating open-test-intent slice
+        # 19, a schema that exists and will not load, or output this cannot
+        # read. Populated by {#verify!} beside {#identity}.
+        #
+        # The digest is the schema a run STARTED at that moment would enforce.
+        # It is a second process from {#identity}, so the two are not guaranteed
+        # to describe the same instant — see the module comment for what that
+        # does and does not cost.
+        #
+        # @return [Hash{Symbol => String}, nil]
+        attr_reader :enforced_schema
 
         # @param path [String] the `validate-intent` binary
         def initialize(path)
@@ -381,14 +505,14 @@ module SpecGuard
         # asked for is not there" is never mistaken for a verdict about
         # anyone's annotations.
         #
-        # The identity probe rides along for the placement rather than for the
-        # check: asking here is what makes it once-per-run and ahead of
-        # selection. It cannot fail the run — see the module comment.
+        # The two probes ride along for the placement rather than for the
+        # check: asking here is what makes them once-per-run and ahead of
+        # selection. Neither can fail the run — see the module comment.
         #
-        # The schema-contract comparison reads the answer the probe already
-        # obtained, so it costs no second process, and it CAN fail the run —
-        # see the module comment for why that one band belongs in exit 2 while
-        # the identity itself does not.
+        # The schema-contract comparison reads the answers the probes already
+        # obtained, so it costs no third process, and it CAN fail the run — see
+        # the module comment for why that one band belongs in exit 2 while the
+        # identity itself does not.
         #
         # @raise [ValidatorError]
         def verify!
@@ -397,6 +521,7 @@ module SpecGuard
           raise ValidatorError, "#{describe} is not executable" unless File.executable?(@path)
 
           @identity = probe_identity
+          @enforced_schema = probe_schema_source
           @schema_contract = verify_schema_contract!
           self
         end
@@ -408,20 +533,26 @@ module SpecGuard
         # line naming the validator and any error about it name the same thing.
         #
         # The clause after it is the gem's own, because it is a statement about
-        # a COMPARISON the gem made and not about the binary. Each of the four
+        # a COMPARISON the gem made and not about the binary. Each of the five
         # states it can report is worded distinctly: three of them mean the
         # contract was not checked, for three different reasons, and collapsing
         # them into one sentence would leave an operator unable to tell a build
-        # too old to answer from an installation missing its own schema.
+        # too old to answer from an installation missing its own schema. The
+        # remaining two are both "checked and clean" and must NOT be collapsed
+        # either — one of them answers what the run enforces and the other only
+        # what the binary carries, which is the whole distinction this file
+        # turns on.
+        #
+        # Composed from three pieces rather than branched on, because the
+        # identity and the schema contract are answers to two different
+        # questions and every combination of them is reachable: a binary can
+        # fail `--version` and answer `--schema-source`, and the line then has
+        # to say both things rather than the first one only.
         #
         # @return [String]
         def provenance
-          if @identity.nil?
-            return "validated by the binary at #{@path} (#{ENV_VAR}), which could not report its identity, " \
-                   "so the schema contract it carries could not be checked"
-          end
-
-          "validated by #{@identity} at #{@path} (#{ENV_VAR})#{schema_contract_clause}"
+          "validated by #{@identity || 'the binary'} at #{@path} (#{ENV_VAR})" \
+            "#{identity_clause}#{schema_contract_clause}"
         end
 
         # @param paths [Enumerable<String>] spec files, as the caller named them
@@ -505,26 +636,122 @@ module SpecGuard
           text
         end
 
+        # Asks the binary which schema a run on this host would ENFORCE. Never
+        # raises, for the same reasons {#probe_identity} never does and with one
+        # more of its own.
+        #
+        # `--schema-source` is position-independent and answers on stdout with
+        # exit 0 (`cmd/validate-intent/schemasource.go`). Three ways it does
+        # not, and all three are "unavailable":
+        #
+        #   * a build predating open-test-intent slice 19 reads the flag as a
+        #     filename, writes `no file(s) match '--schema-source'` to stderr
+        #     and exits 1. Refusing those runs would be enforcing a contract by
+        #     breaking every binary too old to state one;
+        #   * a schema that EXISTS beside the binary and cannot be read,
+        #     decoded or compiled exits 2 with the "could not load schema"
+        #     diagnostic. That is a real failure, but it is not this check's to
+        #     report: {#check} reaches it a moment later, from the verdict path,
+        #     with the diagnostic that belongs to it. Turning it into a schema
+        #     CONTRACT error here would rename somebody's broken installation
+        #     into a divergence that does not exist;
+        #   * anything this cannot read as the one line the flag documents.
+        #
+        # @return [Hash{Symbol => String}, nil]
+        def probe_schema_source
+          stdout, _stderr, status = Open3.capture3(@path, SCHEMA_SOURCE_FLAG)
+          return nil unless status.success?
+
+          schema_source(stdout)
+        rescue SystemCallError
+          nil
+        end
+
+        # The parse, guarded exactly as {#identity_line} is and for exactly the
+        # same reasons — the encoding test first because `String#strip` raises
+        # on an invalid byte sequence, the control-character test because a
+        # second line or an ANSI escape would break or forge the single line
+        # {CLI} prints per run.
+        #
+        # Returning nil on a shape this does not recognise is the degrade rule,
+        # and it is also this method's one hazard: an unreadable answer and an
+        # old binary are indistinguishable downstream by design, so a bug here
+        # would be silent. Which is why {SCHEMA_SOURCE_PATTERN} is asserted
+        # against recorded output of the real binary rather than against a line
+        # written to fit it.
+        #
+        # @return [Hash{Symbol => String}, nil]
+        def schema_source(stdout)
+          return nil unless stdout.to_s.valid_encoding?
+
+          text = stdout.to_s.strip
+          return nil if text.empty? || text.bytesize > SCHEMA_SOURCE_MAX_BYTES
+          return nil if text.match?(/[[:cntrl:]]/)
+
+          match = SCHEMA_SOURCE_PATTERN.match(text)
+          return nil if match.nil?
+
+          { origin: match[:origin], digest: match[:digest].downcase }
+        end
+
         # The comparison itself. Returns the state {#schema_contract} reports,
         # and raises for the one band that is a refusal.
         #
-        # It reads {#identity}, which {#verify!} has just assigned — not a
-        # second `--version` — so the digest and the name in the provenance
-        # line are guaranteed to have come from the same process. Two probes
-        # could not promise that, and a run whose line named one build while
-        # the comparison used another would be worse than no comparison.
+        # The ENFORCED digest wins whenever there is one, because it is the only
+        # answer to the question being asked: a schema found beside the binary
+        # beats the compiled-in copy at validation time, so the carried digest
+        # can match while the run enforces other bytes, and can differ while the
+        # run enforces ours. The carried comparison below is what happens when
+        # the binary is too old to be asked — unchanged, hedge included.
+        #
+        # The carried arm reads {#identity}, which {#verify!} has just assigned
+        # — not a second `--version` — so the digest it compares and the name in
+        # the provenance line are guaranteed to have come from the same process.
+        # That promise is intact and this method still keeps it. It does NOT
+        # extend to the enforced digest, which is necessarily a second process:
+        # what that answer promises is what a run started at that moment would
+        # load, which is the most any answer to this question can promise, since
+        # the file beside a binary can change between two lines of a script.
         #
         # @return [Symbol]
-        # @raise [ValidatorError] when both digests are known and differ
+        # @raise [ValidatorError] when the compared digests are both known and differ
         def verify_schema_contract!
+          return verify_enforced_contract! unless @enforced_schema.nil?
           return :unidentified if @identity.nil?
 
-          reported = @identity[SCHEMA_DIGEST_PATTERN, 1]&.downcase
-          return :unreported if reported.nil?
+          carried = @identity[SCHEMA_DIGEST_PATTERN, 1]&.downcase
+          return :unreported if carried.nil?
 
+          verify_carried_contract!(carried)
+        end
+
+        # The strong arm: the binary told us which bytes its runs load.
+        def verify_enforced_contract!
           vendored = vendored_schema_digest
           return :unreadable if vendored.nil?
-          return :matched if reported == vendored
+          return :enforced if @enforced_schema[:digest] == vendored
+
+          # The origin joins the two digests here for the same reason they are
+          # both spelled in full: the reader's next question is which half to
+          # move, and `<embedded schema>` and `/usr/local/schemas/…` are fixed
+          # by entirely different actions — rebuild or reinstall the binary
+          # versus delete or replace a file on this host. Without it the
+          # message would state a disagreement and withhold the one fact that
+          # says where to go.
+          raise ValidatorError,
+                "#{describe} reports enforcing schema sha256:#{@enforced_schema[:digest]}, loaded from " \
+                "#{@enforced_schema[:origin]}, but this gem vendors sha256:#{vendored} — the two halves " \
+                "would enforce different contracts, so this run would produce a verdict this gem cannot " \
+                "stand behind; #{self_description}"
+        end
+
+        # The fallback, for a binary that cannot be asked what it enforces.
+        # Byte for byte the comparison and the message this file had before
+        # `--schema-source` existed.
+        def verify_carried_contract!(carried)
+          vendored = vendored_schema_digest
+          return :unreadable if vendored.nil?
+          return :matched if carried == vendored
 
           # Both digests, spelled in full. A message naming only one of them
           # would send the reader to compute the other by hand, and the whole
@@ -539,10 +766,21 @@ module SpecGuard
           # version string, and this refusal happens above {#provenance}, so
           # unless the error says it nothing in the run ever does.
           raise ValidatorError,
-                "#{describe} reports carrying schema sha256:#{reported}, but this gem vendors " \
+                "#{describe} reports carrying schema sha256:#{carried}, but this gem vendors " \
                 "sha256:#{vendored} — the two halves would enforce different contracts, so this run " \
                 "would produce a verdict this gem cannot stand behind; the binary identifies itself " \
                 "as #{@identity}"
+        end
+
+        # How a refusal names the build it read a digest from. The carried arm
+        # has an identity by construction; the enforced arm does not, because
+        # the two probes are independent and a binary that answers one can fail
+        # the other. Saying "identifies itself as " and then nothing would be
+        # the worst of the three options.
+        def self_description
+          return "the binary could not identify itself" if @identity.nil?
+
+          "the binary identifies itself as #{@identity}"
         end
 
         # This gem's own contract, digested from the file at runtime. Never a
@@ -561,18 +799,38 @@ module SpecGuard
           nil
         end
 
-        # The tail of the provenance line, one sentence per state. The matched
-        # arm is careful twice over: "reports carrying" attributes the claim to
-        # the binary, and the clause after the dash refuses the stronger reading
-        # the reader would otherwise supply for free — see the module comment on
-        # `LoadSchema`, which `--version` never reaches.
+        # The identity half of the provenance line's tail: present exactly when
+        # the binary could not name itself, and separate from the schema clause
+        # because the two probes fail independently. With no `--schema-source`
+        # answer this composes into the sentence this file printed before that
+        # flag existed; with one, it stops a run whose identity is unknown from
+        # silently dropping the fact.
+        def identity_clause
+          @identity.nil? ? ", which could not report its identity" : ""
+        end
+
+        # The tail of the provenance line, one sentence per state.
+        #
+        # The ENFORCED arm is the only one that may speak about the run: it is
+        # the answer to "which bytes would a verdict be produced under", asked
+        # of the loader itself, and it names the origin so the reader can see
+        # WHICH copy won. The matched (carried) arm below is careful twice over
+        # instead — "reports carrying" attributes the claim to the binary, and
+        # the clause after the dash refuses the stronger reading the reader
+        # would otherwise supply for free. That hedge is kept rather than
+        # retired because on the path that still reaches it — a binary too old
+        # to answer `--schema-source` — it remains exactly true.
         def schema_contract_clause
           case @schema_contract
+          when :enforced
+            " — it reports enforcing the schema this gem vendors, loaded from #{@enforced_schema[:origin]}"
           when :matched
             ", which reports carrying the schema this gem vendors — the contract it carries, " \
               "not necessarily the one this run enforced"
           when :unreadable
             ", whose schema contract could not be checked: this gem could not read its own vendored copy"
+          when :unidentified
+            ", so the schema contract it carries could not be checked"
           else
             ", which reports no schema digest, so the contract it carries could not be checked"
           end
