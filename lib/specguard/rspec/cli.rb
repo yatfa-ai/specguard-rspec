@@ -112,6 +112,11 @@ module SpecGuard
         # validate it. See #report_backend.
         report_backend(backend)
 
+        # After the provenance line, so stderr carries what DID validate the
+        # run before the reason that was not good enough, and before selection,
+        # so an unmet assertion selects, scans and reports nothing.
+        require_backend!(backend) if options[:require_validator]
+
         # Only on the Ruby path. When the backend is active the binary carries
         # its own schema and this gem's vendored copy governs nothing, so
         # loading it would let an unrelated packaging accident fail a run that
@@ -177,10 +182,53 @@ module SpecGuard
       end
 
       def ruby_provenance
-        var = ValidatorBackend::ENV_VAR
-        return "validated in Ruby (#{var} is unset)" if @env[var].nil?
+        "validated in Ruby (#{ruby_reason})"
+      end
 
-        "validated in Ruby (#{var} is set but blank, which means off)"
+      # Why {ValidatorBackend.resolve} returned nil, in the words the
+      # provenance line uses. Shared with {#require_backend!} on purpose: the
+      # two sentences describe the same two states, and a run that says "is set
+      # but blank, which means off" on one line and something else on the next
+      # would be two vocabularies for one fact. There is one, and it is here.
+      def ruby_reason
+        var = ValidatorBackend::ENV_VAR
+        return "#{var} is unset" if @env[var].nil?
+
+        "#{var} is set but blank, which means off"
+      end
+
+      # `--require-validator`: turn "I asked for the binary and silently did
+      # not get it" into an exit 2.
+      #
+      # The named-but-broken cases were already hard failures — {Runner#verify!}
+      # raises and #run rescues it. The gap this closes is the case where the
+      # variable never arrived: a mistyped name, a conditional CI step that did
+      # not run, an environment file that was not loaded. The run then succeeds,
+      # validated by the OTHER implementation, and the only trace is a stderr
+      # line nothing reads.
+      #
+      # That is not "same answer, different engine". The two JSON parsers do not
+      # accept the same language (see {ValidatorBackend}'s ratified differences),
+      # and where such a payload is schema-valid the two backends return
+      # different EXIT CODES for the same file with nothing in the output to say
+      # so. A gate whose failure states are indistinguishable is the defect this
+      # tool exists to remove, met here for the third time.
+      #
+      # A flag rather than a second environment variable, and that is the point
+      # of the feature rather than a style call: `SPECGUARD_VALIDATE_INTENT_REQURED=1`
+      # would be silently no assertion at all — the same bug, one level up.
+      # `--requre-validator` cannot fail open; OptionParser raises, and
+      # #parse_options turns that into a UsageError and an exit 2.
+      #
+      # A blank value here is a contradiction, not a quiet win: asking for the
+      # binary and turning it off in the same breath is a 2, and the message
+      # says which of the two happened in {#ruby_reason}'s words.
+      def require_backend!(backend)
+        return if backend
+
+        raise ValidatorError,
+              "--require-validator was given, but #{ruby_reason}, " \
+              "so this run would have been validated in Ruby"
       end
 
       # The one branch. Both arms produce the same {Linter::Result} list, so
@@ -313,7 +361,7 @@ module SpecGuard
       end
 
       def parse_options(argv)
-        options = { changed: false, base: nil, root: Dir.pwd, files: [] }
+        options = { changed: false, base: nil, root: Dir.pwd, files: [], require_validator: false }
 
         parser = OptionParser.new do |o|
           o.banner = BANNER
@@ -321,6 +369,10 @@ module SpecGuard
                "Only spec files changed against BASE (default: the merge base with the default branch)") do |base|
             options[:changed] = true
             options[:base] = base
+          end
+          o.on("--require-validator",
+               "Fail (exit 2) unless #{ValidatorBackend::ENV_VAR} named a usable validator binary") do
+            options[:require_validator] = true
           end
           o.on("-v", "--version", "Print the version and exit") do
             @stdout.puts "specguard-rspec #{VERSION}"

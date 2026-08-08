@@ -53,6 +53,41 @@ published anywhere yet, so the Ruby path stays the default and stays supported �
 who already build or vendor the validator and would rather run one implementation than two. A blank
 value counts as unset.
 
+Naming a binary that is missing or unusable is already a hard failure (exit `2`) rather than a quiet
+fall back to Ruby. What is *not* caught by that is never naming one at all — see
+`--require-validator` below.
+
+#### `--require-validator` — assert that the binary actually ran
+
+```bash
+SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed --require-validator
+```
+
+Exits `2` unless `SPECGUARD_VALIDATE_INTENT` named a usable binary, before any file is selected or
+checked:
+
+```
+specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
+specguard-lint: error: --require-validator was given, but SPECGUARD_VALIDATE_INTENT is unset, so this run would have been validated in Ruby
+```
+
+Without the flag nothing changes: the backend stays opt-in, and a run with the variable unset is
+byte-identical to what it always was.
+
+The case this exists for is the one the exit code alone cannot show you: a mistyped variable name, a
+conditional CI step that did not run, an environment file that was not loaded. The run *succeeds* —
+validated by the other implementation — and the only trace is a line on stderr that nothing reads.
+That is not "same answer, different engine": the two backends' JSON parsers do not accept the same
+language (last row of the table below), so on a payload one accepts and the other rejects **the two
+exit codes disagree**, and a report with no findings is exactly what a clean run looks like.
+
+It is a flag rather than a second environment variable on purpose. `SPECGUARD_VALIDATE_INTENT_REQURED=1`
+would be silently no assertion at all — the same bug one level up. A mistyped `--requre-validator`
+cannot fail open; it exits `2`.
+
+`--require-validator --help` and `--require-validator --version` still exit `0`. The flag asserts
+something about a run, and neither of those is one.
+
 #### Every run says which implementation validated it
 
 Because the two backends produce the same report, the report alone cannot tell you which one ran.
@@ -63,6 +98,9 @@ specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) at /p
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
+
+The two "validated in Ruby" wordings are the same two `--require-validator` reports its refusal
+with, so one vocabulary describes both.
 
 Three things worth knowing about it:
 

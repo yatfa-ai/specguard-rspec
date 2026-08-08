@@ -104,6 +104,40 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
       expect(out).not_to include("checked")
     end
+
+    # `--require-validator` asserts that the Go backend produced this run's
+    # verdicts; the contract lives in validator_backend_spec.rb. What belongs
+    # here is the two things about it that are OptionParser's business.
+    describe "--require-validator" do
+      # The reason this is a flag rather than a second environment variable,
+      # and the reason that choice is the point of the feature rather than a
+      # style call. `SPECGUARD_VALIDATE_INTENT_REQURED=1` is silently no
+      # assertion at all — the very bug the flag exists to catch, reproduced one
+      # level up. A mistyped flag cannot fail open.
+      it "cannot be mistyped into a silently unasserted run" do
+        expect(cli.run(["--requre-validator"])).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+        expect(err).to include("specguard-lint: error: ")
+        expect(out).not_to include("checked")
+      end
+
+      # The flag asserts something about a RUN, and neither of these is one:
+      # parse_options returns nil and #run is done before the backend is ever
+      # resolved. Asserted with the variable unset, which is exactly the
+      # configuration that makes a real run exit 2.
+      it "leaves --help and --version exiting 0" do
+        expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
+                 .run(["--require-validator", "--help"])).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
+                 .run(["--require-validator", "--version"])).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(err).to be_empty
+      end
+
+      it "documents itself in the usage text" do
+        cli.run(["--help"])
+
+        expect(out).to include("--require-validator")
+      end
+    end
   end
 
   describe "reading files" do
