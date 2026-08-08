@@ -3,6 +3,7 @@
 require "tmpdir"
 require "fileutils"
 require "json"
+require "digest"
 
 # The opt-in Go validator backend.
 #
@@ -48,8 +49,36 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # The `--version` line the real binary prints, recorded from
   # `cmd/validate-intent/version.go`'s VersionLine format. The stub answers this
   # unless a test asks it not to.
+  #
+  # It carries the `schema sha256:` token because the real binary has carried
+  # one since open-test-intent slice 17, and because leaving it off would put
+  # EVERY example in this file — all of which resolve a stub — in the "no digest
+  # reported" band. The exit codes would not move, so nothing would fail; the
+  # matched band would simply go untested by default, which is the shape of
+  # green this project keeps naming.
+  #
+  # The digest is COMPUTED, from the same file the gem digests at runtime, so
+  # this stub agrees with the gem by construction. A literal would be a copy of
+  # a hex string drifting independently of the schema it names — the exact
+  # defect the code under test exists to catch, re-created in its own spec.
   def stub_identity
-    "validate-intent 1.4.0 (go1.22.12 linux/arm64)"
+    "validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:#{vendored_digest}"
+  end
+
+  # The digest of the schema this gem vendors, read the way the gem reads it.
+  def vendored_digest
+    Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest
+  end
+
+  # A `--version` line in the current format carrying somebody else's contract.
+  def identity_reporting(digest)
+    "validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:#{digest}"
+  end
+
+  # A well-formed digest that is not ours. Derived rather than typed so it
+  # cannot accidentally become the vendored one.
+  def foreign_digest
+    Digest::SHA256.hexdigest("some other schema")
   end
 
   # A stand-in for `validate-intent`: it records the argument vector it was
@@ -1483,7 +1512,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
         expect(provenance_of({ described_class::ENV_VAR => stub }))
           .to eq("specguard-lint: validated by the binary at #{stub} " \
-                 "(SPECGUARD_VALIDATE_INTENT), which could not report its identity")
+                 "(SPECGUARD_VALIDATE_INTENT), which could not report its identity, " \
+                 "so the schema contract it carries could not be checked")
       end
 
       it "still prints exactly one such line" do
@@ -1500,7 +1530,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         stub = clean_stub
 
         expect(provenance_of({ described_class::ENV_VAR => stub }))
-          .to eq("specguard-lint: validated by #{stub_identity} at #{stub} (SPECGUARD_VALIDATE_INTENT)")
+          .to eq("specguard-lint: validated by #{stub_identity} at #{stub} (SPECGUARD_VALIDATE_INTENT), " \
+                 "which reports carrying the schema this gem vendors — the contract it carries, " \
+                 "not necessarily the one this run enforced")
       end
 
       # Criterion 2. The findings and the two `checked …` lines are the product
@@ -1597,6 +1629,318 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       expect(lines).to all(be_a(String))
       expect(lines.uniq.length).to eq(4)
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # THE SCHEMA CONTRACT ACROSS THE SEAM.
+  #
+  # The section above carries the binary's identity through and renders it. One
+  # token in it was never read: `schema sha256:<64-hex>`, the digest of the
+  # schema compiled into that binary, which open-test-intent's `SchemaSHA256`
+  # added for exactly one reason —
+  #
+  #   "a gem that vendors schema A can be pointed at a binary built when
+  #   canonical was B, and all three guards stay green while the two halves
+  #   enforce different contracts."
+  #
+  # Both of this ecosystem's digest pins are in-repo: `schema_test.go` compares
+  # the Go embed to the Go tree, and this repo's `schema_packaging_spec.rb`
+  # compares the vendored copy to this repo's pin. Neither crosses the seam,
+  # and on the backend path the gem does not even LOAD its vendored schema
+  # (`CLI#run` skips it deliberately) — so nothing in either repo could notice
+  # a binary enforcing a different contract than the gem beside it vendors.
+  #
+  # These examples are the crossing. They are written against the three bands
+  # the code owes, and the boundary that matters most is the one between the
+  # second and third: "I asked and the answer was wrong" is a refusal, "I could
+  # not ask" never is.
+  describe "the schema contract across the seam" do
+    let(:paths) { %w[spec/fixtures/order_spec.rb] }
+
+    def run_cli(env, argv = paths)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
+      [stdout.string, stderr.string, code]
+    end
+
+    def provenance_of(env, argv = paths)
+      _, stderr, = run_cli(env, argv)
+      provenance_lines(stderr).first
+    end
+
+    def error_lines(stderr)
+      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
+    end
+
+    def resolve(**stub)
+      described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**stub) })
+    end
+
+    # ---------------------------------------------------------------------- #
+    # BAND (a): reported and equal.
+    describe "a binary carrying the schema this gem vendors" do
+      it "records the contract as matched" do
+        expect(resolve.schema_contract).to eq(:matched)
+      end
+
+      it "runs normally, changing neither stdout nor the exit code" do
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => clean_stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # The wording constraint, and it is not a style note. `LoadSchema` gives a
+      # schema file found beside the executable priority over the embedded copy,
+      # and `--version` returns above that decision — so the digest is the
+      # contract the artifact CARRIES, and a line claiming the run ENFORCED it
+      # would be this gem inventing a guarantee the answer does not contain.
+      it "says the contract matched without claiming the run enforced it" do
+        stub = clean_stub
+        line = provenance_of({ described_class::ENV_VAR => stub })
+
+        expect(line).to eq("specguard-lint: validated by #{stub_identity} at #{stub} " \
+                           "(SPECGUARD_VALIDATE_INTENT), which reports carrying the schema this gem " \
+                           "vendors — the contract it carries, not necessarily the one this run enforced")
+        expect(line).to include("not necessarily the one this run enforced")
+      end
+
+      # The comparison reads the identity the probe already obtained, so it must
+      # not cost a second process — and, more importantly, the name in the line
+      # and the digest that was compared must have come from the same answer.
+      it "compares without asking the binary a second time" do
+        run_backend(["a_spec.rb"], stdout: document([ok_finding]))
+
+        expect(version_probes.length).to eq(1)
+      end
+
+      # A future build may word its version differently and still be telling the
+      # truth: only the token is read, everything around it stays opaque.
+      it "reads the token out of a line it otherwise does not understand" do
+        runner = resolve(version_stdout: "sg-validator/2 (experimental) schema sha256:#{vendored_digest} +tls")
+
+        expect(runner.schema_contract).to eq(:matched)
+      end
+
+      # Go's hex is lower case and so is Ruby's, so this changes nothing today;
+      # it is here so that a build which shouts is read as the same digest
+      # rather than reported as a divergence that does not exist.
+      it "treats an upper-case spelling as the same digest" do
+        expect(resolve(version_stdout: identity_reporting(vendored_digest.upcase)).schema_contract).to eq(:matched)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # BAND (b): reported and different. The one addition to the exit-2 band.
+    describe "a binary carrying a different schema" do
+      def diverging_stub(**stub)
+        clean_stub(version_stdout: identity_reporting(foreign_digest), **stub)
+      end
+
+      it "refuses to resolve" do
+        expect { resolve(version_stdout: identity_reporting(foreign_digest)) }
+          .to raise_error(SpecGuard::RSpec::ValidatorError)
+      end
+
+      it "exits 2, not 1 — this is not a verdict about anyone's annotations" do
+        _, _, code = run_cli({ described_class::ENV_VAR => diverging_stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      end
+
+      # Both digests, in full. One of them lives inside a binary and the other
+      # inside an installed gem, and neither is inspectable from where the other
+      # lives — a message naming one would send the reader off to compute the
+      # other by hand.
+      it "names both digests, and the binary it read one of them from" do
+        stub = diverging_stub
+        _, stderr, = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(error_lines(stderr).length).to eq(1)
+        expect(error_lines(stderr).first).to include("the validator backend at #{stub}")
+        expect(error_lines(stderr).first).to include("sha256:#{foreign_digest}")
+        expect(error_lines(stderr).first).to include("sha256:#{vendored_digest}")
+      end
+
+      # The whole reason the check sits in #verify!: the divergence is settled
+      # before a single file is selected, scanned or handed to the binary.
+      it "fails before anything is selected or scanned" do
+        stdout, stderr, = run_cli({ described_class::ENV_VAR => diverging_stub })
+
+        expect(recorded_invocations).to be_empty
+        expect(stdout).to eq("")
+        expect(stderr).not_to include("selected")
+      end
+
+      # It would have been a clean run. That is the point: nothing downstream —
+      # not the report, not the exit code, not the finding count — could have
+      # told anyone the verdict came from a different contract.
+      it "refuses a run that would otherwise have passed" do
+        clean = run_cli({ described_class::ENV_VAR => clean_stub(name: "agreeing") })
+        diverged = run_cli({ described_class::ENV_VAR => diverging_stub(name: "diverging") })
+
+        expect(clean[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(diverged[2]).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # BAND (c): not reported — never a refusal, in any of its three shapes.
+    #
+    # The standing rule this file already enforces for identity ("an older build
+    # must not cost a verdict") applies unchanged: slice 17 is newer than the
+    # binaries in the field, and a gem that refused every one of them would be
+    # enforcing a contract by breaking everybody who cannot yet state theirs.
+    describe "a binary that reports no digest" do
+      it "records the contract as unreported, and still resolves" do
+        expect(resolve(version_stdout: "validate-intent 1.4.0 (go1.22.12 linux/arm64)").schema_contract)
+          .to eq(:unreported)
+      end
+
+      it "still validates, with the exit code unchanged" do
+        stub = clean_stub(version_stdout: "validate-intent 1.4.0 (go1.22.12 linux/arm64)")
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # "Could not check" is a different statement from "checked and clean", and
+      # a run that made the first while looking like the second is this project's
+      # signature defect. So it is said, in its own words.
+      it "says the contract could not be checked" do
+        stub = clean_stub(version_stdout: "validate-intent 1.4.0 (go1.22.12 linux/arm64)")
+
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .to eq("specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) at #{stub} " \
+                 "(SPECGUARD_VALIDATE_INTENT), which reports no schema digest, " \
+                 "so the contract it carries could not be checked")
+      end
+
+      # A token this gem cannot read is not a token it disagrees with. Sixty-five
+      # hex digits is not a SHA-256, and matching its first sixty-four would
+      # compare against something nobody wrote.
+      it "treats a malformed token as no token rather than as a divergence" do
+        %W[schema\ sha256:#{vendored_digest}0 schema\ sha256:#{vendored_digest[0..62]} schema\ sha256:zz].each do |tail|
+          runner = resolve(version_stdout: "validate-intent 1.4.0 #{tail}", name: "stub-#{tail.bytesize}")
+
+          expect(runner.schema_contract).to eq(:unreported)
+        end
+      end
+    end
+
+    describe "a binary that cannot report its identity at all" do
+      it "records the contract as unidentified, and still validates" do
+        stub = clean_stub(version_stdout: "", version_exit: 1)
+        runner = described_class.resolve(env: { described_class::ENV_VAR => stub })
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(runner.schema_contract).to eq(:unidentified)
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      # Distinct wording from the sub-case above. Both mean "not checked", but
+      # an operator has to be able to tell a build too old to answer from one
+      # that answered without a digest — they are fixed differently.
+      it "says so in its own words, distinct from the digest-less arm" do
+        anonymous = clean_stub(name: "anonymous", version_stdout: "", version_exit: 1)
+        digestless = clean_stub(name: "digestless", version_stdout: "validate-intent 1.4.0")
+
+        lines = [provenance_of({ described_class::ENV_VAR => anonymous }),
+                 provenance_of({ described_class::ENV_VAR => digestless })]
+
+        expect(lines.first).to end_with("which could not report its identity, " \
+                                        "so the schema contract it carries could not be checked")
+        expect(lines.uniq.length).to eq(2)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE THIRD SHAPE, and the judgment call recorded in the module comment.
+    #
+    # `Schema.load`'s precedent is that an unreadable SCHEMA_PATH is exit 2 —
+    # but that is a schema the run is about to ENFORCE, and this one is not:
+    # `CLI#run` skips the load on this path precisely so an unrelated packaging
+    # accident cannot fail a run that never reads it, and a fatal digest here
+    # would re-introduce the dependency that comment removed. A missing operand
+    # is also not a divergence: the exit-2 band is for two digests that differ.
+    describe "a gem that cannot read its own vendored schema" do
+      # The digest is read BEFORE the constant is stubbed away, so the stub
+      # binary still reports what a healthy gem would compute. What this group
+      # removes is the gem's HALF of the comparison and nothing else — with
+      # both halves gone there would be no comparison to have, and the examples
+      # would pass for the wrong reason.
+      before do
+        @healthy_digest = vendored_digest
+        stub_const("SpecGuard::RSpec::SCHEMA_PATH", File.join(tmpdir, "not-vendored.json"))
+      end
+
+      def unreadable_stub(**stub)
+        clean_stub(version_stdout: identity_reporting(@healthy_digest), **stub)
+      end
+
+      it "does not refuse the run" do
+        expect { described_class.resolve(env: { described_class::ENV_VAR => unreadable_stub }) }
+          .not_to raise_error
+      end
+
+      it "records the contract as unreadable, and still validates" do
+        stub = unreadable_stub
+        runner = described_class.resolve(env: { described_class::ENV_VAR => stub })
+        stdout, _stderr, code = run_cli({ described_class::ENV_VAR => stub })
+
+        expect(runner.schema_contract).to eq(:unreadable)
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+        expect(stdout).to include("specguard-lint: checked 1 @intent annotation, 0 malformed")
+      end
+
+      it "says which half could not be read" do
+        stub = unreadable_stub
+
+        expect(provenance_of({ described_class::ENV_VAR => stub }))
+          .to end_with("whose schema contract could not be checked: " \
+                       "this gem could not read its own vendored copy")
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE PRODUCT DOES NOT MOVE. The provenance line is stderr prose about the
+    # linter's own configuration; the findings and the two `checked …` lines are
+    # the product, and they are pinned byte-for-byte across the backends
+    # everywhere above. Which band a run lands in must not reach them.
+    it "leaves stdout byte-identical across every band that is not a refusal" do
+      stdouts = [clean_stub(name: "matched"),
+                 clean_stub(name: "digestless", version_stdout: "validate-intent 1.4.0"),
+                 clean_stub(name: "silent", version_stdout: "", version_exit: 1)]
+                .map { |stub| run_cli({ described_class::ENV_VAR => stub }) }
+
+      expect(stdouts.map(&:first).uniq.length).to eq(1)
+      expect(stdouts.map(&:last).uniq).to eq([SpecGuard::RSpec::CLI::EXIT_OK])
+    end
+
+    it "moves only the provenance line between those bands" do
+      matched = run_cli({ described_class::ENV_VAR => clean_stub(name: "a-matched") })
+      digestless = run_cli({ described_class::ENV_VAR =>
+                             clean_stub(name: "a-digestless", version_stdout: "validate-intent 1.4.0") })
+
+      expect(stderr_beyond_provenance(digestless[1])).to eq(stderr_beyond_provenance(matched[1]))
+      expect(provenance_lines(digestless[1])).not_to eq(provenance_lines(matched[1]))
+    end
+
+    # ---------------------------------------------------------------------- #
+    # The invariant that keeps this check honest. A constant holding the digest
+    # would be a fourth copy of a hex string that already exists in three
+    # places, free to drift from the file it claims to describe — which is the
+    # precise defect this check was added to detect, re-created inside the
+    # detector. `schema_packaging_spec.rb` stays the single pin in this repo.
+    it "computes the digest at runtime rather than writing a fourth copy of it" do
+      root = File.expand_path("../../..", __dir__)
+      matches = Dir.chdir(root) { `git grep -l -- #{vendored_digest[0, 8]} lib/`.split("\n") }
+
+      expect(matches).to be_empty
     end
   end
 

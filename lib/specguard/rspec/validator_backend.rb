@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 
@@ -173,6 +174,83 @@ module SpecGuard
     # the line instead would make a run that could not name its validator look
     # exactly like a run nobody looked at — the silent-omission shape this
     # project keeps naming, arrived at from a third direction.
+    #
+    # == Asking the answer a question: the schema contract across the seam
+    #
+    # The identity above was carried through and rendered, and nothing read it.
+    # One token in it is not decoration: open-test-intent's `VersionLine`
+    # (`cmd/validate-intent/version.go`) ends `schema sha256:<64-hex>`, the
+    # digest of the schema COMPILED INTO that binary, and `schema.go`'s
+    # `SchemaSHA256` says in as many words why it exists —
+    #
+    #   "a gem that vendors schema A can be pointed at a binary built when
+    #   canonical was B, and all three guards stay green while the two halves
+    #   enforce different contracts."
+    #
+    # Every drift guard in this ecosystem compares a matched pair inside ONE
+    # checkout: `schema_test.go` digests the Go embed against the Go tree's
+    # `schemas/`, `spec/specguard/rspec/schema_packaging_spec.rb` digests this
+    # gem's vendored copy against this gem's pin, `tests/parity/` compares two
+    # files in two checkouts. None of them looks at an INSTALLED artifact, and
+    # none of them can. The seam is ordinary, not contrived: `install.sh` fetches
+    # a released binary by version with nothing tying that release's vintage to
+    # the gem beside it, and {ENV_VAR} accepts any path on the host.
+    #
+    # And on this path the gem does not even read its own schema — `CLI#run`
+    # loads it only when the backend is nil, deliberately, because with the
+    # backend on the binary's copy is what governs. So the two contracts never
+    # met. {Runner#verify!} is where they now do, beside the three file checks
+    # and before anything is selected or scanned: the same fail-early placement
+    # this file already argues for, and for the same reason — a divergence is
+    # not a verdict about anyone's annotations.
+    #
+    # Three bands, and the boundaries between them are the whole design:
+    #
+    #   * REPORTED AND EQUAL — the run proceeds and {Runner#provenance} says the
+    #     contract matched. The wording may NOT say the run *enforced* it, and
+    #     that is not pedantry: `LoadSchema` (`cmd/validate-intent/fileio.go`)
+    #     gives a `schemas/open-test-intent.v1.json` found beside the executable
+    #     priority over the embedded copy, and `--version` returns above that
+    #     decision and never reaches it. The digest is the contract the artifact
+    #     CARRIES. Claiming more would be this gem inventing a guarantee out of
+    #     an answer that does not contain one.
+    #
+    #   * REPORTED AND DIFFERENT — {ValidatorError}, exit 2, naming BOTH
+    #     digests. This is the one addition to the exit-2 band, and it belongs
+    #     there for the reason the band exists: a verdict produced under a
+    #     different contract is not a verdict this gem can stand behind, and
+    #     nothing downstream can notice — the report is a normal report, the
+    #     exit code is a normal exit code, and the findings are whatever the
+    #     other contract implies. Note this is the OPPOSITE of the identity
+    #     rule above rather than an exception to it: "I could not ask" stays
+    #     out of the band, "I asked and the answer was wrong" goes in.
+    #
+    #   * NOT REPORTED — never a refusal, in any of its three shapes: a
+    #     pre-slice-17 build whose `--version` carries no digest token, a binary
+    #     that could not answer `--version` at all, and this gem being unable to
+    #     read its own vendored schema. Each says so IN WORDS in its own
+    #     wording, because "could not check" and "checked and clean" are two
+    #     different statements and a checker owes both.
+    #
+    # That third shape is the one judgment call here, so it is recorded rather
+    # than left to be re-derived. {Schema.load}'s precedent is that an
+    # unreadable {SCHEMA_PATH} is exit 2 — but that is a schema the run is about
+    # to ENFORCE, and this one is not: `CLI#run` skips the load on this path
+    # precisely so an unrelated packaging accident cannot fail a run that never
+    # reads it, and making the digest fatal here would re-introduce exactly the
+    # dependency that comment removed. An unreadable vendored copy is also not
+    # what the exit-2 arm is for — divergence is a POSITIVE finding, two digests
+    # that differ, and a missing operand is not a difference. So it lands in the
+    # third band and is said out loud. (Hence {Digest::SHA256.file} rather than
+    # {Schema.load}: this needs bytes, not a parsed and validated document, so
+    # only an unreadable file can fail it and a schema this run does not use
+    # cannot fail it twice.)
+    #
+    # The digest is computed from {SCHEMA_PATH} at runtime and never written
+    # down here. A constant would be a fourth copy of a hex string that already
+    # exists in three places, drifting independently of the file it claims to
+    # describe — which is the precise failure this whole check was added to
+    # detect, re-created inside the detector.
     module ValidatorBackend
       # Set it to a `validate-intent` binary to route linting through the Go
       # port. Blank or unset means the Ruby path, which is the default and the
@@ -248,6 +326,24 @@ module SpecGuard
         # the line rather than fill it.
         IDENTITY_MAX_BYTES = 200
 
+        # The one token of the identity line this file interprets, matched
+        # exactly as `cmd/validate-intent/version.go` writes it: the literal
+        # `schema sha256:` followed by 64 hex digits. Everything around it stays
+        # opaque — the version, the toolchain, the platform and anything a
+        # future build appends are still the binary's business.
+        #
+        # Anchored at both ends. Without the trailing boundary a 65-digit token
+        # would match its first 64 and be compared as if it were a digest; with
+        # it, such a token matches nothing and the run lands in the "not
+        # reported" band, which is the right answer for a line this gem cannot
+        # read rather than one it disagrees with.
+        #
+        # Case-insensitive, and the capture is compared downcased. Go's
+        # `hex.EncodeToString` is lower case and {Digest::SHA256#hexdigest} is
+        # too, so today this changes nothing; if a future build shouts, that is
+        # a spelling of the same digest and must not be reported as divergence.
+        SCHEMA_DIGEST_PATTERN = /\bschema sha256:(\h{64})\b/i
+
         attr_reader :path
 
         # The binary's own `--version` line, or nil when it could not report
@@ -262,6 +358,20 @@ module SpecGuard
         # @return [String, nil]
         attr_reader :identity
 
+        # The result of the schema-contract comparison, one of:
+        #
+        #   :matched       — the binary reported a digest and it is ours
+        #   :unreported    — it named itself but carries no digest token
+        #   :unidentified  — it could not name itself at all
+        #   :unreadable    — we could not read our own vendored schema
+        #
+        # There is no `:diverged` member: that band raises out of {#verify!}, so
+        # no Runner ever exists holding it. Populated by {#verify!} beside
+        # {#identity}, and nil before it runs for the same reason.
+        #
+        # @return [Symbol, nil]
+        attr_reader :schema_contract
+
         # @param path [String] the `validate-intent` binary
         def initialize(path)
           @path = path
@@ -275,6 +385,11 @@ module SpecGuard
         # check: asking here is what makes it once-per-run and ahead of
         # selection. It cannot fail the run — see the module comment.
         #
+        # The schema-contract comparison reads the answer the probe already
+        # obtained, so it costs no second process, and it CAN fail the run —
+        # see the module comment for why that one band belongs in exit 2 while
+        # the identity itself does not.
+        #
         # @raise [ValidatorError]
         def verify!
           raise ValidatorError, "#{describe} does not exist#{path_hint}" unless File.exist?(@path)
@@ -282,6 +397,7 @@ module SpecGuard
           raise ValidatorError, "#{describe} is not executable" unless File.executable?(@path)
 
           @identity = probe_identity
+          @schema_contract = verify_schema_contract!
           self
         end
 
@@ -291,11 +407,21 @@ module SpecGuard
         # is spelled exactly as every diagnostic in this file spells it, so the
         # line naming the validator and any error about it name the same thing.
         #
+        # The clause after it is the gem's own, because it is a statement about
+        # a COMPARISON the gem made and not about the binary. Each of the four
+        # states it can report is worded distinctly: three of them mean the
+        # contract was not checked, for three different reasons, and collapsing
+        # them into one sentence would leave an operator unable to tell a build
+        # too old to answer from an installation missing its own schema.
+        #
         # @return [String]
         def provenance
-          return "validated by #{@identity} at #{@path} (#{ENV_VAR})" if @identity
+          if @identity.nil?
+            return "validated by the binary at #{@path} (#{ENV_VAR}), which could not report its identity, " \
+                   "so the schema contract it carries could not be checked"
+          end
 
-          "validated by the binary at #{@path} (#{ENV_VAR}), which could not report its identity"
+          "validated by #{@identity} at #{@path} (#{ENV_VAR})#{schema_contract_clause}"
         end
 
         # @param paths [Enumerable<String>] spec files, as the caller named them
@@ -377,6 +503,71 @@ module SpecGuard
           return nil if text.match?(/[[:cntrl:]]/)
 
           text
+        end
+
+        # The comparison itself. Returns the state {#schema_contract} reports,
+        # and raises for the one band that is a refusal.
+        #
+        # It reads {#identity}, which {#verify!} has just assigned — not a
+        # second `--version` — so the digest and the name in the provenance
+        # line are guaranteed to have come from the same process. Two probes
+        # could not promise that, and a run whose line named one build while
+        # the comparison used another would be worse than no comparison.
+        #
+        # @return [Symbol]
+        # @raise [ValidatorError] when both digests are known and differ
+        def verify_schema_contract!
+          return :unidentified if @identity.nil?
+
+          reported = @identity[SCHEMA_DIGEST_PATTERN, 1]&.downcase
+          return :unreported if reported.nil?
+
+          vendored = vendored_schema_digest
+          return :unreadable if vendored.nil?
+          return :matched if reported == vendored
+
+          # Both digests, spelled in full. A message naming only one of them
+          # would send the reader to compute the other by hand, and the whole
+          # point of this diagnostic is that the two halves are in different
+          # places — one inside a binary, one inside an installed gem — and
+          # neither is inspectable from where the other lives.
+          raise ValidatorError,
+                "#{describe} reports carrying schema sha256:#{reported}, but this gem vendors " \
+                "sha256:#{vendored} — the two halves would enforce different contracts, so this run " \
+                "would produce a verdict this gem cannot stand behind"
+        end
+
+        # This gem's own contract, digested from the file at runtime. Never a
+        # constant: see the module comment.
+        #
+        # nil rather than an exception on an unreadable file, which puts a
+        # broken installation in the "could not check" band instead of failing
+        # a run that does not otherwise read this file at all. `Errno::ENOENT`
+        # and `Errno::EACCES` are `SystemCallError`s; `IOError` covers the rest
+        # of the ways a read can end without one.
+        #
+        # @return [String, nil] 64 lower-case hex digits
+        def vendored_schema_digest
+          Digest::SHA256.file(SCHEMA_PATH).hexdigest
+        rescue SystemCallError, IOError
+          nil
+        end
+
+        # The tail of the provenance line, one sentence per state. The matched
+        # arm is careful twice over: "reports carrying" attributes the claim to
+        # the binary, and the clause after the dash refuses the stronger reading
+        # the reader would otherwise supply for free — see the module comment on
+        # `LoadSchema`, which `--version` never reaches.
+        def schema_contract_clause
+          case @schema_contract
+          when :matched
+            ", which reports carrying the schema this gem vendors — the contract it carries, " \
+              "not necessarily the one this run enforced"
+          when :unreadable
+            ", whose schema contract could not be checked: this gem could not read its own vendored copy"
+          else
+            ", which reports no schema digest, so the contract it carries could not be checked"
+          end
         end
 
         # Greedy, order-preserving, and never empty: a single path longer than
