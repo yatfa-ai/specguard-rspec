@@ -57,9 +57,14 @@ module SpecGuard
     # the in-gem {Linter}, or the Go port shelled out to by {ValidatorBackend}
     # when `SPECGUARD_VALIDATE_INTENT` names a binary. Both arms return
     # {Linter::Result}s, so the branch closes immediately and the reporting and
-    # exit-code logic below is shared rather than duplicated. With the variable
-    # unset — the default, and the only configuration any existing user has —
-    # nothing about this file's behaviour changes.
+    # exit-code logic below is shared rather than duplicated.
+    #
+    # Because both arms produce the same bytes, the run has to SAY which one it
+    # was, or the answer is unrecoverable from the output — see
+    # {#report_backend}, which states it in one line on stderr on both arms.
+    # That line is the only thing the default configuration gained: stdout, the
+    # exit code and every finding are what they were before this file learned
+    # about a second validator.
     #
     # The backend's failure modes are exit 2 by construction: {ValidatorError}
     # is rescued beside {UsageError}, which is what makes "the binary you named
@@ -101,6 +106,12 @@ module SpecGuard
         # surface as a run that checked nothing and called itself clean.
         backend = ValidatorBackend.resolve(env: @env)
 
+        # Immediately after resolution and before selection: the line is above
+        # the empty-selection warnings, it costs the `--version` probe at most
+        # once per run, and a run that dies later still said what was about to
+        # validate it. See #report_backend.
+        report_backend(backend)
+
         # Only on the Ruby path. When the backend is active the binary carries
         # its own schema and this gem's vendored copy governs nothing, so
         # loading it would let an unrelated packaging accident fail a run that
@@ -132,6 +143,45 @@ module SpecGuard
       end
 
       private
+
+      # One line per run naming the implementation that produced the verdicts.
+      #
+      # Two validators can now answer for this tool, and until this line existed
+      # a report from the Go port and a report from {Linter} were the same
+      # bytes. That is the same hole {ValidatorBackend} closes by making a
+      # missing binary a hard exit 2 and refusing a bare command name — "which
+      # validator did this CI job actually run" must not be unanswerable — left
+      # open for every binary that does resolve.
+      #
+      # Three things about it are deliberate:
+      #
+      #   * it is on STDERR. The findings and the two `checked …` lines are the
+      #     product and are pinned byte-for-byte across the two backends
+      #     (`spec/specguard/rspec/validator_backend_spec.rb`); a line about the
+      #     linter's own configuration belongs where the warnings are, and
+      #     putting it on stdout would make the backends' stdout differ for the
+      #     first time.
+      #   * BOTH arms speak. "Validated in Ruby" as a positive statement is the
+      #     whole point: a line that appeared only when the backend was on would
+      #     leave its absence meaning either "the Ruby path" or "an older gem
+      #     that never printed one", which is not an answer.
+      #   * the off arm distinguishes unset from blank. {ValidatorBackend.resolve}
+      #     deliberately collapses them — a blank `SPECGUARD_VALIDATE_INTENT=` in
+      #     a CI environment file is somebody turning the backend off — and
+      #     returns nil for both, so the distinction is unrecoverable from the
+      #     backend and is read from `@env` here instead. Somebody who set the
+      #     variable and got the Ruby path anyway needs to see that the value,
+      #     not the wiring, is why.
+      def report_backend(backend)
+        @stderr.puts "specguard-lint: #{backend ? backend.provenance : ruby_provenance}"
+      end
+
+      def ruby_provenance
+        var = ValidatorBackend::ENV_VAR
+        return "validated in Ruby (#{var} is unset)" if @env[var].nil?
+
+        "validated in Ruby (#{var} is set but blank, which means off)"
+      end
 
       # The one branch. Both arms produce the same {Linter::Result} list, so
       # everything downstream — the FAIL blocks, the summary line, the exit

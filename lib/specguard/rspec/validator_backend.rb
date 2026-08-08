@@ -132,6 +132,47 @@ module SpecGuard
     # has already spent on "an annotation is malformed" ({CLI}). Hence
     # {ValidatorError}, rescued beside {UsageError} so the message reads
     # `specguard-lint: error: …` rather than the backstop's `internal error:`.
+    #
+    # == Naming what produced the verdicts — and why identity is NOT in that band
+    #
+    # The paragraph above is about failures to obtain a VERDICT. The binary's
+    # identity is not one, and the distinction is the whole of {#identity}.
+    #
+    # This file already refuses to let "which validator ran" be ambiguous in the
+    # two places it can be decided: a named-but-missing binary is a hard exit 2
+    # ({Runner#verify!}), and a bare command name is refused rather than
+    # PATH-resolved ({Runner#path_hint}) because "a run that succeeded against a
+    # different validator … nothing downstream can detect". Both close the hole
+    # for binaries that do not resolve. For every binary that DOES resolve, the
+    # run was still silent about it: a report produced by the port and a report
+    # produced by {Linter} were the same bytes.
+    #
+    # So {Runner#verify!} asks the binary who it is, once, before anything is
+    # selected or scanned — the same fail-early placement as the checks beside
+    # it — and {Runner#provenance} renders the answer for the one stderr line
+    # {CLI} prints per run. Three properties make that safe:
+    #
+    #   * it is asked ONCE per run, so it cannot become a per-batch cost on a
+    #     large audit. Not by memoizing the answer — {Runner#verify!} re-probes
+    #     every time it is called, exactly as it re-runs the three file checks
+    #     beside it — but because {ValidatorBackend.resolve} is the only thing
+    #     that calls {Runner#verify!} and {CLI} resolves once per run;
+    #   * the answer is passed through VERBATIM. A line the gem composed about
+    #     the binary would be a claim by the gem; the point is to carry the
+    #     binary's own statement, which is the only thing that can distinguish
+    #     two builds this gem has never heard of;
+    #   * a binary that cannot answer still validates. `--version` arrived in
+    #     open-test-intent slice 6; an older build reads it as a filename,
+    #     reports "no file(s) match" on stderr and exits 1. That must not cost
+    #     a verdict, so the probe treats a non-zero exit, empty output, or
+    #     output that cannot be rendered as one line as "identity unavailable"
+    #     and never as a {ValidatorError}. `SystemCallError` is caught in the
+    #     probe rather than left to {Runner#run}'s rescue for the same reason.
+    #
+    # "Unavailable" is then reported IN WORDS by {Runner#provenance}. Dropping
+    # the line instead would make a run that could not name its validator look
+    # exactly like a run nobody looked at — the silent-omission shape this
+    # project keeps naming, arrived at from a third direction.
     module ValidatorBackend
       # Set it to a `validate-intent` binary to route linting through the Go
       # port. Blank or unset means the Ruby path, which is the default and the
@@ -197,7 +238,29 @@ module SpecGuard
         # (and `MAX_ARG_BYTES` alone would allow ~90k one-character paths).
         MAX_BATCH_FILES = 1_000
 
+        # The `--version` probe's own guard rail, and the only thing it asserts
+        # about the answer's SHAPE. The identity is passed through verbatim, so
+        # the question is not "is this the format I expect" — a future build may
+        # word it differently and still be telling the truth — but "can this be
+        # rendered as the one line {CLI} promises per run". A binary answering
+        # `--version` with a report document, a stack trace, or a megabyte of
+        # anything is answering a different question, and its output would break
+        # the line rather than fill it.
+        IDENTITY_MAX_BYTES = 200
+
         attr_reader :path
+
+        # The binary's own `--version` line, or nil when it could not report
+        # one. Populated by {#verify!}; nil before it runs, which is why nothing
+        # constructs a Runner without it (see {ValidatorBackend.resolve}).
+        #
+        # Assigned unconditionally rather than memoized: a second {#verify!}
+        # re-probes, in step with the file checks it sits among, which also
+        # re-run. "Once per run" is a property of the single {#verify!} call
+        # {ValidatorBackend.resolve} makes, not of a cache here.
+        #
+        # @return [String, nil]
+        attr_reader :identity
 
         # @param path [String] the `validate-intent` binary
         def initialize(path)
@@ -208,13 +271,31 @@ module SpecGuard
         # asked for is not there" is never mistaken for a verdict about
         # anyone's annotations.
         #
+        # The identity probe rides along for the placement rather than for the
+        # check: asking here is what makes it once-per-run and ahead of
+        # selection. It cannot fail the run — see the module comment.
+        #
         # @raise [ValidatorError]
         def verify!
           raise ValidatorError, "#{describe} does not exist#{path_hint}" unless File.exist?(@path)
           raise ValidatorError, "#{describe} is not a file" unless File.file?(@path)
           raise ValidatorError, "#{describe} is not executable" unless File.executable?(@path)
 
+          @identity = probe_identity
           self
+        end
+
+        # The active arm of {CLI}'s one-line-per-run provenance statement.
+        #
+        # The identity half is the binary's own words, uninterpreted. The path
+        # is spelled exactly as every diagnostic in this file spells it, so the
+        # line naming the validator and any error about it name the same thing.
+        #
+        # @return [String]
+        def provenance
+          return "validated by #{@identity} at #{@path} (#{ENV_VAR})" if @identity
+
+          "validated by the binary at #{@path} (#{ENV_VAR}), which could not report its identity"
         end
 
         # @param paths [Enumerable<String>] spec files, as the caller named them
@@ -246,6 +327,56 @@ module SpecGuard
           return "" if @path.include?(File::SEPARATOR)
 
           " — #{ENV_VAR} takes a path, not a command name; try #{ENV_VAR}=\"$(command -v #{@path})\""
+        end
+
+        # Asks the binary who it is. Never raises: every way this can go wrong
+        # is "identity unavailable", which {#provenance} reports in words.
+        #
+        # `--version` is position-independent in the port and answers on stdout
+        # with exit 0 (`cmd/validate-intent/main.go`), so the whole answer is
+        # `stdout` and the exit code is a usable gate. A pre-slice-6 build has
+        # no such flag: it reads `--version` as a filename, writes "no file(s)
+        # match" to STDERR and exits 1 — caught by the exit check, with the
+        # stdout checks behind it in case some other build answers differently.
+        #
+        # The `SystemCallError` rescue is local rather than shared with {#run}'s
+        # because the two mean opposite things: there, a binary that will not
+        # execute is a run with no verdict and an exit 2; here it is a question
+        # that went unanswered, and {#check} will reach the same failure a
+        # moment later with the diagnostic that belongs to it.
+        #
+        # @return [String, nil]
+        def probe_identity
+          stdout, _stderr, status = Open3.capture3(@path, "--version")
+          return nil unless status.success?
+
+          identity_line(stdout)
+        rescue SystemCallError
+          nil
+        end
+
+        # The one shape check, and it is about renderability rather than
+        # format — see {IDENTITY_MAX_BYTES}. Anything that survives is returned
+        # byte for byte apart from surrounding whitespace, which is the
+        # newline `--version` ends with.
+        #
+        # The encoding test comes FIRST because `String#strip` raises
+        # `Encoding::CompatibilityError` on an invalid byte sequence, and an
+        # exception here would reach {CLI}'s backstop and turn a binary with an
+        # odd `--version` into `internal error:` and an exit 2 — the exact cost
+        # this probe is not allowed to have.
+        #
+        # @return [String, nil]
+        def identity_line(stdout)
+          return nil unless stdout.to_s.valid_encoding?
+
+          text = stdout.to_s.strip
+          return nil if text.empty? || text.bytesize > IDENTITY_MAX_BYTES
+          # A control character — a second line, an ANSI escape, a NUL — would
+          # break the single line this becomes, or forge extra ones.
+          return nil if text.match?(/[[:cntrl:]]/)
+
+          text
         end
 
         # Greedy, order-preserving, and never empty: a single path longer than

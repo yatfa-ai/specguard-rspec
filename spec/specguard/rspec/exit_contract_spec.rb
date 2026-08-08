@@ -145,11 +145,14 @@ RSpec.describe "the specguard-lint exit contract" do
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
 
+      # The wording and the stream, not the position: the run also names the
+      # validator that was about to produce the verdicts (CLI#report_backend),
+      # and that line is emitted before the schema is loaded.
       it "says so on stderr, in the reference tool's words" do
         stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
         cli.run([fixture_path("order_spec.rb")])
 
-        expect(err).to start_with("error: could not load schema /nonexistent/")
+        expect(err.lines).to include(a_string_starting_with("error: could not load schema /nonexistent/"))
       end
 
       it "exits 2 when the schema file is present but unparseable" do
