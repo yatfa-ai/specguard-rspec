@@ -95,7 +95,7 @@ Because the two backends produce the same report, the report alone cannot tell y
 So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
 
 ```
-specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT), which reports carrying the schema this gem vendors — the contract it carries, not necessarily the one this run enforced
+specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:6535d9ba… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT), which reports carrying the schema this gem vendors — the contract it carries, not necessarily the one this run enforced
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
@@ -103,6 +103,10 @@ specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, w
 The two "validated in Ruby" wordings are the same two `--require-validator` reports its refusal
 with, so one vocabulary describes both. The clause after the backend line is the schema-contract
 comparison — see "Which schema the binary carries", below.
+
+The `schema sha256:` token in the first line is elided above only to fit; it prints in full, and it
+is part of the binary's own `--version` answer rather than something `specguard-lint` appends. A
+backend line *without* that token is a different band, and is worded differently.
 
 Three things worth knowing about it:
 

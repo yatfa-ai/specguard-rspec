@@ -1957,6 +1957,14 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # the digest that is correct today. Grepping for the current digest would
       # catch only the harmless case and pass over the defect this whole slice
       # exists to detect, re-created inside its own detector.
+      #
+      # The search is deliberately broad: all of `lib/`, which includes the
+      # vendored `schemas/open-test-intent.v1.json`. That file carries no 64-hex
+      # run today. If a future revision of the canonical schema ever does — an
+      # example value, a `pattern`, a fixture digest — this example will fail
+      # pointing at a JSON file that is doing nothing wrong. Read that failure
+      # as "the guard needs a narrower path", not as a fourth copy of the
+      # digest, and narrow it then rather than deleting it.
       out, err, status = Open3.capture3("git", "grep", "-nIE", "[0-9a-fA-F]{64}", "--", "lib/", chdir: root)
 
       # `git grep` exits 0 having found matches, 1 having searched and found
