@@ -153,6 +153,23 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     { file: file, line: line, ok: true, kind: nil, errors: [] }
   end
 
+  # A stub whose report is a clean run over `spec/fixtures/order_spec.rb` —
+  # the fixture both CLI-level describes below drive the binary with. It lives
+  # here beside {stub_validator} and {document} rather than in either of them
+  # because it was byte-identical in both: two copies of one fixture builder
+  # means a fixture change has to land twice, or the two blocks quietly stop
+  # describing the same binary.
+  #
+  # `paths` and `run_cli` are deliberately NOT lifted with it. Every describe
+  # in this file declares its own — seven of them, each with a different
+  # fixture list and a different argv shape — so a single inherited pair would
+  # be shadowed almost everywhere it appeared and would make the file less
+  # readable, not less repetitive. This one is a fixture; those are local
+  # plumbing.
+  def clean_stub(**stub)
+    stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
+  end
+
   def run_backend(paths, **stub)
     described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**stub) }).check(paths)
   end
@@ -1317,10 +1334,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       provenance_lines(stderr).first
     end
 
-    def clean_stub(**stub)
-      stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
-    end
-
     # ---------------------------------------------------------------------- #
     # THE PROBE. Once, before selection, and incapable of failing the run.
     describe "the identity probe" do
@@ -1613,10 +1626,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       stderr = StringIO.new
       code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
       [stdout.string, stderr.string, code]
-    end
-
-    def clean_stub(**stub)
-      stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
     end
 
     def error_lines(stderr)

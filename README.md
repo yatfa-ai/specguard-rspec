@@ -78,8 +78,9 @@ The case this exists for is the one the exit code alone cannot show you: a misty
 conditional CI step that did not run, an environment file that was not loaded. The run *succeeds* —
 validated by the other implementation — and the only trace is a line on stderr that nothing reads.
 That is not "same answer, different engine": the two backends' JSON parsers do not accept the same
-language (last row of the table below), so on a payload one accepts and the other rejects **the two
-exit codes disagree**, and a report with no findings is exactly what a clean run looks like.
+language (see "The difference that is not about wording", below), so on a payload one accepts and
+the other rejects **the two exit codes disagree**, and a report with no findings is exactly what a
+clean run looks like.
 
 It is a flag rather than a second environment variable on purpose. `SPECGUARD_VALIDATE_INTENT_REQURED=1`
 would be silently no assertion at all — the same bug one level up. A mistyped `--requre-validator`

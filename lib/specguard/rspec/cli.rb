@@ -115,6 +115,14 @@ module SpecGuard
         # After the provenance line, so stderr carries what DID validate the
         # run before the reason that was not good enough, and before selection,
         # so an unmet assertion selects, scans and reports nothing.
+        #
+        # Being before #select also fixes a precedence, and it was chosen
+        # rather than inherited: `--changed --require-validator foo_spec.rb`
+        # with the variable unset reports the missing backend and never reaches
+        # the "--changed cannot be combined with explicit files" UsageError
+        # below. Both are exit 2, and the backend is the earlier question —
+        # which files to check does not matter when nothing is going to check
+        # them with the implementation that was asked for.
         require_backend!(backend) if options[:require_validator]
 
         # Only on the Ruby path. When the backend is active the binary carries
