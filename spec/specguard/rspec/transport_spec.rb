@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "stringio"
 require "specguard/rspec/transport"
 
 require_relative "../../support/stub_ingest_endpoint"
@@ -90,6 +91,182 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(payload.to_json.bytesize).to be < described_class::GZIP_THRESHOLD_BYTES
       expect(request.headers["content-encoding"]).to be_nil
     end
+
+    # == Why `eq` over the sorted key set, and not another `headers[...]` check
+    #
+    # README's "What SpecGuard collects" enumerates the request headers and
+    # tells a customer that exactly two of them — `Authorization` and
+    # `User-Agent` — say anything about them, and that the rest are plumbing
+    # carrying nothing about their code. That is a claim a security review
+    # reads before deciding whether this data may leave their perimeter, so it
+    # has to be a *maintained* claim rather than a snapshot of the day it was
+    # written.
+    #
+    # Every other header assertion in this file is additive: they each name one
+    # header and pass regardless of what else was sent. A header added to
+    # `#build_request` tomorrow — a project id, a tenant hint, an experiment
+    # flag — ships green through all of them with the README still promising
+    # this list. Comparing the *whole* sorted key set is the only shape that
+    # cannot: it fails, and names the header that appeared.
+    #
+    # That drift is measured, not hypothetical. `Content-Encoding` arrived with
+    # SPGD-175 and `Accept-Encoding` is a `Net::HTTP` default that
+    # `#build_request` never mentions — both are on the wire, and neither is
+    # visible from reading `#build_request` alone. Hence the assertion is made
+    # against what the stub server actually received.
+    #
+    # If this fails: update the header list in README's "What SpecGuard
+    # collects" to match what is now sent, then update this list. Do not update
+    # this list alone — the disclosure is the point of the pin.
+    it "sends exactly the headers the README discloses, and no others" do
+      expect(request.headers.keys.sort).to eq(
+        %w[accept accept-encoding authorization content-length content-type host user-agent]
+      )
+    end
+  end
+
+  # == The one disclosure that is about where the run goes, not what is in it
+  #
+  # `#post` builds its client as `Net::HTTP.new(host, port)` — two arguments,
+  # so the third, `p_addr`, takes its default of `:ENV`. That default is the
+  # whole subject of this block: Ruby then resolves a proxy out of the
+  # environment, and with `http_proxy` set the entire payload goes to the proxy
+  # instead of to `SPECGUARD_ENDPOINT`.
+  #
+  # README's "What SpecGuard collects" discloses that, because the section one
+  # heading above it tells a perimeter-conscious reader that `SPECGUARD_ENDPOINT`
+  # is the lever controlling where their data goes, and this is a second lever
+  # they did not set through us.
+  #
+  # == Why these examples exist when the key-set pins already do
+  #
+  # They cannot reach this. Every other pin added with that disclosure asserts
+  # over `Configuration`'s frozen `*_KEYS` constants; this read happens in
+  # `Transport`, inside stdlib, against no constant at all. So the proxy
+  # paragraph was the only claim in the section still standing on prose — which
+  # is the exact position the header list and the environment list were both in
+  # when each of them turned out to be wrong.
+  #
+  # == Why the disclosed *shape* is asserted, not the absence of a read
+  #
+  # "Nothing else is read" is unprovable from in here. What is provable is the
+  # behaviour the README now describes, so that is what is pinned: the proxy is
+  # taken, it is taken for a TLS endpoint too, `no_proxy` suppresses it, and
+  # `https_proxy` alone does nothing. Each of those is a sentence in the
+  # section. If someone later passes `nil` for `p_addr` and silently stops
+  # honouring proxies, these fail — and that is a disclosure defect in the
+  # opposite direction, worth catching just as much.
+  #
+  # == The `https_proxy` example is the reason to probe rather than reason
+  #
+  # `URI.parse("https://…").find_proxy` does consult `https_proxy`, so reading
+  # the docs suggests `Net::HTTP` honours it for a TLS endpoint. It does not:
+  # `Net::HTTP#proxy_uri` resolves against a `URI::HTTP` built with the literal
+  # scheme `"http"` whatever `use_ssl` is, so `http_proxy` governs both and
+  # `https_proxy` governs neither. Stating the plausible version would have put
+  # a false sentence in a privacy disclosure. Pinned so it stays checked.
+  describe "the proxy variables the README discloses" do
+    # `.invalid` is reserved by RFC 6761 and never resolves, so an unproxied
+    # attempt cannot leave this machine even if something here regresses: the
+    # examples that expect no proxying prove it by the request never arriving,
+    # and a real hostname would make that a claim about the network instead.
+    let(:unreachable_endpoint) { "https://ingest.specguard.invalid" }
+
+    # Saved and restored around each example, and every proxy variable cleared
+    # first — a developer or a CI runner with `http_proxy` already exported
+    # would otherwise change what these examples mean.
+    def with_env(overrides)
+      saved = ENV.to_h
+      ENV.keys.grep(/\A(http|https|no|cgi_http)_proxy\z/i).each { |key| ENV.delete(key) }
+      overrides.each { |key, value| ENV[key] = value }
+      yield
+    ensure
+      ENV.replace(saved)
+    end
+
+    # Returns what arrived at the stub server, which is standing in for the
+    # *proxy* here rather than for the ingest endpoint. A proxied request is
+    # recognisable without inspecting the socket: HTTP/1.1 has the client send
+    # the absolute URI on the request line when it is talking to a proxy, so
+    # the recorded path is `http://host/api/v1/ingest` rather than the origin
+    # form `/api/v1/ingest`.
+    def requests_arriving_at_proxy(vars, endpoint: unreachable_endpoint, extra_env: {})
+      StubIngestEndpoint.run do |server|
+        proxy = "http://127.0.0.1:#{server.port}"
+
+        with_env(vars.to_h { |name| [name, proxy] }.merge(extra_env)) do
+          described_class.new(endpoint: endpoint, api_key: "sgk_abc123", timeout: 5).deliver(payload)
+        end
+
+        server.requests
+      end
+    end
+
+    it "sends the run to the proxy named by http_proxy" do
+      arrived = requests_arriving_at_proxy(%w[http_proxy], endpoint: "http://ingest.specguard.invalid")
+
+      expect(arrived.map(&:path)).to eq(["http://ingest.specguard.invalid/api/v1/ingest"])
+    end
+
+    # Ruby prints "The environment variable HTTP_PROXY is discouraged" to stderr
+    # on this path — unconditionally, not under `$VERBOSE`, so it cannot be
+    # switched off. Captured rather than left to litter the suite's output. The
+    # warning is itself corroboration that the read happens; the assertion below
+    # is on the request that arrived, which is the stronger evidence.
+    it "honours the uppercase HTTP_PROXY spelling too" do
+      original = $stderr
+      $stderr = StringIO.new
+
+      arrived = requests_arriving_at_proxy(%w[HTTP_PROXY], endpoint: "http://ingest.specguard.invalid")
+
+      expect(arrived.map(&:path)).to eq(["http://ingest.specguard.invalid/api/v1/ingest"])
+    ensure
+      $stderr = original
+    end
+
+    # The claim a reader is most likely to get wrong, so the one most worth
+    # pinning. A TLS endpoint is tunnelled, so the proxy sees `CONNECT` and the
+    # authority rather than a POST — the run still went to the proxy, which is
+    # the disclosed fact.
+    it "routes an https endpoint through http_proxy as well, not https_proxy" do
+      arrived = requests_arriving_at_proxy(%w[http_proxy])
+
+      expect(arrived.map(&:verb)).to eq(["CONNECT"])
+    end
+
+    # == These last two are differential on purpose
+    #
+    # Both disclose an *absence* — the run was not proxied — and "nothing
+    # arrived at the stub" is the classic assertion that also passes when the
+    # harness is broken: a transport that delivered nowhere at all, a port that
+    # was never listening, a `deliver` that raised on line one, would each give
+    # a green empty. That is Vacuous Green, and it is worth avoiding here more
+    # than usual, because a false green on these two would republish the exact
+    # claim this round was opened to correct.
+    #
+    # So each runs its own control in the same example, changing one variable
+    # name and nothing else. The control proves the request *can* reach the
+    # stub through this setup; the assertion then means the variable is what
+    # stopped it, which is what the README actually says.
+    it "ignores https_proxy even for an https endpoint, so that run is not proxied" do
+      through_https_proxy = requests_arriving_at_proxy(%w[https_proxy])
+      through_http_proxy = requests_arriving_at_proxy(%w[http_proxy])
+
+      expect(through_http_proxy).not_to be_empty
+      expect(through_https_proxy).to be_empty
+    end
+
+    it "lets no_proxy suppress the proxy for a matching host" do
+      origin = "http://ingest.specguard.invalid"
+
+      with_no_proxy = requests_arriving_at_proxy(
+        %w[http_proxy], endpoint: origin, extra_env: { "no_proxy" => "ingest.specguard.invalid" }
+      )
+      without_no_proxy = requests_arriving_at_proxy(%w[http_proxy], endpoint: origin)
+
+      expect(without_no_proxy).not_to be_empty
+      expect(with_no_proxy).to be_empty
+    end
   end
 
   # A 20,000-example run serializes to 7,354,782 bytes (7.01 MiB), and `#post`
@@ -163,6 +340,17 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # under-large one hands the inflater a truncated stream.
     it "sets Content-Length to what it actually wrote" do
       expect(captured.headers["content-length"]).to eq(captured.body.bytesize.to_s)
+    end
+
+    # The compressed path's half of the pin above. A large run is the shape a
+    # security review is most likely to capture off a proxy, and it is the one
+    # that carries the extra header — so the README's list is only honest if
+    # *this* set is pinned too, not just the identity one.
+    it "sends exactly the headers the README discloses, plus the gzip one" do
+      expect(captured.headers.keys.sort).to eq(
+        %w[accept accept-encoding authorization content-encoding content-length
+           content-type host user-agent]
+      )
     end
 
     # The claim the header alone cannot make. A transport that set

@@ -552,6 +552,113 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
   end
 
+  # The README's **"What SpecGuard collects"** section enumerates every field
+  # this gem transmits — six in the envelope, nine per example — with a line
+  # each on what it holds and where it comes from. That enumeration is a promise
+  # to a reader deciding whether this data may leave their perimeter, and a
+  # promise only holds if breaking it breaks something.
+  #
+  # These two examples are that something. Nothing else in this file can be:
+  # every other payload assertion here is `include`/`have_key`, which is
+  # deliberately additive and stays green when a field is added. Correct for
+  # them, useless for this — so these pin the **exact** key set with `eq` over
+  # sorted keys, and a field added to `#payload` or `#capture` turns the suite
+  # red instead of leaving the README describing a payload that no longer
+  # exists.
+  #
+  # The hazard is measured rather than hypothetical: this payload has gained
+  # fields in nearly every slice of the formatter's build-out — `ci_run_id` and
+  # `shard_id` in one, `id` and `spec_file_path` in another.
+  #
+  # **If one of these just failed, you added or removed a transmitted field.**
+  # That is allowed; shipping it undisclosed is not. Add the field to the right
+  # table in the README section named above, then add it here. The section is
+  # named rather than cited by line number on purpose — a line reference rots
+  # the first time anything above it moves.
+  describe "the disclosed key set" do
+    let(:envelope_keys) { %w[branch ci_run_id commit_sha duration_seconds shard_id specs] }
+
+    let(:spec_keys) do
+      %w[duration file_path id intent line_number name outcome spec_file_path status]
+    end
+
+    it "transmits exactly the run-envelope fields the README discloses" do
+      formatter.stop(nil)
+
+      expect(formatter.payload.keys.sort).to eq(envelope_keys)
+    end
+
+    # Both annotation outcomes, and `eq` over the whole mapped array rather than
+    # `all(eq(...))`: an empty `specs` satisfies `all` vacuously, which would
+    # make this pin report success having checked no example at all.
+    it "transmits exactly the per-example fields the README discloses" do
+      allow(annotations).to receive(:intent_for).and_return(intent, nil)
+      2.times { |i| finish(build_example(name: "example #{i}", line_number: i + 1)) }
+
+      expect(formatter.payload["specs"].map { |spec| spec.keys.sort })
+        .to eq([spec_keys, spec_keys])
+    end
+  end
+
+  # The key-set pin above says *which* fields travel. This one says what two of
+  # them can contain, because the README makes a claim about that too and the
+  # claim is not the obvious one.
+  #
+  # README's "What SpecGuard collects" used to describe `spec_file_path` and
+  # `file_path` as "relative to the project root", full stop. That is only true
+  # of specs under the working directory. `#relative_path` delegates to
+  # `::RSpec::Core::Metadata.relative_path`, which returns an **absolute** path
+  # for a file outside it — so a spec vendored elsewhere, or handed to RSpec as
+  # an absolute argument by a shard splitter or an IDE runner, sends its real
+  # location off the machine in three fields at once. The section now says so,
+  # and a reader deciding whether this may cross their perimeter is entitled to
+  # have that be a maintained claim rather than a sentence someone once wrote.
+  #
+  # These examples call RSpec's own `relative_path` for real rather than
+  # stubbing it — the behaviour under test belongs to rspec-core, so a double
+  # here would only pin this file's belief about it. The absolute fixture is a
+  # state the real producer genuinely reaches: it was reproduced end to end
+  # before this was written, running a two-file suite with one spec inside a
+  # project and one outside it, and the outside example transmitted
+  # `/tmp/rp/outside/outside_spec.rb` in `id`, `spec_file_path` and `file_path`.
+  #
+  # **If one of these fails, the paths this gem transmits changed shape.** Fix
+  # the two path rows and the machine-derived-paths paragraph in the README
+  # section named above before touching the expectation.
+  describe "the disclosed path values" do
+    it "strips the leading ./ for a spec under the project root, as the table says" do
+      finish(build_example(file_path: "./spec/orders_spec.rb"))
+
+      spec = formatter.payload["specs"].first
+
+      expect(spec.values_at("spec_file_path", "file_path"))
+        .to eq(["spec/orders_spec.rb", "spec/orders_spec.rb"])
+    end
+
+    # The `id` row quotes `./spec/orders_spec.rb[1:2]` with the `./` intact,
+    # unlike the two rows above it. That is not an inconsistency in the docs:
+    # `#capture` writes `example.id` raw and never passes it through
+    # `#relative_path`, so the prefix survives on the wire. Pinned because the
+    # README quotes a literal value, and a quoted value that stops being true is
+    # worse than no example at all.
+    it "transmits RSpec's example id verbatim, ./ prefix and all" do
+      finish(build_example(file_path: "./spec/orders_spec.rb", id: "./spec/orders_spec.rb[1:2]"))
+
+      expect(formatter.payload["specs"].first["id"]).to eq("./spec/orders_spec.rb[1:2]")
+    end
+
+    it "transmits an absolute path for a spec outside the project root" do
+      outside = "/tmp/vendored-suite/outside_spec.rb"
+
+      finish(build_example(file_path: outside))
+
+      spec = formatter.payload["specs"].first
+
+      expect(spec.values_at("id", "spec_file_path", "file_path"))
+        .to eq(["#{outside}[1:1]", outside, outside])
+    end
+  end
+
   describe "the JSONL sink" do
     # Criterion 2. Every example in this block runs with no API key, which is
     # the local-development default, and none of them may reach the network.
