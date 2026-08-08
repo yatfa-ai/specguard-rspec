@@ -95,13 +95,18 @@ Because the two backends produce the same report, the report alone cannot tell y
 So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
 
 ```
-specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT)
+specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:6535d9ba… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT), which reports carrying the schema this gem vendors — the contract it carries, not necessarily the one this run enforced
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
 
 The two "validated in Ruby" wordings are the same two `--require-validator` reports its refusal
-with, so one vocabulary describes both.
+with, so one vocabulary describes both. The clause after the backend line is the schema-contract
+comparison — see "Which schema the binary carries", below.
+
+The `schema sha256:` token in the first line is elided above only to fit; it prints in full, and it
+is part of the binary's own `--version` answer rather than something `specguard-lint` appends. A
+backend line *without* that token is a different band, and is worded differently.
 
 Three things worth knowing about it:
 
@@ -114,7 +119,64 @@ Three things worth knowing about it:
 * **A binary that cannot answer still validates.** `--version` arrived in a later slice of the
   validator; an older build reads it as a filename and exits 1. That costs nothing — same findings,
   same exit code, same stdout — and the line says so in words
-  (`… which could not report its identity`) rather than going missing.
+  (`… which could not report its identity, so the schema contract it carries could not be checked`)
+  rather than going missing.
+
+#### Which schema the binary carries
+
+The identity line is not only printed. `validate-intent --version` ends `schema sha256:<64-hex>` —
+the digest of the JSON Schema compiled into that binary — and `specguard-lint` compares it against
+the digest of the schema *this gem* vendors, computed from the file at runtime, out of the same
+`--version` answer it was already asking for, before any file is selected or checked.
+
+This is the one thing about the pair that neither half can check by itself. Both sides already pin
+their own schema against their own tree, and both stay green while disagreeing with each other: the
+gem is installed from RubyGems, the binary is built or fetched by version separately, and nothing
+ties the two vintages together. What that produces is a run that succeeds under a contract other
+than the one this gem ships — and on the backend path the gem never loads its own schema at all, so
+no finding, count or exit code downstream can reflect the difference.
+
+Three outcomes, and only one of them stops the run.
+
+**The digests match.** The run proceeds, and the line says so. Read its wording literally: the
+binary reports the schema it *carries*. A `schemas/open-test-intent.v1.json` sitting beside the
+executable takes precedence over the compiled-in copy when the validator actually loads a schema,
+and `--version` answers above that decision and never reaches it. Matching digests mean the two
+halves ship the same contract — not that this run enforced it.
+
+**The digests differ.** Exit `2`, before any file is selected or checked:
+
+```
+specguard-lint: error: the validator backend at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) reports carrying schema sha256:9c1e…, but this gem vendors sha256:6535… — the two halves would enforce different contracts, so this run would produce a verdict this gem cannot stand behind; the binary identifies itself as validate-intent 1.5.0 (go1.22.12 linux/arm64) schema sha256:9c1e…
+```
+
+Both digests are printed in full (elided above only to fit), because one of them lives inside a
+binary and the other inside an installed gem and neither is inspectable from where the other lives.
+The version string is there for the question that follows immediately — *which build is this, so I
+know which half to move* — since on this path the provenance line above never prints.
+
+This is a new way for a run to fail, and it can fail a job that was green yesterday without
+anything in your repository changing: upgrading the gem or the binary on its own is enough. That is
+the intended behaviour, and it is the same judgement `--require-validator` makes one level up — a
+verdict produced under a contract this gem does not ship is one it declines to launder. To fix it,
+move whichever half is stale so the two agree.
+
+**No digest to compare.** Never a refusal — same findings, same exit code, same stdout — and the
+provenance line says which kind of "could not check" it was, in its own words:
+
+* `…, which reports no schema digest, so the contract it carries could not be checked` — a build
+  older than the slice that added the token. The rule that an older binary must not cost you a
+  verdict is unchanged here.
+* `…, which could not report its identity, so the schema contract it carries could not be checked` —
+  a build too old to answer `--version` at all.
+* `…, whose schema contract could not be checked: this gem could not read its own vendored copy` —
+  the gem's own installation is missing or unreadable. This is not fatal *on this path* on purpose:
+  the backend run does not otherwise read that file, and a missing operand is an unanswered
+  question, not a disagreement. (On the Ruby path the same file being unreadable is still exit `2`,
+  because there it is the contract the run is about to enforce.)
+
+"Could not check" and "checked and clean" are different statements, so they are worded differently
+rather than both reading as silence.
 
 What the backend does *not* change: the selection, the report format, or the summary-line format.
 What it *can* change is narrower than an earlier version of this section claimed, and the difference
