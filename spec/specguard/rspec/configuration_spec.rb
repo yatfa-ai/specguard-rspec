@@ -377,6 +377,93 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       expect(described_class.new(env: {}, git: blank).branch).to be_nil
     end
   end
+
+  # == The third exhaustiveness claim in README's "What SpecGuard collects"
+  #
+  # That section's payload key set is pinned in `formatter_spec.rb` and its
+  # request-header set in `transport_spec.rb`. The third promise is this one:
+  # the envelope table names, variable by variable, everything the formatter
+  # reads off your machine, and the "No environment" bullet below it closes the
+  # list — *these and no others*.
+  #
+  # A closed list is what a security review actually acts on, and it is the
+  # claim that rots most quietly here. Adding a provider to any list below is a
+  # one-line change with no visible consequence: nothing else in this file
+  # compares a whole list — every other example sets one variable and asserts
+  # one resolved value — so a seventh branch key, or a new `SPECGUARD_`
+  # -prefixed switch, ships green with the README still promising the old set.
+  #
+  # The drift is measured rather than hypothetical. This disclosure was first
+  # written naming 9 of the 23 provider variables, and nothing in the suite
+  # objected; a reader caught it by hand. `eq` over the whole structure is the
+  # shape that cannot stay quiet — it fails and names both the list and the
+  # variable that appeared.
+  #
+  # Order is asserted deliberately, not incidentally. The README does not just
+  # list these variables, it states their precedence ("`SPECGUARD_RUN_ID` if
+  # you set it, else …"), so a reordering is a documentation defect exactly as
+  # much as an addition is, and `eq` over an Array catches both.
+  #
+  # **If this just failed, you changed what the gem reads from the
+  # environment.** Update the envelope table and the "No environment" bullet in
+  # README's "What SpecGuard collects" *first*, then update this list. The
+  # section is named rather than cited by line number on purpose — a line
+  # reference rots the first time anything above it moves.
+  describe "the disclosed environment surface" do
+    # Pinned before the contents, because the hash in the next example can only
+    # ever speak for the lists it names. A brand-new `*_KEYS` constant, read in
+    # `#initialize` alongside the others, is invisible to that example and to
+    # every other one in this file — so the *set of lists* is a claim in its
+    # own right, and the cheapest half of "and no others" to hold.
+    it "reads no key list beyond the ones the README accounts for" do
+      expect(described_class.constants.grep(/_KEYS\z/).sort).to eq(
+        %i[API_KEY_KEYS BRANCH_KEYS COMMIT_SHA_KEYS ENDPOINT_KEYS
+           OUTPUT_PATH_KEYS RUN_ID_KEYS SHARD_ID_KEYS TIMEOUT_KEYS]
+      )
+    end
+
+    it "reads exactly the variables the README discloses, and no others" do
+      expect(
+        "commit_sha" => described_class::COMMIT_SHA_KEYS,
+        "branch" => described_class::BRANCH_KEYS,
+        "ci_run_id" => described_class::RUN_ID_KEYS,
+        "shard_id" => described_class::SHARD_ID_KEYS,
+        "endpoint" => described_class::ENDPOINT_KEYS,
+        "api_key" => described_class::API_KEY_KEYS,
+        "output_path" => described_class::OUTPUT_PATH_KEYS,
+        "timeout" => described_class::TIMEOUT_KEYS
+      ).to eq(
+        "commit_sha" => %w[SPECGUARD_COMMIT_SHA GITHUB_SHA CI_COMMIT_SHA
+                           CIRCLE_SHA1 BUILDKITE_COMMIT GIT_COMMIT],
+        "branch" => %w[SPECGUARD_BRANCH GITHUB_REF_NAME CI_COMMIT_REF_NAME
+                       CIRCLE_BRANCH BUILDKITE_BRANCH GIT_BRANCH],
+        "ci_run_id" => %w[SPECGUARD_RUN_ID GITHUB_RUN_ID CI_PIPELINE_ID
+                          CIRCLE_WORKFLOW_ID BUILDKITE_BUILD_ID BUILD_TAG],
+        "shard_id" => %w[SPECGUARD_SHARD_ID TEST_ENV_NUMBER CI_NODE_INDEX
+                         CIRCLE_NODE_INDEX BUILDKITE_PARALLEL_JOB],
+        "endpoint" => %w[SPECGUARD_ENDPOINT],
+        "api_key" => %w[SPECGUARD_API_KEY],
+        "output_path" => %w[SPECGUARD_OUTPUT_PATH],
+        "timeout" => %w[SPECGUARD_TIMEOUT]
+      )
+    end
+
+    # The tail of the `commit_sha` and `branch` cells: when no variable
+    # answered, the table says the value comes from these exact commands. The
+    # `-q` is load-bearing rather than cosmetic — it is what makes a detached
+    # checkout report `null` instead of the string `HEAD`, which is the
+    # behaviour the same cell promises — so the disclosed command is pinned
+    # with it.
+    it "falls back to exactly the git commands the README discloses" do
+      expect(
+        "commit_sha" => SpecGuard::RSpec::GitCheckout::COMMIT_SHA_COMMAND,
+        "branch" => SpecGuard::RSpec::GitCheckout::BRANCH_COMMAND
+      ).to eq(
+        "commit_sha" => %w[git rev-parse HEAD],
+        "branch" => %w[git symbolic-ref --short -q HEAD]
+      )
+    end
+  end
 end
 
 # The fallback's own contract, exercised against the real `git` binary. Its

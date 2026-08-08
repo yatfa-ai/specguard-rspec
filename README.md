@@ -594,9 +594,9 @@ body is encoded on the wire, never what is in it.
 
 | Field | What it holds | Where it comes from |
 | --- | --- | --- |
-| `commit_sha` | the commit the suite ran against | your CI provider's variable, or `git rev-parse HEAD` |
-| `branch` | the branch name; `null` on a detached checkout | your CI provider's variable, or `git symbolic-ref --short HEAD` |
-| `ci_run_id` | your provider's build id, so shards of one run fold together; `null` on a laptop | `GITHUB_RUN_ID`, `CI_PIPELINE_ID`, `CIRCLE_WORKFLOW_ID`, `BUILDKITE_BUILD_ID`, `BUILD_TAG` |
+| `commit_sha` | the commit the suite ran against | `SPECGUARD_COMMIT_SHA` if you set it, else `GITHUB_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `GIT_COMMIT`, else `git rev-parse HEAD` |
+| `branch` | the branch name; `null` on a detached checkout | `SPECGUARD_BRANCH` if you set it, else `GITHUB_REF_NAME`, `CI_COMMIT_REF_NAME`, `CIRCLE_BRANCH`, `BUILDKITE_BRANCH`, `GIT_BRANCH`, else `git symbolic-ref --short -q HEAD` |
+| `ci_run_id` | your provider's build id, so shards of one run fold together; `null` on a laptop | `SPECGUARD_RUN_ID` if you set it, else `GITHUB_RUN_ID`, `CI_PIPELINE_ID`, `CIRCLE_WORKFLOW_ID`, `BUILDKITE_BUILD_ID`, `BUILD_TAG` |
 | `shard_id` | which slice of that run this process is; `null` when unsharded | `SPECGUARD_SHARD_ID` if you set it, else `TEST_ENV_NUMBER`, `CI_NODE_INDEX`, `CIRCLE_NODE_INDEX`, `BUILDKITE_PARALLEL_JOB` |
 | `duration_seconds` | wall clock for the whole run | measured by the formatter |
 | `specs` | one object per example that finished — the nine fields below | the run |
@@ -658,10 +658,18 @@ export SPECGUARD_ENDPOINT=https://specguard.internal.example.com
   stay on your machine.
 - **No test output.** Nothing your suite printed to stdout or stderr, and
   nothing any other formatter wrote, is read or forwarded.
-- **No environment.** The formatter reads a fixed list of provider variables to
-  fill `commit_sha`, `branch`, `ci_run_id` and `shard_id` — the ones named in
-  the table above — and sends nothing else from your environment. There is no
-  general environment capture to be caught by.
+- **No environment.** The formatter and its transport read a fixed list of
+  variables and no others: the ones named in the envelope table above, which
+  fill `commit_sha`, `branch`, `ci_run_id` and `shard_id`; plus four that
+  configure the gem itself rather than describing your suite —
+  `SPECGUARD_ENDPOINT` (where to send the run), `SPECGUARD_OUTPUT_PATH` (where
+  to write the local file when there is no key), `SPECGUARD_TIMEOUT` (how long
+  to wait), and `SPECGUARD_API_KEY`, which leaves the machine only as the
+  bearer token described above. The other three are never sent. Nothing else
+  from your environment is read or transmitted, and there is no general
+  environment capture to be caught by. (The linter is a separate program that
+  sends nothing at all; it reads one variable of its own,
+  `SPECGUARD_VALIDATE_INTENT`, documented above.)
 
 ---
 
