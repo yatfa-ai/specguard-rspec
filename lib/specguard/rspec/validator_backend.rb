@@ -84,13 +84,20 @@ module SpecGuard
     #     which is a statement about a *pattern* — a concept `specguard-lint`
     #     does not have, and whose text would carry the escaped form.
     #
-    # This is one of the FOUR enumerated differences between the backends; all
-    # four are asserted in `spec/specguard/rspec/validator_backend_spec.rb` and
-    # in open-test-intent's `tests/parity/run_ruby_parity.sh` under "the Go
-    # backend". Three of them are differences in TEXT — the backend passing the
-    # port's wording through where the Ruby path spells it its own way — and
-    # the fourth is not, which is why this list no longer calls them "text
-    # differences" as an earlier revision did:
+    # This is one of the ratified differences between the backends, all of
+    # which are asserted in `spec/specguard/rspec/validator_backend_spec.rb`
+    # and in open-test-intent's `tests/parity/run_ruby_parity.sh`. That harness
+    # counts them two ways and both are right, so expect it: its header GROUPS
+    # them as four mechanisms, (a)-(d), while the section that asserts them is
+    # headed "8b. the six enumerated backend differences" and numbers them
+    # (i)-(vi) — this one and the acceptance set each cover two cases. Follow
+    # the cross-reference and you are reading the six.
+    #
+    # The other three mechanisms are below. Only the first two are about TEXT —
+    # the backend passing the port's wording through where the Ruby path spells
+    # it its own way. The third is not a wording difference at all, which is why
+    # this list no longer calls the group "text differences" as an earlier
+    # revision did:
     #
     #   * the read-failure tail — see {Scanner.scan_text}, which records why
     #     the gem emits a fixed string where CPython and the port emit a

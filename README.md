@@ -33,8 +33,10 @@ reference is checked by running the two side by side rather than asserted in a c
 `tests/parity/run_ruby_parity.sh` in
 [open-test-intent](https://github.com/yatfa-ai/open-test-intent) runs `specguard-lint` and the
 Go validator over a shared corpus and requires identical findings, ordering and exit codes.
-Two read-failure messages are ratified as different there, with the reasons; everything else
-matches byte for byte.
+A handful of differences are ratified as such there, each with its reason and each asserted to
+*still* differ; everything else matches byte for byte. They are the same ones described under
+the backend below — two read failures, a parse-failure message, and one that is not about
+wording at all.
 
 ### Optional: the Go validator as a backend
 
@@ -57,8 +59,9 @@ worth stating precisely rather than reassuringly.
 
 For every payload both JSON parsers accept, the two backends agree completely: the same finding
 against the same file at the same line, the same classification, the same counts and the same exit
-code. **Three messages differ in their trailing text only**, and they are enumerated and asserted —
-in both directions, so closing one fails the suite rather than leaving a stale claim here — in
+code. **The messages in the table below differ in their trailing text only** — the rows *are* the
+enumeration, not a sample of it, and each is asserted in both directions, so closing one fails the
+suite rather than leaving a stale claim here — in
 `spec/specguard/rspec/validator_backend_spec.rb` and in the parity harness above:
 
 | input | Ruby path | Go backend |
@@ -75,7 +78,7 @@ diagnostic, and the backend passes that through unaltered rather than inventing 
 Both agree on which annotation broke, and on the line and column — only the prose moves. The other
 rows are read failures and need an unreadable path to reach at all.
 
-#### The fourth difference, which is not about wording
+#### The difference that is not about wording
 
 The two JSON parsers do not accept the same language. CPython's `json` — which the validator
 reproduces deliberately — accepts three things Ruby's `JSON.parse` refuses:
@@ -86,7 +89,11 @@ reproduces deliberately — accepts three things Ruby's `JSON.parse` refuses:
 
 That list is exhaustive, and it was derived rather than guessed: 89,108 documents, including every
 one of the 65,536 single `\uXXXX` escapes, through both parsers. (A *lone low* surrogate is fine on
-both — the rule is narrower than "surrogate escapes".)
+both — the rule is narrower than "surrogate escapes".) The sweep is also **symmetric**: the other
+direction — documents Ruby accepts and CPython refuses — was swept too and is **empty**, so the
+list above is the whole difference between the two parsers and not just the half we went looking
+for. That matters, because a member of the reverse set would show up as the mirror of the first
+shape below: the Ruby path reporting a schema violation where the backend reports a parse failure.
 
 On such a payload the backend does not word the failure differently; it does not have the same
 failure. It parses the payload and validates it, so you get a schema violation with `-> ` reason
@@ -97,7 +104,7 @@ And if that payload is otherwise **schema-valid** — reachable only through the
 since a number and a container cannot fill a slot the schema declares as a string — the backend
 finds nothing wrong and **exits 0 where the Ruby path exits 1**. This is the one input on which
 the two backends disagree about whether your suite passes. It is enumerated and asserted from both
-sides, in the same places as the three rows above.
+sides, in the same places as the rows above.
 
 Both are ratified rather than fixed, and the reason is scope: `allow_nan: true` and
 `max_nesting: false` would close two of the three, but the surrogate case has no such option and
@@ -105,6 +112,15 @@ would mean porting CPython's string decoder into this gem — and all three woul
 **default** Ruby path does, which the slice that added this backend deliberately holds fixed. See
 `Scanner#parse` for the full reasoning; whether the gem should adopt CPython's acceptance grammar
 is left open there rather than settled.
+
+**If you go and count them.** The parity harness numbers this same enumeration two ways, and both
+numbers are correct, so it is worth saying which is which before you follow the link. It *asserts*
+them as six entries, `(i)`–`(vi)`, under "8b. the six enumerated backend differences" — the four
+rows of the table above, plus the two shapes the acceptance set takes. It *groups* them in its
+header as four mechanisms, `(a)`–`(d)`, because the two missing-path rows share one cause and the
+two acceptance-set shapes share another. Six entries, four mechanisms, one enumeration. This page
+deliberately states neither total in prose: the table and the two shapes below it are the count,
+and a number repeated beside them is just a second thing to keep true.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
