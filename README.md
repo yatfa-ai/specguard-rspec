@@ -55,9 +55,11 @@ bundle exec specguard-lint --json spec/models/order_spec.rb
   "summary": { "files": 1, "annotations": 2, "failed": 2 },
   "findings": [
     { "file": "spec/models/order_spec.rb", "line": 24, "ok": false, "kind": "schema",
-      "errors": ["<root>: additional property 'entiity' is not allowed"] },
+      "errors": ["<root>: additional property 'entiity' is not allowed"],
+      "intent": { "entiity": "Order", "action": "checkout", "behavior": "...", "layer": "request" } },
     { "file": "spec/models/order_spec.rb", "line": 31, "ok": false, "kind": "extraction",
-      "errors": ["unterminated object literal (an annotation must fit on one line)"] }
+      "errors": ["unterminated object literal (an annotation must fit on one line)"],
+      "intent": null }
   ]
 }
 ```
@@ -76,7 +78,7 @@ parsers for one protocol. It is not byte-identical (Ruby does not escape non-ASC
 | `summary.annotations` | annotation sites examined: the number its trailing summary line states. A site whose payload could not be captured or parsed still counts; a file that could not be read contributes none |
 | `summary.failed`      | findings with `"ok": false`, read failures included. Note this is **not** the text summary's `M malformed`, which counts malformed annotations and reports unread files in its own clause |
 
-Every finding has the same five keys:
+Every finding has the same six keys:
 
 | field    | meaning |
 | -------- | ------- |
@@ -85,6 +87,13 @@ Every finding has the same five keys:
 | `ok`     | whether this finding passed |
 | `kind`   | *how* it failed; `null` when it passed |
 | `errors` | every violated rule, or the single problem — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type |
+| `intent` | what the payload **parsed to** — the annotation as data, after the permissive syntax (unquoted keys, single quotes) has been normalized away. `null` where there was no payload to parse: a read, extraction or parse failure. A **schema-rejected** annotation still carries it — it parsed, and `ok` already reports the verdict, so this field answers *what does this say*, not *is this good* |
+
+> `intent` is `null` in one case that is not about your annotation: a payload holding a lone
+> surrogate escape (`"\ud800"`) is valid to the Go/Python validator and cannot be represented in
+> Ruby at all — `JSON.parse` refuses it and `JSON.generate` cannot re-emit it. Rather than repair
+> it into something you did not write, this tool drops the payload and keeps the verdict, so the
+> finding is still reported and the exit code is unchanged.
 
 `kind` is the field the prose renderer destroys: a failed extraction and an unparseable payload
 both read as one sentence after `FAIL … — `, and only `kind` tells them apart.

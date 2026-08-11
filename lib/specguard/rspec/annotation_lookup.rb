@@ -117,19 +117,29 @@ module SpecGuard
       #   own          every annotation, by the line it was written on
       #   inheritable  only those in the comment form, by that same line
       #
+      # The values are the INTENT TO SHIP or nil — the verdict already applied —
+      # rather than a Finding, because the two paths that build this index reach
+      # a verdict by different routes (the Ruby Scanner plus Schema, or the
+      # port's report) and only agree on the answer. Storing the answer is what
+      # keeps `#intent_for` from having to know which one ran.
+      #
       # A line's own annotation always wins: the trailing form is written *on*
       # the example, so when a file somehow carries both it is the more specific
       # of the two, and a malformed trailing annotation is not quietly
       # backfilled from the comment above it — that would attach an intent its
-      # author had already stopped meaning.
+      # author had already stopped meaning. Hence `key?` rather than a truthy
+      # test: a line whose own annotation was rejected answers nil, and must not
+      # fall through to the comment above it.
       #
       # `line - 1` is 0 for an example on line 1, and {AnnotationLookup#build_index}
       # is what guarantees that reads back as "no annotation": line 0 is never a
-      # key, because the only Finding produced there is the KIND_READ sentinel.
+      # key, because the only finding produced there is the KIND_READ sentinel.
       Index = Struct.new(:own, :inheritable) do
-        # @return [Finding, nil]
-        def finding_for(line)
-          own[line] || inheritable[line - 1]
+        # @return [Hash, nil]
+        def intent_for(line)
+          return own[line] if own.key?(line)
+
+          inheritable[line - 1]
         end
       end
 
@@ -139,9 +149,14 @@ module SpecGuard
       EMPTY_INDEX = Index.new({}.freeze, {}.freeze).freeze
 
       # @param schema_path [String] the vendored OpenTestIntent schema. Injected
-      #   so a spec can point at a broken one without stubbing the loader.
-      def initialize(schema_path: SCHEMA_PATH)
+      #   so a spec can point at a broken one without stubbing the loader. Used
+      #   only on the Ruby path; the backend enforces its own copy and reports
+      #   which one at resolution time.
+      # @param env [Hash, ENV] where `SPECGUARD_VALIDATE_INTENT` is read from.
+      #   Injected for the same reason, and read LAZILY — see {#backend}.
+      def initialize(schema_path: SCHEMA_PATH, env: ENV)
         @schema_path = schema_path
+        @env = env
         @indexes = {}
         @verdicts = {}
       end
@@ -160,24 +175,38 @@ module SpecGuard
       # @param line [Integer, nil] `example.metadata[:line_number]`
       # @return [Hash, nil] the parsed, schema-valid annotation
       def intent_for(file:, line:)
-        finding = finding_for(file: file, line: line)
+        return nil unless file.is_a?(String) && !file.empty?
+        return nil unless line.is_a?(Integer) && line >= FIRST_REAL_LINE
 
-        # {Finding#extracted?} is the discovery layer's own word for "this
-        # yielded a Hash" — and, pointedly, "not a claim that it is valid".
-        # Everything it excludes (KIND_EXTRACTION, KIND_PARSE, KIND_READ) is an
-        # annotation the linter fails the build over and this half must not.
-        return nil unless finding&.extracted?
-
-        validated(finding.intent)
+        index_for(file).intent_for(line)
       end
 
       private
 
-      def finding_for(file:, line:)
-        return nil unless file.is_a?(String) && !file.empty?
-        return nil unless line.is_a?(Integer) && line >= FIRST_REAL_LINE
+      # The validator backend, or nil when `SPECGUARD_VALIDATE_INTENT` is unset
+      # — memoized, including when resolving RAISES.
+      #
+      # WHY THIS CLASS RESOLVES ONE AT ALL. `CLI` has routed the LINTER through
+      # the backend since SPGD-247 while this half stayed on the Ruby chain, so
+      # one gem was validating the same annotation with two parsers: CI ratified
+      # an annotation the formatter then shipped as `unannotated`, silently, on
+      # both ends. Whatever the backend accepted is what the platform must
+      # receive, so this asks the same binary the same question.
+      #
+      # WITH THE VARIABLE UNSET NOTHING CHANGES. `resolve` returns nil, the Ruby
+      # path below runs exactly as it always has, and no subprocess is started.
+      #
+      # Lazily, not in the constructor: {Formatter} builds this at suite start,
+      # and `resolve` verifies the binary (two probes, and a raise when it is
+      # unusable). Doing that during construction would move a failure out of
+      # the formatter's `never_fail_the_run` envelope and into the point where
+      # RSpec is still wiring itself up. Cached-on-failure for the reason
+      # {#schema} is: one warning, not one per example.
+      def backend
+        return @backend if defined?(@backend)
 
-        index_for(file).finding_for(line)
+        @backend = nil
+        @backend = ValidatorBackend.resolve(env: @env)
       end
 
       # @return [Index]
@@ -198,31 +227,86 @@ module SpecGuard
 
       # @return [Index]
       def build_index(file)
+        # The read happens on BOTH paths and first on both. The backend does not
+        # need it to find annotations — it reads the file itself — but the
+        # comment-form rule below is a property of the LINE an annotation sits
+        # on, which no report carries, so the text is required either way. Doing
+        # it first also keeps the two paths agreeing about an unreadable file
+        # without a subprocess being started to rediscover it.
         text = read(file)
         return EMPTY_INDEX if text.nil?
 
+        index_from(verdicts_for(file, text), text)
+      end
+
+      # One entry per annotation, in discovery order, as `[line, intent_or_nil]`
+      # — the verdict already applied.
+      #
+      # The two arms answer the same question against the same protocol, and the
+      # whole point of the backend arm is that its answer is the one CI reached.
+      def verdicts_for(file, text)
+        resolved = backend
+        return backend_verdicts(file, resolved) if resolved
+
+        ruby_verdicts(file, text)
+      end
+
+      # {Scanner} finds and parses; {Schema} decides. This is the path every
+      # existing user is on, and it is unchanged apart from where the verdict is
+      # reached — see the note on memoization in {#validated}.
+      def ruby_verdicts(file, text)
+        Scanner.scan_text(text, file: file).map do |finding|
+          # {Finding#extracted?} is the discovery layer's own word for "this
+          # yielded a Hash" — and, pointedly, "not a claim that it is valid".
+          # Everything it excludes (KIND_EXTRACTION, KIND_PARSE, KIND_READ) is
+          # an annotation the linter fails the build over and this half must
+          # not.
+          [finding.line, finding.extracted? ? validated(finding.intent) : nil]
+        end
+      end
+
+      # One shell-out per FILE, which is the cost model this class already
+      # commits to: {#index_for} is O(files), `--source` takes files, and the
+      # port reports every annotation in one pass with the `file:line` scoping
+      # {Index} needs. Per-example would be O(examples) subprocesses, which is
+      # the cost this class exists to refuse.
+      #
+      # `#check` returns one {Linter::Result} per finding. A result that is not
+      # `ok?` is an annotation the linter fails the build over, so it ships
+      # nothing — the same rule the Ruby arm applies from the other side. Read
+      # failures and no-matches arrive line-scoped to 0 and are filtered by
+      # {#index_from}.
+      def backend_verdicts(file, resolved)
+        resolved.check([file]).map do |result|
+          [result.line, result.ok? ? result.representable_intent : nil]
+        end
+      end
+
+      # @return [Index]
+      def index_from(verdicts, text)
         lines = nil
         own = {}
         inheritable = {}
 
-        Scanner.scan_text(text, file: file).each do |finding|
-          line = finding.line
+        verdicts.each do |line, intent|
+          # Findings at line 0 are {Finding::KIND_READ} — "this file was never
+          # read", not "there is an annotation on line 0".
           next unless line.is_a?(Integer) && line >= FIRST_REAL_LINE
 
           # First wins. `each_intent` resumes scanning after each captured
           # payload, so trailing prose containing a second `@intent:` yields a
-          # second Finding on the same line. The annotation is the one the
+          # second finding on the same line. The annotation is the one the
           # author wrote first; the rest of the line is commentary. Stated here
           # rather than left to Hash-insertion order.
           next if own.key?(line)
 
-          own[line] = finding
+          own[line] = intent
           # Materialized only once a real annotation has been found, and never
           # for a file `scan_text` refused: its invalid-UTF-8 answer is a single
-          # line-0 Finding, filtered out above, and splitting such a string is
+          # line-0 finding, filtered out above, and splitting such a string is
           # itself an ArgumentError waiting to happen.
           lines ||= text.lines
-          inheritable[line] = finding if COMMENT_LINE.match?(lines[line - 1].to_s)
+          inheritable[line] = intent if COMMENT_LINE.match?(lines[line - 1].to_s)
         end
 
         Index.new(own, inheritable)
@@ -253,6 +337,16 @@ module SpecGuard
       # carries it. json_schemer is not free, and this class is explicitly about
       # not paying O(examples) for work that is O(annotations).
       #
+      # The verdict is now reached while the index is BUILT rather than when an
+      # example first claims the line, which makes the cost O(annotations in the
+      # file) instead of O(annotations examples ask about) — still bounded by
+      # the file, still memoized across files, and it is what lets the index
+      # hold one shape whichever path filled it. The visible consequence is that
+      # an unloadable schema raises on the first lookup into a file with any
+      # annotation rather than the first lookup that lands on one; both are
+      # inside the formatter's envelope, and {#index_for}'s pessimistic
+      # pre-caching already guarantees the second example does not raise again.
+      #
       # @return [Hash, nil] the intent when the schema accepts it
       def validated(intent)
         return @verdicts[intent] if @verdicts.key?(intent)
@@ -263,8 +357,15 @@ module SpecGuard
       def validate(intent)
         loaded = schema
         return nil if loaded.nil?
+        return nil unless loaded.violations(intent).empty?
 
-        loaded.violations(intent).empty? ? intent : nil
+        # Schema-valid is not the same as shippable. `JSON.parse` accepts a lone
+        # low surrogate and hands back a String that `JSON.generate` then
+        # refuses, so an annotation can clear the schema and still take the
+        # transport down at the point of use. {Linter::Result} owns that rule
+        # for the backend arm; this is the same rule on this one, applied at the
+        # same place the schema verdict is.
+        Linter::Result.new(file: nil, line: nil, intent: intent).representable_intent
       end
 
       # Loaded on first use, and at most once — including when loading fails.
