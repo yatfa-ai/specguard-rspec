@@ -1569,6 +1569,116 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect { JSON.generate(result.intent) }.to raise_error(JSON::GeneratorError)
       expect(result.representable_intent).to be_nil
     end
+
+    # -- the same three classes, all the way out to the document ------------- #
+    #
+    # Everything above stops at a {Linter::Result}. That is one leg short of
+    # where these payloads actually detonate, and the gap is not academic: the
+    # parse options this class sets (`allow_nan: true`, `max_nesting: false`)
+    # relax the way IN, and `JSON.pretty_generate` in {JSONReporter} keeps its
+    # defaults on the way OUT (`allow_nan: false`, `max_nesting: 100`). A
+    # payload can therefore clear every assertion above and still take the
+    # document — and the batch's exit code — with it.
+    #
+    # So these drive the whole chain the reporter really walks: stub binary ->
+    # report -> Runner -> Result -> `--json` document -> exit code. The
+    # assertion is deliberately the pair "a document came out" AND "the exit
+    # code is the one the contract documents", because the regression produced
+    # neither: exit 2, no document at all.
+    describe "rendering those payloads as a --json document" do
+      def json_cli_for(stdout)
+        out = StringIO.new
+        code = SpecGuard::RSpec::CLI
+               .new(stdout: out, stderr: StringIO.new,
+                    env: { described_class::ENV_VAR => stub_validator(stdout: stdout, exit_code: 1) })
+               .run(["--json", "spec/fixtures/order_spec.rb"])
+        [out.string, code]
+      end
+
+      # A schema-REJECTED finding carrying each class. That pairing is the
+      # whole point: the run already knows this annotation is bad and owes the
+      # author an exit 1 saying so. Turning it into an exit 2 reports the
+      # validator as broken instead, over a payload the schema was going to
+      # reject anyway.
+      {
+        "a non-finite number" => '"intent":{"n":Infinity}',
+        "a NaN" => '"intent":{"n":NaN}',
+        "nesting past the generator's limit" => %("intent":#{"[" * 150}1#{"]" * 150}),
+        "nesting just past the envelope's headroom" => %("intent":#{"[" * 99}1#{"]" * 99})
+      }.each do |label, payload|
+        it "still emits a document, and still exits 1, for #{label}" do
+          raw = document([{ file: "spec/fixtures/order_spec.rb", line: 1, ok: false, kind: "schema",
+                            errors: ["<root>: expected type string, got number"] }])
+                .sub('"intent":null', payload)
+
+          json, code = json_cli_for(raw)
+
+          expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+          expect { JSON.parse(json) }.not_to raise_error
+          # The verdict survived intact; only the unshippable value is absent.
+          finding = JSON.parse(json)["findings"].first
+          expect(finding["ok"]).to be(false)
+          expect(finding["kind"]).to eq("schema")
+          expect(finding["intent"]).to be_nil
+        end
+      end
+
+      # The unpaired high surrogate reaches the reporter by a different route —
+      # it is unparseable as a DOCUMENT, so {Runner#decode}'s recovery runs
+      # first and the reporter only ever sees dropped payloads. Included here
+      # because "which layer caught it" is exactly the thing a future edit can
+      # move without noticing.
+      it "still emits a document, and still exits 1, for an unpaired high surrogate" do
+        raw = document([{ file: "spec/fixtures/order_spec.rb", line: 1, ok: false, kind: "schema",
+                          errors: ["<root>: expected type string, got number"] }])
+              .sub('"intent":null', '"intent":{"entity":"\\ud800Or"}')
+
+        json, code = json_cli_for(raw)
+
+        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+        expect(JSON.parse(json)["findings"].first["intent"]).to be_nil
+      end
+
+      # The recovery rewrites TEXT, and the case it can get structurally wrong
+      # is an author who literally typed a backslash before `ud800`: the regex
+      # matches from the SECOND backslash, so DELETING the match strands the
+      # first one onto whatever follows. That stranded backslash then escapes
+      # the next character — or the closing quote — and the recovery raises the
+      # very exit 2 it exists to prevent. Substituting an equal-length escape
+      # keeps the backslash paired.
+      #
+      # Both literal shapes are covered because they fail differently: mid-value
+      # gives `invalid escape character`, end-of-value swallows the closing
+      # quote and gives `unexpected end of input`.
+      ["lit\\\\ud800Xtail", "lit\\\\ud800"].each do |literal|
+        it "recovers when a real surrogate shares a document with author-typed #{literal.inspect}" do
+          raw = document([
+            { file: "spec/fixtures/order_spec.rb", line: 1, ok: false, kind: "schema",
+              errors: ["<root>: expected type string, got number"] },
+            ok_finding(file: "spec/fixtures/order_spec.rb", line: 5)
+          ]).sub('"intent":null', '"intent":{"entity":"\\ud800Or"}')
+            .sub('"intent":null', %("intent":{"entity":"#{literal}"}))
+
+          json, code = json_cli_for(raw)
+
+          expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+          expect { JSON.parse(json) }.not_to raise_error
+          # Both verdicts came through — the recovery cost payloads, not findings.
+          expect(JSON.parse(json)["findings"].map { |f| f["ok"] }).to eq([false, true])
+        end
+      end
+
+      # Non-vacuity for the whole block: a document with none of these classes
+      # in it still CARRIES its payload out to the reporter. Without this, every
+      # example above would pass just as well against a reporter that emitted
+      # `"intent": null` unconditionally.
+      it "is not how it treats a payload it can re-emit" do
+        raw = document([ok_finding(file: "spec/fixtures/order_spec.rb", line: 1).merge(intent: intent)])
+        json, = json_cli_for(raw)
+
+        expect(JSON.parse(json)["findings"].first["intent"]).to eq(intent)
+      end
+    end
   end
 
   # ------------------------------------------------------------------------ #

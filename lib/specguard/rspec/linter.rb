@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module SpecGuard
   module RSpec
     # Applies the schema to the {Finding}s discovery produced, and says which
@@ -119,19 +121,52 @@ module SpecGuard
           line_scoped? ? "#{file}:#{line}" : file
         end
 
+        # The nesting budget a payload gets, well under `JSON.generate`'s
+        # default ceiling of 100.
+        #
+        # The margin is deliberate rather than tight. Both renderers WRAP the
+        # payload before generating it — {JSONReporter} in `findings[] ->
+        # finding -> intent` and {Formatter} in `specs[] -> spec -> intent`,
+        # three levels each — so a payload probed at the bare ceiling would be
+        # accepted here and still raise there. Budgeting 32 leaves either
+        # envelope room to grow without silently re-opening this hole.
+        #
+        # It costs nothing real: the schema admits four string values and
+        # nothing nested, so every payload a consumer could act on is depth 1.
+        # Anything deep enough to be refused here was already schema-invalid;
+        # this only decides whether its finding also carries the value.
+        MAX_INTENT_DEPTH = 32
+
         # The intent, but only when it is a value this gem can actually hand on
         # — nil otherwise.
         #
         # Parsing a payload is not the same as being able to REPRODUCE it, and
-        # Ruby draws that line in a place CPython does not. `JSON.parse` accepts
-        # a lone LOW surrogate (`"\udc00Or"`) and returns a String whose
-        # `valid_encoding?` is false; `JSON.generate` then refuses the same
-        # value with `source sequence is illegal/malformed utf-8`. Such a
-        # payload clears discovery AND the schema — `Scanner` extracts it and
-        # `violations` is empty — so nothing before this point has any reason to
-        # stop it, and it detonates at the point of USE: in the formatter's
-        # transport, or mid-document in {JSONReporter}, having already cost the
-        # run its telemetry rather than costing one example its annotation.
+        # Ruby draws that line in a place CPython does not. Three classes clear
+        # discovery AND the schema check and then detonate at the point of USE:
+        #
+        # * a lone LOW surrogate (`"\udc00Or"`) — `JSON.parse` accepts it and
+        #   hands back a String whose `valid_encoding?` is false, and
+        #   `JSON.generate` refuses that same value with `source sequence is
+        #   illegal/malformed utf-8`;
+        # * a non-finite Float — {ValidatorBackend}'s parse options set
+        #   `allow_nan: true` on the way IN, while generate's default is
+        #   `allow_nan: false` on the way OUT;
+        # * a container nested past the generator's `max_nesting` — the same
+        #   asymmetry, since those parse options also set `max_nesting: false`.
+        #
+        # The last two are the parse options' own doing. Relaxing the parse side
+        # without relaxing the generate side does not remove the failure, it
+        # MOVES it — out of the parser, where it costs one annotation its
+        # payload, and into the generator, where it costs the whole batch its
+        # document and its exit code. Admitting a value we cannot then emit is
+        # strictly worse than never admitting it.
+        #
+        # So the question is ASKED rather than enumerated: hand the value to the
+        # generator and see whether it comes back. A predicate that lists the
+        # known-bad shapes is a list somebody has to keep complete, and the two
+        # cases above are exactly what that list missed while covering the
+        # first. `JSON.generate` is not an approximation of the oracle here, it
+        # IS the call both renderers go on to make.
         #
         # Answered here, once, because BOTH renderers need it and neither is the
         # natural owner. Nothing is substituted — a repaired payload is one the
@@ -144,15 +179,15 @@ module SpecGuard
 
         private
 
-        # Recurses because the bad value is a leaf: it arrives inside an
-        # annotation's string VALUE (or key), never as the whole payload.
+        # `NestingError` is rescued alongside `GeneratorError` rather than
+        # folded into it: despite being what the GENERATOR raises past
+        # `max_nesting`, it descends from `JSON::ParserError`, so catching
+        # `GeneratorError` alone would let the over-deep case straight through.
         def unrepresentable?(value)
-          case value
-          when String then !value.valid_encoding?
-          when Array  then value.any? { |item| unrepresentable?(item) }
-          when Hash   then value.any? { |k, v| unrepresentable?(k) || unrepresentable?(v) }
-          else false
-          end
+          JSON.generate(value, max_nesting: MAX_INTENT_DEPTH)
+          false
+        rescue JSON::GeneratorError, JSON::NestingError
+          true
         end
       end
 

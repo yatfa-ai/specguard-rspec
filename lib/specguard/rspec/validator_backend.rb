@@ -971,6 +971,13 @@ module SpecGuard
         UNPAIRED_HIGH_SURROGATE = /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/
         private_constant :UNPAIRED_HIGH_SURROGATE
 
+        # What the escape above is rewritten to: U+FFFD REPLACEMENT CHARACTER,
+        # chosen because it is always valid and is the same six characters wide
+        # as the `\udXXX` it stands in for, so byte offsets in any parser error
+        # still point where they did.
+        UNREADABLE_ESCAPE = "\\ufffd"
+        private_constant :UNREADABLE_ESCAPE
+
         # Parse the report, recovering the VERDICTS from a document whose
         # PAYLOADS Ruby cannot read.
         #
@@ -1008,6 +1015,27 @@ module SpecGuard
         # every annotation in such a document was ALREADY arriving unannotated
         # before this key existed, so the recovery costs nothing that was
         # previously being delivered.
+        #
+        # The rewrite SUBSTITUTES an equal-length escape rather than DELETING
+        # the match, and that is structural rather than cosmetic. Where the
+        # regex has landed on an author's literal `\\ud800`, the match begins at
+        # the SECOND backslash — so deleting it strands the first, and an orphan
+        # backslash escapes whatever now follows. Measured on a document
+        # carrying a real lone surrogate and author-typed text together:
+        # `lit\\ud800Xtail` deletes to `lit\Xtail` (`invalid escape character in
+        # string`), and a match at the end of a value strands the backslash onto
+        # the closing quote (`unexpected end of input`). Both raise HERE, inside
+        # the recovery, and so become precisely the exit 2 the recovery exists
+        # to prevent. Substituting keeps the backslash paired; all three cases
+        # parse.
+        #
+        # The corruption objection above does not reach the substituted value,
+        # because {#drop_every_payload} nils every `intent` on the very next
+        # line: the rewritten text is read for its VERDICTS, and the value the
+        # substitution produced is never shipped and never seen. Substitution is
+        # strictly safer than deletion structurally and identical to it on
+        # corruption — so the trade that bullet describes is not being re-made
+        # here, only carried out without the self-inflicted parse error.
         def decode(stdout)
           JSON.parse(stdout, **PARSE_OPTIONS)
         rescue JSON::ParserError
@@ -1016,8 +1044,11 @@ module SpecGuard
           # re-raised for the handler above to report.
           raise unless stdout.match?(UNPAIRED_HIGH_SURROGATE)
 
-          document = JSON.parse(stdout.gsub(UNPAIRED_HIGH_SURROGATE, ""), **PARSE_OPTIONS)
-          drop_every_payload(document)
+          # Block form: in a replacement STRING the backslash would be read as
+          # the start of a backreference escape, which is the same class of bug
+          # as the one being fixed.
+          rewritten = stdout.gsub(UNPAIRED_HIGH_SURROGATE) { UNREADABLE_ESCAPE }
+          drop_every_payload(JSON.parse(rewritten, **PARSE_OPTIONS))
         end
 
         # Sets every finding's `intent` to nil in place. Written over the parsed
