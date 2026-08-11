@@ -1,0 +1,93 @@
+# Release specguard-rspec. Triggered manually from the Actions UI ("Run
+# workflow" button) — no tags, no push triggers. Click → run the suite → bump
+# patch version → build the gem → push to RubyGems → publish a GitHub Release.
+#
+# Mirrors warden's release strategy (one-click workflow_dispatch, patch bump by
+# script/bump-version.sh, github-actions[bot] commit, assets on the vX.Y.Z tag),
+# with one addition that the others do not need: this repo publishes to a public
+# package registry, and **a published gem version is immutable**. RubyGems
+# refuses a re-push of the same number, and yanking does not free it. So the
+# suite runs BEFORE the bump — a red build costs nothing, a bad push costs the
+# version forever.
+#
+# Required repo secret:
+#   RUBYGEMS_API_KEY - an API key from rubygems.org with the "Push rubygem"
+#                      scope, ideally scoped to the specguard-rspec gem.
+name: Release (Bump Version & Publish Gem)
+
+on:
+  workflow_dispatch:        # one-click from Actions UI; no inputs needed
+
+permissions:
+  contents: write           # bump commit + vX.Y.Z tag + GitHub Release
+
+jobs:
+  release:
+    name: Test, bump, publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0      # full history for the rebase-and-push, and tags
+                              # so bump-version.sh's tag-reuse check is real
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      # Before the bump on purpose: see the header. This is the last point at
+      # which failing is free.
+      - name: Run the suite
+        run: bundle exec rspec
+
+      - name: Fail early if the publish credential is missing
+        # gem push with no credential fails AFTER the bump has been committed,
+        # tagged and pushed — leaving a released-looking tag with nothing on
+        # RubyGems. Check first; the version number is not recoverable.
+        run: |
+          if [ -z "${{ secrets.RUBYGEMS_API_KEY }}" ]; then
+            echo "::error::RUBYGEMS_API_KEY is not set — refusing to bump a version that cannot be published"
+            exit 1
+          fi
+
+      - name: Configure Git
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version (commit + tag + push)
+        id: bump
+        run: |
+          chmod +x script/bump-version.sh
+          ./script/bump-version.sh
+
+      - name: Build the gem
+        run: gem build specguard-rspec.gemspec
+
+      - name: Push to RubyGems
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        run: gem push "specguard-rspec-${{ steps.bump.outputs.version }}.gem"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.bump.outputs.tag }}" \
+            --title "${{ steps.bump.outputs.tag }}" \
+            --notes "Published to RubyGems as \`specguard-rspec ${{ steps.bump.outputs.version }}\`.
+
+          \`\`\`ruby
+          # Gemfile
+          group :test do
+            gem \"specguard-rspec\", \"~> ${{ steps.bump.outputs.version }}\", require: false
+          end
+          \`\`\`
+
+          Two independent tools: an additive RSpec formatter that ships test-run telemetry, and \`specguard-lint\`, which validates OpenTestIntent \`@intent\` annotations." \
+            "specguard-rspec-${{ steps.bump.outputs.version }}.gem"
