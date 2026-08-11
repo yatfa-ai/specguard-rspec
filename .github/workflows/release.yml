@@ -63,6 +63,13 @@ jobs:
       - name: Bump version (commit + tag + push)
         id: bump
         run: |
+          # setup-ruby's bundler-cache rewrites Gemfile.lock, and the suite may
+          # leave artefacts behind; show what the tree looks like before the
+          # script's clean-tree check runs, so a refusal here is diagnosable
+          # from the log rather than only reproducible by re-running.
+          echo "--- git status ---"
+          git status --porcelain
+          echo "------------------"
           chmod +x script/bump-version.sh
           ./script/bump-version.sh
 

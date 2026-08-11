@@ -24,9 +24,14 @@ if [ "$CURRENT_BRANCH" != "main" ]; then
     exit 1
 fi
 
-# Check if working directory is clean
-if [ -n "$(git status --porcelain)" ]; then
-    echo "Error: Working directory has uncommitted changes"
+# Check that no TRACKED file has uncommitted changes. Untracked files are not
+# a reason to refuse: this runs in CI right after the suite, where
+# ruby/setup-ruby's bundler-cache rewrites Gemfile.lock (untracked here, see
+# .gitignore) and the suite itself may leave artefacts behind. What must be
+# clean is the content the bump is about to commit on top of.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "Error: tracked files have uncommitted changes:"
+    git status --porcelain --untracked-files=no
     exit 1
 fi
 
