@@ -996,8 +996,13 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(go_stdout).to include("could not parse annotation: Expecting property name enclosed " \
                                    "in double quotes: line 1 column 2 (char 1)")
       # Ruby's own spelling, for the same two payloads, on the same two lines.
-      expect(ruby_stdout).to include("could not parse annotation: unexpected character: 'unit' at line 1 column 102")
-      expect(ruby_stdout).to include("could not parse annotation: expected object key, got 'bad_key}' at line 1 column 2")
+      # The exact wording is json's and moves with it (it has already changed
+      # once — these used to name a character and a column); what this example
+      # is really pinning is that the two backends spell the SAME failure
+      # differently, so both sides are asserted rather than described.
+      expect(ruby_stdout).to include("could not parse annotation: unexpected token at " \
+                                     "'{ \"entity\": \"Order\", \"action\": \"'")
+      expect(ruby_stdout).to include("could not parse annotation: unexpected token at '{bad_key}'")
     end
   end
 
@@ -1086,12 +1091,18 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(refused).to eq((0xD800..0xDBFF).to_a)
       end
 
-      # And a high surrogate is rescued only by a LOW one immediately after it.
-      it "refuses a high surrogate unless a low surrogate follows it — member 2" do
+      # And a high surrogate is rescued by ANY `\uXXXX` escape following it —
+      # the pair is not checked for being a genuine high+low, only for a second
+      # escape being there. `\ud800\ud800` and `\ud800A` both parse; a
+      # literal character does not rescue it (`\ud800A` is refused), and neither
+      # does being last in the string. (An earlier json required a real low
+      # surrogate, which is why this is worded as "an escape follows" rather
+      # than "its pair follows".)
+      it "refuses a high surrogate unless another escape follows it — member 2" do
         expect(parses?('"\\ud800\\udc00"')).to be(true)
         expect(parses?('"\\udbff\\udfff"')).to be(true)
-        expect(parses?('"\\ud800\\ud800"')).to be(false)
-        expect(parses?('"\\ud800\\u0041"')).to be(false)
+        expect(parses?('"\\ud800\\ud800"')).to be(true)
+        expect(parses?('"\\ud800\\u0041"')).to be(true)
         expect(parses?('"\\ud800A"')).to be(false)
         expect(parses?('"\\ud800"')).to be(false)
       end
@@ -1100,11 +1111,13 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # document-depth limit short of its recursion limit, and accepts 2000
       # deep without complaint.
       it "refuses nesting past max_nesting: 100 — member 3" do
-        # Ruby counts containers that have contents, so the bare-array boundary
-        # sits one level deeper than the object one. Both are pinned because
-        # either moving is the same news.
-        expect(parses?(("[" * 101) + ("]" * 101))).to be(true)
-        expect(parses?(("[" * 102) + ("]" * 102))).to be(false)
+        # The boundary is the same for both container kinds: 100 accepted, 101
+        # refused. (It did not always read that way — an earlier json counted
+        # only containers with contents, putting the bare-array boundary one
+        # level deeper. Both kinds are pinned because either moving is the same
+        # news, and that is exactly how the change was caught.)
+        expect(parses?(("[" * 100) + ("]" * 100))).to be(true)
+        expect(parses?(("[" * 101) + ("]" * 101))).to be(false)
         expect(parses?(('{"a":' * 100) + "1" + ("}" * 100))).to be(true)
         expect(parses?(('{"a":' * 101) + "1" + ("}" * 101))).to be(false)
       end
@@ -1208,15 +1221,26 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         (ruby_stdout, *), (go_stdout, *) = both_ways
         parse_prefix = " — could not parse annotation: "
 
-        # Ruby: every failure is a one-line `problem`.
-        expect(fail_lines(ruby_stdout)).to all(include(parse_prefix))
+        # Ruby: every failure is a one-line `problem` — except line 36, whose
+        # `\ud800\ud800` payload Ruby now PARSES (a high surrogate is rescued
+        # by any following escape), so it reaches the schema and fails there,
+        # exactly as the backend does. Six of the seven still diverge; that one
+        # has converged, and this asserts the boundary rather than papering
+        # over it.
+        parse_failures = fail_lines(ruby_stdout).reject { |line| line.end_with?(":36") }
+        expect(parse_failures).to all(include(parse_prefix))
+        expect(parse_failures.length).to eq(6)
         # Backend: not one of them is, and each is followed by `-> ` reasons.
         expect(fail_lines(go_stdout)).to all(satisfy { |line| !line.include?(parse_prefix) })
         # 15 reason lines against 7 em-dash lines: one per additional-property
         # or type violation, and five apiece for the two `{"a": ...}` payloads
         # that miss all four required properties as well.
         expect(go_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(15)
-        expect(ruby_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(0)
+        # Five on the Ruby path, not zero: line 36 now parses here too, so it
+        # reaches the schema and renders the same five reasons the backend does
+        # for that payload. The other ten belong to payloads Ruby still cannot
+        # parse at all, which is the divergence this shape is about.
+        expect(ruby_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(5)
       end
 
       # The retire branch. If these ever agree, the acceptance sets have been
@@ -1233,10 +1257,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       it "renders Ruby's parse errors one way and the port's schema errors the other" do
         (ruby_stdout, *), (go_stdout, *) = both_ways
 
-        expect(ruby_stdout).to include("could not parse annotation: unexpected token 'NaN' at line 1 column 114")
-        expect(ruby_stdout).to include("could not parse annotation: unexpected token '-Infinity' at line 1 column 114")
-        expect(ruby_stdout).to include("could not parse annotation: incomplete surrogate pair at '\\ud800\"' at line 1 column 9")
-        expect(ruby_stdout).to include("could not parse annotation: invalid surrogate pair at '\\ud800\\ud800\"' at line 1 column 9")
+        expect(ruby_stdout).to include("could not parse annotation: unexpected token at 'NaN }'")
+        expect(ruby_stdout).to include("could not parse annotation: unexpected token at '-Infinity }'")
+        expect(ruby_stdout).to include("could not parse annotation: incomplete surrogate pair at '\\ud800\" }'")
         expect(ruby_stdout).to include("could not parse annotation: nesting of 101 is too deep")
 
         expect(go_stdout).to include("        -> <root>: additional property 'x' is not allowed")
@@ -1283,7 +1306,7 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
         expect(ruby_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-        expect(fail_lines(ruby_stdout).length).to eq(2)
+        expect(fail_lines(ruby_stdout).length).to eq(1)
         expect(fail_lines(go_stdout)).to be_empty
       end
 
@@ -1291,7 +1314,7 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         (ruby_stdout, *), (go_stdout, *) = both_ways
         summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
 
-        expect(summary.call(ruby_stdout)).to eq("specguard-lint: checked 4 @intent annotations, 2 malformed")
+        expect(summary.call(ruby_stdout)).to eq("specguard-lint: checked 4 @intent annotations, 1 malformed")
         expect(summary.call(go_stdout)).to eq("specguard-lint: checked 4 @intent annotations, 0 malformed")
       end
 
@@ -1316,12 +1339,19 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # well-formed pair: both parsers accept both, so they pass on BOTH
       # backends. Without them this block would be evidence for a rule far
       # wider than the one that is true.
+      #
+      # Line 28 (`\ud800\ud800`) used to be a second divergence and is now a
+      # third passing case: Ruby rescues a high surrogate whenever ANOTHER
+      # ESCAPE follows it, without checking that the escape is a low surrogate.
+      # Only line 27, where a literal character follows, still diverges. The
+      # shape is unchanged and so is the exit code — the set it is reachable
+      # through simply got smaller.
       it "does not fire for a lone low surrogate or a well-formed pair" do
         (ruby_stdout, *), = both_ways
         broken = fail_lines(ruby_stdout).map { |line| line[/:(\d+)/, 1].to_i }
 
-        expect(broken).to eq([27, 28])
-        expect(broken).not_to include(29, 30)
+        expect(broken).to eq([27])
+        expect(broken).not_to include(28, 29, 30)
       end
 
       # The retire branch, in the only form available here: the backend must

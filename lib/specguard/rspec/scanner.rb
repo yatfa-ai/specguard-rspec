@@ -147,11 +147,13 @@ module SpecGuard
       #      divergence it closed between Go and Python is the one that reopens
       #      here between Ruby and Go.
       #   2. a HIGH surrogate escape (`\ud800`-`\udbff`) not followed by a LOW
-      #      one. Ruby raises `incomplete surrogate pair`, or `invalid
-      #      surrogate pair` when the next escape is not a low surrogate. A
-      #      lone LOW surrogate is accepted by both — the rule is narrower than
-      #      "surrogate escapes diverge".
-      #   3. container nesting past Ruby's `max_nesting: 100` default. CPython
+      #      one. Ruby raises `incomplete surrogate pair` when NOTHING is
+      #      escaped after it — last in the string, or followed by a literal
+      #      character. Any following `\uXXXX` escape rescues it, low surrogate
+      #      or not. A lone LOW surrogate is accepted by both — the rule is
+      #      narrower than "surrogate escapes diverge".
+      #   3. (RETIRED — `json` narrowed to match) container nesting past Ruby's
+      #      `max_nesting: 100` default, which used to diverge. CPython
       #      has no document-depth limit short of its recursion limit.
       #
       # Each produces one of two shapes, depending on whether the payload the
@@ -172,12 +174,12 @@ module SpecGuard
       # occupy a string slot; a surrogate escape lives inside one.
       #
       # RATIFIED, and the reason is scope, not preference. `allow_nan: true`
-      # would close member 1 and `max_nesting: false` would close member 3 —
-      # both are options on the `JSON.parse` call below — but member 2 has no
+      # would close member 1 — an option on the `JSON.parse` call below, as
+      # `max_nesting: false` was for the since-retired member 3 — but member 2 has no
       # option and would need CPython's string decoder ported into this gem,
       # which is the trade `scan_text` and (1) above have each already
-      # declined. Closing two of three would leave the set inconsistent, and
-      # every one of the three is a change to the DEFAULT path, which the slice
+      # declined. Closing one of two would leave the set inconsistent, and
+      # either one is a change to the DEFAULT path, which the slice
       # that introduced `ValidatorBackend` explicitly holds fixed. Whether the
       # gem should adopt CPython's acceptance grammar wholesale is a question
       # about this gem's default behaviour, and it is deliberately left open
@@ -190,9 +192,9 @@ module SpecGuard
       # section 8b's entries (v) and (vi).
       #
       # Note that `JSON::NestingError` is a subclass of `JSON::ParserError`, so
-      # member 3 is already carried by the rescue below; it needs no clause of
-      # its own, and adding one would suggest the classification differs when
-      # it does not.
+      # a nesting refusal is already carried by the rescue below; it needs no
+      # clause of its own, and adding one would suggest the classification
+      # differs when it does not.
       #
       # @return [Finding]
       def parse(raw, file:, line:)

@@ -291,7 +291,7 @@ suite rather than leaving a stale claim here — in
 
 | input | Ruby path | Go backend |
 |---|---|---|
-| a payload that is still not JSON after normalisation | `unexpected character: 'unit' at line 1 column 102` | `Expecting value: line 1 column 102 (char 101)` |
+| a payload that is still not JSON after normalisation | `unexpected token at '{ "entity": …'` | `Expecting value: line 1 column 102 (char 101)` |
 | a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
@@ -306,13 +306,20 @@ rows are read failures and need an unreadable path to reach at all.
 #### The difference that is not about wording
 
 The two JSON parsers do not accept the same language. CPython's `json` — which the validator
-reproduces deliberately — accepts three things Ruby's `JSON.parse` refuses:
+reproduces deliberately — accepts two things Ruby's `JSON.parse` refuses:
 
 1. the non-finite literals `NaN`, `Infinity` and `-Infinity`;
-2. a high surrogate escape (`\ud800`–`\udbff`) not followed by a low one;
-3. nesting deeper than Ruby's `max_nesting: 100` default.
+2. a high surrogate escape (`\ud800`–`\udbff`) with **nothing escaped after it** — either last in
+   the string, or followed by a literal character. Ruby rescues it as soon as another `\uXXXX`
+   escape follows, without requiring that escape to be a genuine low surrogate.
 
-That list is exhaustive, and it was derived rather than guessed: 89,108 documents, including every
+The list was three entries until the `json` gem changed underneath it, and the third is worth
+recording rather than deleting: Ruby used to refuse nesting past `max_nesting: 100` at a depth
+CPython accepted, and used to require a real low surrogate. Both narrowed, so the set shrank —
+which is the direction it is expected to move, and the specs pin the new boundary exactly (see
+`spec/specguard/rspec/validator_backend_spec.rb`) so the next shift is caught the same way.
+
+The membership was derived rather than guessed: 89,108 documents, including every
 one of the 65,536 single `\uXXXX` escapes, through both parsers. (A *lone low* surrogate is fine on
 both — the rule is narrower than "surrogate escapes".) The sweep is also **symmetric**: the other
 direction — documents Ruby accepts and CPython refuses — was swept too and is **empty**, so the
@@ -332,8 +339,8 @@ the two backends disagree about whether your suite passes. It is enumerated and 
 sides, in the same places as the rows above.
 
 Both are ratified rather than fixed, and the reason is scope: `allow_nan: true` and
-`max_nesting: false` would close two of the three, but the surrogate case has no such option and
-would mean porting CPython's string decoder into this gem — and all three would change what the
+`max_nesting: false` would close the non-finite case, but the surrogate case has no such option and
+would mean porting CPython's string decoder into this gem — and both would change what the
 **default** Ruby path does, which the slice that added this backend deliberately holds fixed. See
 `Scanner#parse` for the full reasoning; whether the gem should adopt CPython's acceptance grammar
 is left open there rather than settled.
