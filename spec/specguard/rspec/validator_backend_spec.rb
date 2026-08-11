@@ -1650,6 +1650,15 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # Both literal shapes are covered because they fail differently: mid-value
       # gives `invalid escape character`, end-of-value swallows the closing
       # quote and gives `unexpected end of input`.
+      #
+      # The document is built with `sub`'s BLOCK form, and that is load-bearing
+      # rather than stylistic — it is the same backslash trap the recovery
+      # itself is written to avoid, one layer up. In a replacement STRING, `\\`
+      # is read as an escaped backslash and collapses to one, so the document
+      # would receive a REAL `\ud800` escape and these two examples would
+      # silently become duplicates of the plain-surrogate example above,
+      # passing just as well under a recovery that DELETES the match. Measured:
+      # string form gives `lit\ud800Xtail`, block form `lit\\ud800Xtail`.
       ["lit\\\\ud800Xtail", "lit\\\\ud800"].each do |literal|
         it "recovers when a real surrogate shares a document with author-typed #{literal.inspect}" do
           raw = document([
@@ -1657,7 +1666,7 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
               errors: ["<root>: expected type string, got number"] },
             ok_finding(file: "spec/fixtures/order_spec.rb", line: 5)
           ]).sub('"intent":null', '"intent":{"entity":"\\ud800Or"}')
-            .sub('"intent":null', %("intent":{"entity":"#{literal}"}))
+            .sub('"intent":null') { %("intent":{"entity":"#{literal}"}) }
 
           json, code = json_cli_for(raw)
 
