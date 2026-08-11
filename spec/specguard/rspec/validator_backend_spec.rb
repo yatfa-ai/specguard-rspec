@@ -207,7 +207,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       ok: findings.all? { |f| f[:ok] },
       summary: { files: 1, annotations: annotations, failed: findings.count { |f| !f[:ok] } },
       findings: findings.map do |f|
-        { file: f[:file], line: f[:line], ok: f[:ok], kind: f[:kind], errors: f[:errors] || [] }
+        { file: f[:file], line: f[:line], ok: f[:ok], kind: f[:kind], errors: f[:errors] || [],
+          intent: f[:intent] }
       end
     )
   end
@@ -1364,12 +1365,34 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # The retire branch, in the only form available here: the backend must
       # still be finding nothing. If it ever reports these, the acceptance sets
       # have converged and this block should go.
+      #
+      # The envelope is read with the payloads REMOVED, and that is not a
+      # convenience — it is this block's own subject, one layer up. Since the
+      # report began carrying `intent` (SPGD-340), this recorded document
+      # contains the very payload the block is about, so `JSON.parse(recorded)`
+      # raises `incomplete surrogate pair` on the FIXTURE. The gem survives that
+      # by dropping payloads and keeping verdicts (`Runner#decode`); reading it
+      # here the same way asserts the envelope while demonstrating that the
+      # document itself is now one Ruby cannot read whole.
+      def recorded_envelope
+        JSON.parse(recorded.gsub(/\\u[dD][89abAB][0-9a-fA-F]{2}/, ""),
+                   allow_nan: true, max_nesting: false)
+      end
+
       it "still differs — retire this block if it stops" do
         (ruby_stdout, *), (go_stdout, *) = both_ways
 
         expect(go_stdout).not_to eq(ruby_stdout)
-        expect(JSON.parse(recorded)["ok"]).to be(true)
-        expect(JSON.parse(recorded)["summary"]["failed"]).to eq(0)
+        expect(recorded_envelope["ok"]).to be(true)
+        expect(recorded_envelope["summary"]["failed"]).to eq(0)
+      end
+
+      # ...and the fixture really does carry the payload that makes the above
+      # necessary, so `recorded_envelope`'s stripping cannot quietly become a
+      # no-op over a document that no longer has one.
+      it "is recorded from a binary that carries the payload" do
+        expect(recorded).to match(/\\ud800/)
+        expect { JSON.parse(recorded) }.to raise_error(JSON::ParserError, /surrogate/)
       end
     end
   end
@@ -1379,6 +1402,176 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # could not produce a verdict must not borrow it — and must not land on the
   # `internal error:` backstop either, which reads as a bug in the linter
   # rather than a fixable configuration.
+  # ------------------------------------------------------------------------ #
+  # The carried payload (SPGD-340), and the price of carrying it.
+  #
+  # The report used to be all ASCII — paths, a fixed kind vocabulary, and prose
+  # the tool wrote itself. Carrying `intent` puts AUTHOR TEXT inside it, so the
+  # DOCUMENT now inherits the PAYLOAD's parser domain: everything CPython
+  # accepts and Ruby does not stops being one annotation's problem and becomes
+  # the whole batch's. These pin that the batch survives it, and that surviving
+  # never means quietly shipping something the author did not write.
+  describe "carrying the payload" do
+    def results_for(stdout)
+      described_class::Runner.new(stub_validator(stdout: stdout, exit_code: 0))
+                            .tap(&:verify!)
+                            .check(["a_spec.rb"])
+    end
+
+    let(:intent) do
+      { "entity" => "Order", "action" => "checkout",
+        "behavior" => "returns 402 payment required on expired card", "layer" => "request" }
+    end
+
+    it "carries a passing finding's payload onto the Result" do
+      results = results_for(document([ok_finding.merge(intent: intent)]))
+
+      expect(results.first.intent).to eq(intent)
+      expect(results.first.representable_intent).to eq(intent)
+    end
+
+    # `ok` answers "is this good"; `intent` answers "what does this say". A
+    # schema-rejected annotation did parse, so it still says something.
+    it "carries a schema-rejected finding's payload too" do
+      results = results_for(document([
+        { file: "a_spec.rb", line: 1, ok: false, kind: "schema",
+          errors: ["<root>: layer is not one of ..."], intent: intent }
+      ]))
+
+      expect(results.first).to be_failed
+      expect(results.first.intent).to eq(intent)
+    end
+
+    # The version-skew case, and the owner's decision on it (SPGD-340): an
+    # older binary emits no such key, that reads as nil, and nil is already
+    # this gem's word for "no payload". There is deliberately no Ruby re-parse
+    # to fall back to, so there is no fallback to get wrong — the annotation is
+    # simply unannotated.
+    it "reads an absent key as no payload rather than refusing the document" do
+      legacy = JSON.generate(
+        schema: "open-test-intent.v1.json", mode: "source",
+        ok: true, summary: { files: 1, annotations: 1, failed: 0 },
+        findings: [{ file: "a_spec.rb", line: 1, ok: true, kind: nil, errors: [] }]
+      )
+      results = results_for(legacy)
+
+      expect(results.first).to be_ok
+      expect(results.first.intent).to be_nil
+    end
+
+    # -- the three classes Ruby's parser refuses ---------------------------- #
+    #
+    # Each of these is a payload the PORT validated and reported on. Before the
+    # key existed the document was parseable and the run exited 0/1 normally;
+    # the failure mode being pinned here is the regression where carrying the
+    # payload turns that into a batch-wide exit 2 — every file in the batch
+    # reported as "the validator is broken" over one annotation's contents.
+
+    it "survives the non-finite literals CPython saturates to" do
+      # 1e400 is not written by hand — CPython's float() saturates, so an
+      # author writing a large exponent gets `Infinity` in the report.
+      raw = document([{ file: "a_spec.rb", line: 1, ok: false, kind: "schema",
+                        errors: ["<root>: expected type string, got number"] }])
+      raw = raw.sub('"intent":null', '"intent":{"n":Infinity}')
+
+      # Non-vacuity: the substitution above really did put a non-finite in the
+      # document, and a default parse really does refuse it. Without this the
+      # example would pass just as happily over a document with no payload.
+      expect { JSON.parse(raw) }.to raise_error(JSON::ParserError)
+
+      results = results_for(raw)
+
+      expect(results.length).to eq(1)
+      expect(results.first).to be_failed
+    end
+
+    it "survives nesting past Ruby's default limit of 100" do
+      deep = "[" * 150 + "1" + "]" * 150
+      raw = document([{ file: "a_spec.rb", line: 1, ok: false, kind: "schema",
+                        errors: ["<root>: expected type object, got array"] }])
+                .sub('"intent":null', %("intent":#{deep}))
+
+      expect { JSON.parse(raw) }.to raise_error(JSON::NestingError)
+
+      results = results_for(raw)
+
+      expect(results.length).to eq(1)
+      expect(results.first).to be_failed
+    end
+
+    # The third class, and the only one with no Ruby option at all. The
+    # document cannot be parsed as given, so the verdicts are recovered and the
+    # payloads are dropped — NOT repaired. A repaired payload is one the author
+    # did not write, and shipping it is indistinguishable downstream from
+    # shipping the right one.
+    describe "an unpaired high surrogate — the class Ruby cannot represent" do
+      let(:raw) do
+        document([
+          ok_finding(file: "a_spec.rb", line: 1).merge(intent: intent),
+          ok_finding(file: "a_spec.rb", line: 5)
+        ]).sub('"intent":null', '"intent":{"entity":"\\ud800Or"}')
+      end
+
+      it "is a document Ruby cannot parse — the premise of everything below" do
+        expect { JSON.parse(raw) }.to raise_error(JSON::ParserError, /surrogate/)
+      end
+
+      it "keeps every verdict rather than failing the batch" do
+        results = results_for(raw)
+
+        expect(results.length).to eq(2)
+        expect(results).to all(be_ok)
+        expect(results.map(&:line)).to eq([1, 5])
+      end
+
+      # Both halves matter. Dropping the OFFENDING payload is the point; also
+      # dropping the innocent one in the same document is the conservative
+      # direction, because the recovery rewrites TEXT and cannot tell a real
+      # escape from an author who literally typed a backslash before `ud800`.
+      # A dropped annotation is a lie nobody acts on; a corrupted one is a lie
+      # everybody does.
+      it "drops every payload in that document, and repairs none" do
+        results = results_for(raw)
+
+        expect(results.map(&:intent)).to eq([nil, nil])
+        expect(results.map(&:representable_intent)).to eq([nil, nil])
+      end
+
+      # Non-vacuity: the same two findings WITHOUT the surrogate keep their
+      # payload, so the example above is about the surrogate and not about the
+      # document builder having dropped them all along.
+      it "is not how it treats a document it can read" do
+        clean = document([ok_finding(file: "a_spec.rb", line: 1).merge(intent: intent)])
+
+        expect(results_for(clean).map(&:intent)).to eq([intent])
+      end
+
+      # A parse failure that is NOT a surrogate must still be an exit 2. The
+      # recovery is for one named class, not a general "try harder" that would
+      # turn a broken binary into a clean-looking run.
+      it "does not rescue a document that is simply broken" do
+        expect { results_for("this is not JSON at all") }
+          .to raise_error(SpecGuard::RSpec::ValidatorError, /did not emit a JSON document/)
+      end
+    end
+
+    # A lone LOW surrogate is the mirror case and needs no recovery: Ruby
+    # PARSES it, and hands back a String whose `valid_encoding?` is false —
+    # which `JSON.generate` then refuses. So the value arrives looking fine and
+    # detonates at the point of use, in the transport or in `--json`. The rule
+    # that catches it is representability, not parseability.
+    it "refuses to hand on a payload it parsed but could not re-emit" do
+      raw = document([ok_finding.merge(intent: intent)])
+              .sub('"entity":"Order"', '"entity":"\\udc00Or"')
+      result = results_for(raw).first
+
+      expect(result.intent["entity"].valid_encoding?).to be(false)
+      expect { JSON.generate(result.intent) }.to raise_error(JSON::GeneratorError)
+      expect(result.representable_intent).to be_nil
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
   describe "the exit contract, through the CLI" do
     let(:stdout) { StringIO.new }
     let(:stderr) { StringIO.new }

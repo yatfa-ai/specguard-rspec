@@ -70,8 +70,21 @@ module SpecGuard
       # One annotation's verdict. `problem` is set when discovery could not
       # produce an intent at all; `reasons` when the schema rejected one.
       # They are mutually exclusive by construction.
-      Result = Data.define(:file, :line, :kind, :problem, :reasons) do
-        def initialize(file:, line:, kind: nil, problem: nil, reasons: [])
+      #
+      # `intent` is WHAT THE PAYLOAD PARSED TO, carried alongside the verdict
+      # rather than left for a second parser to re-derive. It is nil when there
+      # was no payload (any `problem`), and — like the port's `intent` key — it
+      # is populated even when `reasons` is not empty: a schema-rejected
+      # annotation did parse, and `ok?` already reports the verdict.
+      #
+      # It is here rather than only in {Finding} because the BACKEND path never
+      # produces a Finding. {ValidatorBackend::Runner} reconstructs Results
+      # straight from the port's report, so a payload that stopped at Finding
+      # would be available on the Ruby path and absent on the backend one —
+      # which is the divergence this field exists to remove, re-created one
+      # layer down.
+      Result = Data.define(:file, :line, :kind, :problem, :reasons, :intent) do
+        def initialize(file:, line:, kind: nil, problem: nil, reasons: [], intent: nil)
           super
         end
 
@@ -105,6 +118,42 @@ module SpecGuard
         def location
           line_scoped? ? "#{file}:#{line}" : file
         end
+
+        # The intent, but only when it is a value this gem can actually hand on
+        # — nil otherwise.
+        #
+        # Parsing a payload is not the same as being able to REPRODUCE it, and
+        # Ruby draws that line in a place CPython does not. `JSON.parse` accepts
+        # a lone LOW surrogate (`"\udc00Or"`) and returns a String whose
+        # `valid_encoding?` is false; `JSON.generate` then refuses the same
+        # value with `source sequence is illegal/malformed utf-8`. Such a
+        # payload clears discovery AND the schema — `Scanner` extracts it and
+        # `violations` is empty — so nothing before this point has any reason to
+        # stop it, and it detonates at the point of USE: in the formatter's
+        # transport, or mid-document in {JSONReporter}, having already cost the
+        # run its telemetry rather than costing one example its annotation.
+        #
+        # Answered here, once, because BOTH renderers need it and neither is the
+        # natural owner. Nothing is substituted — a repaired payload is one the
+        # author did not write, and shipping it is indistinguishable downstream
+        # from shipping the right one (KB SPGD-78). Unshippable means
+        # unannotated.
+        def representable_intent
+          intent unless unrepresentable?(intent)
+        end
+
+        private
+
+        # Recurses because the bad value is a leaf: it arrives inside an
+        # annotation's string VALUE (or key), never as the whole payload.
+        def unrepresentable?(value)
+          case value
+          when String then !value.valid_encoding?
+          when Array  then value.any? { |item| unrepresentable?(item) }
+          when Hash   then value.any? { |k, v| unrepresentable?(k) || unrepresentable?(v) }
+          else false
+          end
+        end
       end
 
       def initialize(schema)
@@ -127,7 +176,8 @@ module SpecGuard
 
         reasons = @schema.violations(finding.intent)
         Result.new(file: finding.file, line: finding.line, reasons: reasons,
-                   kind: reasons.empty? ? nil : Finding::KIND_SCHEMA)
+                   kind: reasons.empty? ? nil : Finding::KIND_SCHEMA,
+                   intent: finding.intent)
       end
     end
   end

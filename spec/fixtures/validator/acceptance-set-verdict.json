@@ -13,28 +13,52 @@
       "line": 27,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "\ud800Or",
+        "action": "create",
+        "behavior": "creates an order from a valid cart",
+        "layer": "unit"
+      }
     },
     {
       "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
       "line": 28,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "\ud800\ud800Or",
+        "action": "create",
+        "behavior": "creates an order from a valid cart",
+        "layer": "unit"
+      }
     },
     {
       "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
       "line": 29,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "\udc00Or",
+        "action": "create",
+        "behavior": "creates an order from a valid cart",
+        "layer": "unit"
+      }
     },
     {
       "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
       "line": 30,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "\ud83d\ude00Or",
+        "action": "create",
+        "behavior": "creates an order from a valid cart",
+        "layer": "unit"
+      }
     }
   ]
 }
