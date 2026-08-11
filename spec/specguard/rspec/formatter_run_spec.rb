@@ -232,10 +232,47 @@ module FormatterRunHelpers
   # run below into an HTTP delivery — and each of these examples asserts on a
   # local file that would then never be written. `nil` deletes the variable in
   # the child (`Process.spawn`'s env contract).
+  #
+  # The provider variables below are here for the same reason, one level up: the
+  # envelope's commit/branch/run/shard fields fall back to whichever CI exported
+  # them, so a child inheriting the real job's `GITHUB_SHA` reports THAT commit
+  # rather than the throwaway root's absence of one. Every example asserting on
+  # those fields then passes on a laptop and fails on CI — which is exactly how
+  # this list came to be written, when "the commit cannot be determined" turned
+  # red on Actions and green everywhere else. The list mirrors
+  # Configuration's COMMIT_SHA_KEYS / BRANCH_KEYS / RUN_ID_KEYS / SHARD_ID_KEYS;
+  # anything added there wants adding here.
   HERMETIC_ENV = {
     "SPECGUARD_API_KEY" => nil,
     "SPECGUARD_ENDPOINT" => nil,
-    "SPECGUARD_TIMEOUT" => nil
+    "SPECGUARD_TIMEOUT" => nil,
+    # commit
+    "SPECGUARD_COMMIT_SHA" => nil,
+    "GITHUB_SHA" => nil,
+    "CI_COMMIT_SHA" => nil,
+    "CIRCLE_SHA1" => nil,
+    "BUILDKITE_COMMIT" => nil,
+    "GIT_COMMIT" => nil,
+    # branch
+    "SPECGUARD_BRANCH" => nil,
+    "GITHUB_REF_NAME" => nil,
+    "CI_COMMIT_REF_NAME" => nil,
+    "CIRCLE_BRANCH" => nil,
+    "BUILDKITE_BRANCH" => nil,
+    "GIT_BRANCH" => nil,
+    # run id
+    "SPECGUARD_RUN_ID" => nil,
+    "GITHUB_RUN_ID" => nil,
+    "CI_PIPELINE_ID" => nil,
+    "CIRCLE_WORKFLOW_ID" => nil,
+    "BUILDKITE_BUILD_ID" => nil,
+    "BUILD_TAG" => nil,
+    # shard id
+    "SPECGUARD_SHARD_ID" => nil,
+    "TEST_ENV_NUMBER" => nil,
+    "CI_NODE_INDEX" => nil,
+    "CIRCLE_NODE_INDEX" => nil,
+    "BUILDKITE_PARALLEL_JOB" => nil
   }.freeze
 
   # Runs `rspec` as its own process in a throwaway project root, and reads back

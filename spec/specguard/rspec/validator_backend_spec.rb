@@ -996,12 +996,19 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(go_stdout).to include("could not parse annotation: Expecting property name enclosed " \
                                    "in double quotes: line 1 column 2 (char 1)")
       # Ruby's own spelling, for the same two payloads, on the same two lines.
-      # The exact wording is json's and moves with it (it has already changed
-      # once — these used to name a character and a column); what this example
-      # is really pinning is that the two backends spell the SAME failure
-      # differently, so both sides are asserted rather than described.
-      expect(ruby_stdout).to include("could not parse annotation: unexpected token at " \
-                                     "'{ \"entity\": \"Order\", \"action\": \"'")
+      #
+      # Asserted as a PREFIX rather than in full, and that is the point of this
+      # example rather than a weakening of it. `json` is a default gem, so its
+      # version tracks the Ruby the suite runs on rather than Gemfile.lock — and
+      # the quoted excerpt it appends is exactly what differs between them (one
+      # truncates the payload after ~32 characters, another quotes it whole).
+      # Pinning the excerpt pins the Ruby, and this suite runs on several.
+      #
+      # What must not drift is asserted in full: the phrase this gem contributes
+      # ("could not parse annotation: ") and json's own classification of the
+      # failure ("unexpected token at"). Both differ from the port's spelling on
+      # the same bytes, which is the whole claim.
+      expect(ruby_stdout).to include("could not parse annotation: unexpected token at '{ \"entity\": ")
       expect(ruby_stdout).to include("could not parse annotation: unexpected token at '{bad_key}'")
     end
   end
