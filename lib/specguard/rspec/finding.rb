@@ -33,8 +33,8 @@ module SpecGuard
       # The file itself could not be read (missing, unopenable, or not valid
       # UTF-8), so no annotation in it was ever seen. Distinct from
       # {KIND_EXTRACTION} — nothing here is a claim about an annotation — and
-      # named after the reference tool's own `KIND_READ`
-      # (`bin/validate-intent:91`) so the two classifications line up.
+      # named after the `read` kind the validator's `--json` report carries, so
+      # the two classifications line up.
       KIND_READ = :read
 
       # The payload parsed but violates the OpenTestIntent schema. Not produced

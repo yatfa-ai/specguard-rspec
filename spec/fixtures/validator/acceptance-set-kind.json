@@ -19,71 +19,63 @@
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 31,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: additional property 'x' is not allowed"
+        "could not parse annotation: \"NaN\" is not a JSON number (PROTOCOL.md §1.1(b): RFC 8259 §6 has no non-finite literals) (line 1, column 114)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 32,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: additional property 'x' is not allowed"
+        "could not parse annotation: \"Infinity\" is not a JSON number (PROTOCOL.md §1.1(b): RFC 8259 §6 has no non-finite literals) (line 1, column 114)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 33,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: additional property 'x' is not allowed"
+        "could not parse annotation: \"-Infinity\" is not a JSON number (PROTOCOL.md §1.1(b): RFC 8259 §6 has no non-finite literals) (line 1, column 114)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 34,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "entity: expected type string, got number"
+        "could not parse annotation: \"NaN\" is not a JSON number (PROTOCOL.md §1.1(b): RFC 8259 §6 has no non-finite literals) (line 1, column 13)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 35,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: missing required property 'entity'",
-        "<root>: missing required property 'action'",
-        "<root>: missing required property 'behavior'",
-        "<root>: missing required property 'layer'",
-        "<root>: additional property 'a' is not allowed"
+        "could not parse annotation: unpaired surrogate escape \\uD800 (PROTOCOL.md §1.1(a): RFC 8259 §8.2 requires a low surrogate escape to complete the pair) (line 1, column 9)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 36,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: missing required property 'entity'",
-        "<root>: missing required property 'action'",
-        "<root>: missing required property 'behavior'",
-        "<root>: missing required property 'layer'",
-        "<root>: additional property 'a' is not allowed"
+        "could not parse annotation: unpaired surrogate escape \\uD800 (PROTOCOL.md §1.1(a): RFC 8259 §8.2 requires a low surrogate escape to complete the pair) (line 1, column 9)"
       ]
     },
     {
       "file": "spec/fixtures/acceptance_set_kind_spec.rb",
       "line": 37,
       "ok": false,
-      "kind": "schema",
+      "kind": "parse",
       "errors": [
-        "<root>: additional property 'x' is not allowed"
+        "could not parse annotation: nesting is deeper than 100 levels (PROTOCOL.md §1.1(c)) (line 1, column 213)"
       ]
     }
   ]

@@ -1,37 +1,25 @@
 {
   "schema": "open-test-intent.v1.json",
   "mode": "source",
-  "ok": true,
+  "ok": false,
   "summary": {
     "files": 1,
-    "annotations": 4,
-    "failed": 0
+    "annotations": 2,
+    "failed": 1
   },
   "findings": [
     {
       "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
-      "line": 27,
-      "ok": true,
-      "kind": null,
-      "errors": []
+      "line": 39,
+      "ok": false,
+      "kind": "parse",
+      "errors": [
+        "could not parse annotation: unpaired surrogate escape \\uDC00 (PROTOCOL.md §1.1(a): RFC 8259 §8.2 requires a high surrogate escape to complete the pair) (line 1, column 14)"
+      ]
     },
     {
       "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
-      "line": 28,
-      "ok": true,
-      "kind": null,
-      "errors": []
-    },
-    {
-      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
-      "line": 29,
-      "ok": true,
-      "kind": null,
-      "errors": []
-    },
-    {
-      "file": "spec/fixtures/acceptance_set_verdict_spec.rb",
-      "line": 30,
+      "line": 40,
       "ok": true,
       "kind": null,
       "errors": []

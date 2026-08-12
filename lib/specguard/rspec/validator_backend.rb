@@ -62,14 +62,13 @@ module SpecGuard
     #
     # == `no-match`: the gem's arguments are PATHS, the binary's are GLOBS
     #
-    # `bin/validate-intent` expands its arguments with Python's
-    # `glob.glob(..., recursive=True)`; `specguard-lint`'s are paths, checked as
+    # `validate-intent` expands its arguments as GLOB PATTERNS, recursive `**`
+    # included; `specguard-lint`'s are paths, checked as
     # given (`CLI#select`, `Scanner.scan_file`). Handing a path straight through
     # would silently re-expand it: `spec/fixtures/bracket[1]_spec.rb` becomes a
     # character class, and a file containing `*` becomes a wildcard that may
     # match *other* files. Every path is therefore escaped with {escape_glob},
-    # the port of Python's `glob.escape`, so each argument matches exactly the
-    # file it names or nothing at all.
+    # so each argument matches exactly the file it names or nothing at all.
     #
     # "Or nothing at all" is Go's `no-match` kind, which the gem has no
     # `Finding::KIND_*` for. It is mapped to {Finding::KIND_READ}, because that
@@ -86,38 +85,33 @@ module SpecGuard
     #     does not have, and whose text would carry the escaped form.
     #
     # This is one of the ratified differences between the backends, all of
-    # which are asserted in `spec/specguard/rspec/validator_backend_spec.rb`
-    # and in open-test-intent's `tests/parity/run_ruby_parity.sh`. That harness
-    # counts them two ways and both are right, so expect it: its header GROUPS
-    # them as four mechanisms, (a)-(d), while the section that asserts them is
-    # headed "8b. the six enumerated backend differences" and numbers them
-    # (i)-(vi) — this one and the acceptance set each cover two cases. Follow
-    # the cross-reference and you are reading the six.
+    # which are asserted in `spec/specguard/rspec/validator_backend_spec.rb`.
     #
     # The other three mechanisms are below. Only the first two are about TEXT —
-    # the backend passing the port's wording through where the Ruby path spells
-    # it its own way. The third is not a wording difference at all, which is why
-    # this list no longer calls the group "text differences" as an earlier
-    # revision did:
+    # the backend passing the binary's wording through where the Ruby path
+    # spells it its own way. The third is not a wording difference at all,
+    # which is why this list does not call the group "text differences":
     #
     #   * the read-failure tail — see {Scanner.scan_text}, which records why
-    #     the gem emits a fixed string where CPython and the port emit a
-    #     decoder diagnostic;
+    #     the gem emits a fixed string where the binary names the offending
+    #     position. Both refuse the file; PROTOCOL.md §1.1 requires that much
+    #     and specifies no prose.
     #   * the parse-failure tail — see {Scanner#parse} (1). A payload that
     #     survives normalisation and still is not JSON is described by
     #     whichever JSON parser saw it, so the Ruby path carries Ruby's
-    #     `JSON::ParserError#message` and the backend carries CPython's. This
-    #     is the most commonly hit of the three: `parse` is one of the three
-    #     things the linter exists to report.
+    #     `JSON::ParserError#message` and the backend carries the binary's.
+    #     This is the most commonly hit of the three: `parse` is one of the
+    #     three things the linter exists to report.
     #   * THE ACCEPTANCE SET — see {Scanner#parse} (2), and note that this one
-    #     is not a wording difference at all. The two JSON parsers do not
-    #     accept the same language: CPython takes non-finite literals, lone
-    #     high surrogates and unbounded nesting, and Ruby takes none of the
-    #     three. For such a payload the backend does not merely word the
-    #     failure differently, it does not have one — it parses the payload and
-    #     validates it, so the finding arrives as KIND_SCHEMA against the Ruby
-    #     path's KIND_PARSE, and where the payload is schema-VALID the backend
-    #     reports nothing at all and the two exit codes disagree.
+    #     is not a wording difference at all. It used to be a three-member set
+    #     in which the BINARY was the permissive side; PROTOCOL.md §1.1 states
+    #     the accepted JSON language now, and the binary refuses all three, so
+    #     those have converged. What survives runs the other way: this gem's
+    #     `JSON.parse` accepts a LONE LOW surrogate escape that §1.1(a)
+    #     refuses, and its nesting boundary sits a little deeper than
+    #     §1.1(c)'s 100. For such a payload the backend does not merely word
+    #     the failure differently — it HAS one where the Ruby path does not,
+    #     so the backend exits 1 where the Ruby path exits 0.
     #
     # That last case is the only known input on which the two backends return
     # different verdicts for the same file, and it is ratified rather than
@@ -225,7 +219,7 @@ module SpecGuard
     #   * the mirror: a binary whose embedded schema differs from ours but whose
     #     on-disk schema IS ours gets refused, for a run that would have been
     #     correct. Planting a schema beside the binary is not exotic — it is how
-    #     open-test-intent's own `tests/parity/run_parity.sh` operates.
+    #     open-test-intent's own release and cross-build checks operate.
     #
     # open-test-intent slice 19 added `--schema-source`, which calls the REAL
     # loader and prints `schema <origin> sha256:<hex>` for the bytes a verdict
@@ -328,10 +322,10 @@ module SpecGuard
         Runner.new(path).tap(&:verify!)
       end
 
-      # Python's `glob.escape` for POSIX paths: wrap each of `*`, `?` and `[`
-      # in a character class, which makes it match itself literally. `]` is not
-      # escaped and does not need to be — outside a class it is already a
-      # literal — and CPython does not escape it either.
+      # Escapes a POSIX path so the binary's globber matches it literally: wrap
+      # each of `*`, `?` and `[` in a character class, which makes it match
+      # itself. `]` is not escaped and does not need to be — outside a class it
+      # is already a literal.
       #
       # @param path [String]
       # @return [String] a glob pattern matching exactly `path`

@@ -44,9 +44,8 @@ module SpecGuard
     #
     # SPGD-12 §1 step 4 says the linter "exits 1 on the *first* malformed
     # annotation". Its own exit-code table, one paragraph later, says "1 | One
-    # or more annotations are malformed", and the reference tool reports every
-    # one: `bin/validate-intent --source broken_intent_spec.rb` emits 5 FAIL
-    # blocks. Stopping at the first would turn one file into five CI
+    # or more annotations are malformed", and the validator reports every one:
+    # `validate-intent --source broken_intent_spec.rb` emits 5 FAIL blocks. Stopping at the first would turn one file into five CI
     # round-trips. Reporting all of them is the ratified behaviour (human
     # decision recorded on SPGD-82); the "first" wording is a known spec defect
     # with a correction filed against SPGD-12 §1 and the SPGD-73 roadmap text.

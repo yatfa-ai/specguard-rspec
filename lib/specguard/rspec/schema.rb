@@ -9,11 +9,10 @@ module SpecGuard
     #
     # Deliberately *not* a {UsageError} even though both map to exit 2: this is
     # the linter being broken, not the caller misusing it, and the message
-    # wording follows the reference tool rather than the CLI's own. Keeping the
+    # wording follows the validator's rather than the CLI's own. Keeping the
     # two distinct is what lets the CLI print
-    # `error: could not load schema <path>: ...` — byte-parity with
-    # `bin/validate-intent:858-862` — for one and `specguard-lint: error: ...`
-    # for the other.
+    # `error: could not load schema <path>: ...` — the shape `validate-intent`
+    # uses — for one and `specguard-lint: error: ...` for the other.
     class SchemaError < Error; end
 
     # The OpenTestIntent v1 schema, loaded and applied.
@@ -24,8 +23,8 @@ module SpecGuard
     # malformed". If a packaging accident leaves the vendored schema out of the
     # gem, the obvious Ruby implementation lets the exception escape and Ruby
     # exits 1 — so CI reports a malformed annotation and a developer goes
-    # hunting for a bad annotation that does not exist. The reference tool
-    # already ruled on this:
+    # hunting for a bad annotation that does not exist. The validator already
+    # ruled on this, and this gem follows it:
     #
     #     except (OSError, json.JSONDecodeError) as exc:
     #         print("error: could not load schema %s: %s" % (SCHEMA_PATH, exc), file=sys.stderr)
@@ -65,8 +64,8 @@ module SpecGuard
       end
 
       # @param intent [Object] one parsed annotation
-      # @return [Array<String>] reason lines in the reference tool's grammar
-      #   and order; empty means the annotation is valid
+      # @return [Array<String>] reason lines in the validator's grammar and
+      #   order; empty means the annotation is valid
       #
       # The **validator** decides the verdict; the renderer only decides the
       # wording. Deriving "is this annotation valid?" from "could we phrase a

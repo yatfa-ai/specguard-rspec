@@ -14,9 +14,10 @@ module SpecGuard
     # a `behavior` sentence containing an apostrophe or an unbalanced `{` cannot
     # terminate the capture early. Plain brace-counting gets that case wrong.
     #
-    # Ported from open-test-intent's `bin/validate-intent`
-    # (`extract_intents` / `_scan_object` / `_scan_string`), which is the
-    # reference implementation of this algorithm.
+    # The algorithm is PROTOCOL.md §1's: find each `@intent:` token and capture
+    # the object literal after it, string-aware and bracket-balanced.
+    # open-test-intent's `validate-intent` implements the same rules; where the
+    # two disagree, PROTOCOL.md decides.
     module AnnotationScanner
       INTENT_TOKEN = "@intent:"
 

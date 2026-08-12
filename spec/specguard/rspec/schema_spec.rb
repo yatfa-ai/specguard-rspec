@@ -13,7 +13,7 @@ RSpec.describe SpecGuard::RSpec::Schema do
     # Every way loading can fail must arrive as ONE exception type, because the
     # CLI maps that type to exit 2. If any of these escaped as its own class,
     # the generic backstop would still catch it — but the message would be
-    # "internal error", not the reference tool's "could not load schema".
+    # "internal error", not the validator's "could not load schema".
     it "retypes a missing file as SchemaError" do
       expect { described_class.load("/nonexistent/schema.json") }
         .to raise_error(SpecGuard::RSpec::SchemaError, %r{could not load schema /nonexistent/schema\.json: })
