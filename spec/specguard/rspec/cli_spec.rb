@@ -175,7 +175,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     # There are TWO `checked …` lines, not one — a leading spec-file count from
     # #report_selection and a trailing annotation count from #summary_line. The
-    # parity harness in open-test-intent warns in its header that handling only
+    # open-test-intent's own linter warns that handling only
     # the trailing one is the trap here, so both are asserted gone.
     it "removes BOTH `checked ...` lines, the leading one as well as the trailing" do
       run_json(fixture_path("order_spec.rb"))
@@ -420,8 +420,9 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # `file:0` leaks the sentinel into the product: `:0` is not somewhere a
     # reader can go, and anything parsing `file:line` (CI annotations, editor
     # quickfix, review comments) would point at a line that does not exist.
-    # The reference drops the line for exactly these findings
-    # (bin/validate-intent:521), and this is the one output shape the suite
+    # The binary drops the line for exactly these findings (`JSONFinding`,
+    # open-test-intent, cmd/validate-intent/report.go: "`line` is null where a
+    # finding is not line-scoped"), and this is the one output shape the suite
     # did not pin to the byte, which is how `:0` shipped.
     it "names the file WITHOUT a line number, which it does not have" do
       Dir.mktmpdir do |dir|
@@ -441,7 +442,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     # Slice 1 classified an unreadable file as KIND_EXTRACTION, which under the
     # exit contract would read as a claim about an annotation. It is now
-    # KIND_READ — the reference tool's own name for it — so the decision to
+    # KIND_READ — the validator's own name for it — so the decision to
     # nonetheless fail the run (reference parity: `FAIL ... — could not read
     # file`, exit 1) is visible and reversible in one place.
     it "classifies it as a read failure, not as a malformed annotation" do

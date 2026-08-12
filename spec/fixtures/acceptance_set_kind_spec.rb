@@ -1,28 +1,28 @@
-# The acceptance-set difference, shape (v): CPython's `json` accepts a payload
-# that Ruby's `JSON.parse` rejects, and the payload is NOT schema-valid.
+# CONVERGENCE fixture: the payloads that used to be classified differently by
+# the two backends, and are not any more.
 #
-# Every annotation below is a member of one closed set: the payloads CPython's
-# json accepts and Ruby's JSON.parse does not. That set was derived, not
-# guessed — see `Scanner#parse` for the enumeration and how it was swept. It has
-# exactly three members:
+# Every annotation below was once a member of a set the gem's `JSON.parse`
+# refused and the binary accepted. The binary accepted them because its parser
+# was built to reproduce a foreign runtime's grammar rather than the protocol's;
+# PROTOCOL.md §1.1 now states the grammar, and refuses all of them:
 #
-#   1. the non-finite literals NaN / Infinity / -Infinity, which CPython accepts
-#      and the port accepts on purpose (cmd/validate-intent/pyjson.go, "WHAT IT
-#      BUYS BEYOND THE PROSE");
-#   2. a HIGH surrogate escape (\ud800-\udbff) not followed by a LOW one;
-#   3. container nesting deeper than Ruby's `max_nesting: 100` default.
+#   * a non-finite literal (`NaN` / `Infinity` / `-Infinity`) — §1.1(b)
+#   * an unpaired high surrogate escape                       — §1.1(a)
+#   * nesting past 100 levels                                 — §1.1(c)
 #
-# None of these three can be rescued by PayloadNormalizer, and none of them is a
-# tail difference: the Ruby path calls it KIND_PARSE and renders ONE em-dash
-# line, while the backend never reaches its JSON parser in an error state at all
-# and reports KIND_SCHEMA with a `-> ` line per violation. The classification
-# differs, and so does the whole rendered block.
+# So both backends now report KIND_PARSE for every one of them, at the same
+# line, with the same counts and the same exit code. What is left is the
+# WORDING of the failure — two JSON parsers spelling the same refusal
+# differently — which is the tail difference ratified further up the spec file.
+# Nothing here is a classification difference any more.
 #
-# What still agrees, and is asserted: the file, the line, the number of findings,
-# the malformed count and the exit code.
+# This file is kept, rather than deleted along with the divergence, because it
+# is the only place the convergence is asserted. Delete it and a binary that
+# went back to accepting these payloads would take the gem's own record of why
+# that is wrong with it.
 #
 # See spec/fixtures/validator/acceptance-set-kind.json for this file's recorded
-# report, and `Scanner#parse` for the ratification and its reason.
+# report, and `Scanner#parse` for what the gem's own parser accepts.
 #
 # The first annotation is valid on purpose: a file of nothing but failures would
 # compare two reports that agree only about what broke.

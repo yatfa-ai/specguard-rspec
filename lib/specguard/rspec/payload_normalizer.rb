@@ -35,7 +35,10 @@ module SpecGuard
     # Ported from open-test-intent's `bin/validate-intent`
     # (`normalize_payload` / `_requote`).
     module PayloadNormalizer
-      # Anchored at the scan position (`\G`), mirroring Python's `re.match(s, i)`.
+      # Anchored at the scan position (`\G`), so it matches AT i rather than
+      # searching from it. Explicit ASCII ranges, per PROTOCOL.md §1 — a Unicode
+      # word class would make the accepted surface syntax depend on the regex
+      # engine, which is what one specification exists to prevent.
       BARE_WORD = /\G[A-Za-z_$][A-Za-z0-9_$]*/.freeze
 
       module_function

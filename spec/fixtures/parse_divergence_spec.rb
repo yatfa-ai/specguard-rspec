@@ -9,7 +9,7 @@
 # report KIND_PARSE, on the same line, under the same
 # `could not parse annotation: ` prefix, with the same counts and the same exit
 # code — and a different tail, because the Ruby path interpolates Ruby's
-# `JSON::ParserError#message` and the port reproduces CPython's.
+# `JSON::ParserError#message` and the binary carries its own.
 #
 # See `Scanner#parse` for the ratification, and
 # spec/fixtures/validator/parse-divergence.json for this file's recorded report.

@@ -64,7 +64,7 @@ RSpec.describe SpecGuard::RSpec::AnnotationScanner do
 
       # The string scan fails before the object scan can, so the reason names
       # the string rather than the object — the more specific diagnosis, and
-      # what the reference implementation reports too.
+      # what `validate-intent` reports too.
       it "reports an unterminated string inside the payload" do
         _, _, problem = intents(%(# @intent: { entity: "Order })).first
 

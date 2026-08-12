@@ -3,7 +3,7 @@
 # The renderer is where message parity is actually won, so these examples pin
 # its *structure* rather than only the four shipped fixtures: the ordering
 # rule, the re-attribution of `additionalProperties`, the type-mismatch cutoff,
-# and Python's `%r`. A schema that grows a keyword, or a payload shape the
+# and the shared value-quoting vocabulary. A schema that grows a keyword, or a payload shape the
 # corpus does not contain, has to keep behaving.
 RSpec.describe SpecGuard::RSpec::ViolationRenderer do
   subject(:renderer) { described_class.new }
@@ -26,8 +26,9 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
     end
   end
 
-  describe "ordering reproduces the reference walker" do
-    # bin/validate-intent:150-210 evaluates, per node: type, enum, every
+  describe "ordering reproduces the validator walker" do
+    # `Schema#validate` (open-test-intent, cmd/validate-intent/validate.go)
+    # evaluates, per node: type, enum, every
     # missing required key in SCHEMA order, then each instance property in
     # INSERTION order. json_schemer's own order is different for all three.
     it "puts required before the instance's own properties" do
@@ -118,7 +119,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
   end
 
   describe "a type mismatch silences the rest of its node" do
-    # The reference returns immediately: "a type mismatch makes the remaining
+    # The validator returns immediately: "a type mismatch makes the remaining
     # keywords moot". json_schemer keeps going and reports the enum too, so
     # both tools reject `layer: 123` but would describe it differently.
     it "reports only the type error for a non-string layer" do
@@ -146,7 +147,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
                ])
     end
 
-    it "names a union type the way the reference joins it" do
+    it "names a union type the way the validator joins it" do
       union = { "type" => "object", "properties" => { "a" => { "type" => %w[string null] } } }
 
       expect(render(union, "a" => 1)).to eq(["a: expected type string|null, got number"])
@@ -154,7 +155,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
   end
 
   describe "array paths" do
-    it "renders an item's path with brackets, as the reference does" do
+    it "renders an item's path with brackets, as the validator does" do
       expect(render(v1, "entity" => "Order", "action" => "total",
                         "behavior" => "sums line item prices ok", "layer" => "unit",
                         "preconditions" => ["ok", 5]))
@@ -162,7 +163,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
     end
   end
 
-  describe "Python's %r, which the reference interpolates values with" do
+  describe "render_value, the shared vocabulary for interpolating a value" do
     def enum_violation(value)
       render({ "type" => "object", "properties" => { "k" => { "enum" => %w[a b] } } }, "k" => value).first
     end
@@ -183,7 +184,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
       expect(enum_violation("a\\b\nc")).to eq("k: value 'a\\\\b\\nc' is not one of ['a', 'b']")
     end
 
-    it "spells Ruby's nil and booleans the Python way" do
+    it "spells nil and the booleans the way the validator does" do
       expect(enum_violation(nil)).to eq("k: value None is not one of ['a', 'b']")
       expect(enum_violation(true)).to eq("k: value True is not one of ['a', 'b']")
     end
@@ -191,7 +192,7 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
 
   describe "keywords the v1 schema does not use yet" do
     # The schema is versioned and will grow. Every one of these is phrased the
-    # reference's way so parity survives the next schema revision.
+    # validator's way so parity survives the next schema revision.
     it "renders maxLength, pattern, minItems, maxItems, minimum and maximum" do
       grown = {
         "type" => "object",

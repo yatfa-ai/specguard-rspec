@@ -106,15 +106,16 @@ end
 # suite asserts with `include`, which is blind to a line's position, to a line
 # appearing twice, and to anything gained around it.
 #
-# The lock is also not only this suite's business. open-test-intent's
-# `tests/parity/run_ruby_parity.sh` runs this linter and the Go port from the
-# same working directory over the same relative paths and requires "every byte
-# of every FAIL block, in order, plus the exit code" to match, after exactly
-# five named normalisation rules. Two of those rules exist to strip the two
-# `checked …` lines below; a drift in either one diffs on every case in the
-# harness, and the harness gates the roadmap's thin-wrapper clause. That script
-# needs a Go binary and a checkout of the other repository, so it cannot run
-# here — this is the half of the guarantee that can.
+# The lock is also not only this file's business.
+# `spec/specguard/rspec/validator_backend_spec.rb` replays a recorded
+# `validate-intent --source --json` report through this CLI over the same two
+# relative paths and compares the whole of stdout — `expect(go_stdout).to
+# eq(ruby_stdout)`, no extraction and no normalisation — plus stderr apart from
+# the one line naming the validator, plus the exit code. The `checked …` lines
+# below are INSIDE that comparison rather than stripped from it, so a drift in
+# either one diffs there too. This file locks the same strings without needing a
+# report to compare against, which is what makes it the half that still fails if
+# the recordings are ever regenerated from a drifted binary.
 #
 # The three runs cover every shape the default renderer can print: the summary
 # line alone, a FAIL block with schema reasons AND one with a `problem`, and the
