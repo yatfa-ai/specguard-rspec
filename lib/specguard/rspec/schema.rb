@@ -24,12 +24,18 @@ module SpecGuard
     # gem, the obvious Ruby implementation lets the exception escape and Ruby
     # exits 1 — so CI reports a malformed annotation and a developer goes
     # hunting for a bad annotation that does not exist. The validator already
-    # ruled on this, and this gem follows it:
+    # ruled on this, and this gem follows it. Observed, on a checkout whose
+    # schema beside the binary is unreadable:
     #
-    #     except (OSError, json.JSONDecodeError) as exc:
-    #         print("error: could not load schema %s: %s" % (SCHEMA_PATH, exc), file=sys.stderr)
-    #         return 2
-    #     # open-test-intent, bin/validate-intent:858-862
+    #     $ validate-intent x.json
+    #     error: could not load schema /repo/schemas/open-test-intent.v1.json: \
+    #         expected a JSON value (line 1, column 1)
+    #     $ echo $?
+    #     2
+    #
+    # Same diagnostic, same 2, whether the run was asking for a verdict or only
+    # for `--schema-source` — the binary states the rule at
+    # cmd/validate-intent/main.go, `schemaLoadError`.
     #
     # Hence {SchemaError}: every way loading can fail is caught here and
     # retyped, so the CLI can map the whole class of them to 2 without

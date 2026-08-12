@@ -1120,15 +1120,39 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect { JSON.generate(value) }.to raise_error(StandardError)
       end
 
-      # The nesting boundary, pinned on both container kinds because either one
-      # moving is the same news. Ruby's limit is its own; §1.1(c) fixes 100, and
-      # the two need not land on the same document — this records where Ruby's
-      # actually is rather than assuming it matches.
-      it "accepts nesting at least as deep as PROTOCOL.md §1.1(c)'s limit of 100" do
+      # The nesting boundary, pinned EXACTLY rather than bracketed. A range
+      # ("deeper than 100, shallower than 4096") is satisfied by any `json`
+      # release that moves the limit anywhere inside it, which is precisely the
+      # change this block exists to catch — and it is the change that decides
+      # whether the classification divergence below is reachable at all.
+      #
+      # Ruby's limit is not one number. `max_nesting: 100` is checked when the
+      # parser is about to read a VALUE, so a container sitting at depth 101
+      # with nothing in it is never checked and is accepted; put any value
+      # inside it and Ruby refuses. That off-by-one holds for arrays and objects
+      # alike, so both are pinned: the difference is emptiness, not the
+      # container kind, and recording it as "arrays go one deeper" would be
+      # wrong in a way that reads plausible.
+      #
+      # §1.1(c) has no such seam — the binary refuses ANY container deeper than
+      # 100, empty or not — so this one level is the whole of the surviving
+      # nesting divergence.
+      it "accepts one level past PROTOCOL.md §1.1(c)'s 100, and only for an empty container" do
+        # 100 levels: accepted, on either container kind, empty or not.
         expect(parses?(("[" * 100) + ("]" * 100))).to be(true)
+        expect(parses?(("[" * 100) + '"x"' + ("]" * 100))).to be(true)
         expect(parses?(('{"a":' * 100) + "1" + ("}" * 100))).to be(true)
-        # And has a limit of its own somewhere past it, rather than none at all.
-        expect(parses?(("[" * 4096) + ("]" * 4096))).to be(false)
+
+        # 101 levels: accepted while the deepest container is EMPTY...
+        expect(parses?(("[" * 101) + ("]" * 101))).to be(true)
+        expect(parses?(('{"a":' * 100) + "{}" + ("}" * 100))).to be(true)
+        # ...and refused the moment it holds anything.
+        expect(parses?(("[" * 101) + '"x"' + ("]" * 101))).to be(false)
+        expect(parses?(('{"a":' * 101) + "1" + ("}" * 101))).to be(false)
+
+        # 102 levels: refused outright, empty or not.
+        expect(parses?(("[" * 102) + ("]" * 102))).to be(false)
+        expect(parses?(('{"a":' * 101) + "{}" + ("}" * 101))).to be(false)
       end
     end
 
@@ -1310,6 +1334,117 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(go_stdout).not_to eq(ruby_stdout)
         expect(JSON.parse(recorded)["ok"]).to be(false)
         expect(JSON.parse(recorded)["summary"]["failed"]).to eq(1)
+      end
+    end
+
+    # ---------------------------------------------------------------------- #
+    # THE SECOND SURVIVING DIVERGENCE. It moves the CLASSIFICATION and not the
+    # verdict, which is why it needs a block of its own: every assertion above
+    # is about a run's colour, and this one is invisible to all of them.
+    #
+    # §1.1(c) refuses any container deeper than 100. Ruby checks `max_nesting`
+    # when it is about to read a VALUE, so a container at depth 101 holding
+    # nothing is never checked and is accepted — one level, and only while it
+    # stays empty. The boundary itself is pinned above; this is what it costs.
+    #
+    # It can ONLY appear as a classification difference. A container is not a
+    # value the schema permits, so a payload deep enough to diverge is a payload
+    # the schema refuses: the gem reaches `schema`, never a pass. That is the
+    # other half of the argument acceptance_set_verdict_spec.rb makes — the
+    # nesting class cannot move a verdict, and the surrogate class cannot move a
+    # classification, because one is a container and the other is inside a
+    # string.
+    #
+    # spec/fixtures/validator/acceptance-set-classification.json is RECORDED
+    # from `validate-intent --source --json
+    # spec/fixtures/acceptance_set_classification_spec.rb` run from the gem root.
+    describe "nesting at depth 101 — the gem says schema, the binary says parse" do
+      let(:paths) { %w[spec/fixtures/acceptance_set_classification_spec.rb] }
+      let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-classification.json") }
+
+      def run_cli(env)
+        stdout = StringIO.new
+        stderr = StringIO.new
+        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+        [stdout.string, stderr.string, code]
+      end
+
+      def both_ways
+        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
+      end
+
+      # The same run with `--json`, so the two `kind` values can be read off the
+      # documents rather than inferred from the text report's shape.
+      def run_json(env)
+        stdout = StringIO.new
+        SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: StringIO.new, env: env).run(["--json", *paths])
+        stdout.string
+      end
+
+      it "is running where the recorded path resolves" do
+        expect(paths).to all(satisfy { |path| File.file?(path) })
+      end
+
+      # The half that AGREES, first — without it the block below reads as a
+      # verdict difference, which it is not.
+      it "fails the same annotation on both, and exits 1 on both" do
+        (ruby_stdout, ruby_code), (go_stdout, go_code) = both_ways.map { |out, _, code| [out, code] }
+
+        expect(ruby_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+        expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+        expect(ruby_stdout).to include("checked 2 @intent annotations, 1 malformed")
+        expect(go_stdout).to include("checked 2 @intent annotations, 1 malformed")
+        expect(ruby_stdout).to include("acceptance_set_classification_spec.rb:36")
+        expect(go_stdout).to include("acceptance_set_classification_spec.rb:36")
+      end
+
+      # THE DIVERGENCE. The gem parsed the payload and let the SCHEMA refuse it,
+      # so it renders a violation block; the binary refused it at the parse
+      # step, so it renders a one-line `problem` naming the clause.
+      it "classifies it differently, and says so in the shape of the report" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(ruby_stdout).to include("        -> preconditions[0]: expected type string, got array")
+        expect(ruby_stdout).not_to include("could not parse annotation")
+
+        expect(go_stdout).to include(" — could not parse annotation: nesting is deeper than 100 levels (PROTOCOL.md §1.1(c))")
+        expect(go_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(0)
+      end
+
+      # And in the machine-readable field a consumer actually routes on, which
+      # the text shapes above only imply. Both documents are produced the same
+      # way — one CLI, one `--json` renderer, the backend swapped underneath —
+      # so the only thing that can differ is what each parser decided.
+      it "records kind=parse on the backend where the gem reaches kind=schema" do
+        ruby_doc = JSON.parse(run_json({}))
+        go_doc = JSON.parse(run_json({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) }))
+
+        ruby_deep = ruby_doc["findings"].find { |f| f["ok"] == false }
+        go_deep = go_doc["findings"].find { |f| f["ok"] == false }
+
+        expect(ruby_deep["line"]).to eq(go_deep["line"])
+        expect(ruby_deep["kind"]).to eq("schema")
+        expect(go_deep["kind"]).to eq("parse")
+      end
+
+      # Non-vacuity: the payload has to be one Ruby genuinely ACCEPTS. One level
+      # deeper and Ruby refuses it too, the classifications converge, and every
+      # assertion above would still pass for the wrong reason.
+      it "is a payload the gem's parser accepts rather than one it also refuses" do
+        payload = File.read(paths.first).lines
+                      .filter_map { |line| line[/@intent:\s*(\{.*\})\s*$/, 1] }
+                      .find { |json| json.include?("preconditions") }
+
+        expect(payload).not_to be_nil
+        expect { JSON.parse(payload) }.not_to raise_error
+        expect(JSON.parse(payload)["preconditions"]).to be_an(Array)
+      end
+
+      # The retire branch, as above: when the gem's parser goes, so does this.
+      it "still differs — retire this block when it stops" do
+        (ruby_stdout, *), (go_stdout, *) = both_ways
+
+        expect(go_stdout).not_to eq(ruby_stdout)
       end
     end
   end

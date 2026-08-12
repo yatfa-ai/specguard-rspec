@@ -183,10 +183,10 @@ module SpecGuard
     #
     # Every drift guard in this ecosystem compares a matched pair inside ONE
     # checkout: `schema_test.go` digests the Go embed against the Go tree's
-    # `schemas/`, `spec/specguard/rspec/schema_packaging_spec.rb` digests this
-    # gem's vendored copy against this gem's pin, `tests/parity/` compares two
-    # files in two checkouts. None of them looks at an INSTALLED artifact, and
-    # none of them can. The seam is ordinary, not contrived: `install.sh` fetches
+    # `schemas/`, and `spec/specguard/rspec/schema_packaging_spec.rb` digests
+    # this gem's vendored copy against this gem's pin. Neither looks at an
+    # INSTALLED artifact, and neither can. The seam is ordinary, not contrived:
+    # `install.sh` fetches
     # a released binary by version with nothing tying that release's vintage to
     # the gem beside it, and {ENV_VAR} accepts any path on the host.
     #

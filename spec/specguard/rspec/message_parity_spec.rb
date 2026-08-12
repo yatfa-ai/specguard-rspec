@@ -87,7 +87,8 @@ RSpec.describe "message parity with open-test-intent's validate-intent" do
   describe "the two divergences that are not wording" do
     # json_schemer batches every missing key into ONE error carrying
     # `details.missing_keys = ["action", "layer"]`. The validator loops
-    # (bin/validate-intent:163-165) and prints one line each. Passing the
+    # (`Schema#validate`'s `required` loop, open-test-intent,
+    # cmd/validate-intent/validate.go) and prints one line each. Passing the
     # batched error through would under-report, and a developer would fix
     # `action`, re-run CI, and only then learn about `layer`.
     it "fans a batched missing_keys error out to one line per key" do

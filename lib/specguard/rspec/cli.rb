@@ -172,7 +172,8 @@ module SpecGuard
         @stderr.puts "specguard-lint: error: #{e.message}"
         EXIT_MISUSE
       rescue SchemaError => e
-        # Wording and stream follow bin/validate-intent:861-862 exactly.
+        # Wording and stream follow the binary's `schemaLoadError`
+        # (open-test-intent, cmd/validate-intent/main.go) exactly.
         @stderr.puts "error: #{e.message}"
         EXIT_MISUSE
       rescue ScriptError, StandardError => e

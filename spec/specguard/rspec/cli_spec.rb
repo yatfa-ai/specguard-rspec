@@ -420,8 +420,9 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # `file:0` leaks the sentinel into the product: `:0` is not somewhere a
     # reader can go, and anything parsing `file:line` (CI annotations, editor
     # quickfix, review comments) would point at a line that does not exist.
-    # The reference drops the line for exactly these findings
-    # (bin/validate-intent:521), and this is the one output shape the suite
+    # The binary drops the line for exactly these findings (`JSONFinding`,
+    # open-test-intent, cmd/validate-intent/report.go: "`line` is null where a
+    # finding is not line-scoped"), and this is the one output shape the suite
     # did not pin to the byte, which is how `:0` shipped.
     it "names the file WITHOUT a line number, which it does not have" do
       Dir.mktmpdir do |dir|

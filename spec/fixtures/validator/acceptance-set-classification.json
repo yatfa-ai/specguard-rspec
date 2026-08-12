@@ -1,0 +1,28 @@
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": {
+    "files": 1,
+    "annotations": 2,
+    "failed": 1
+  },
+  "findings": [
+    {
+      "file": "spec/fixtures/acceptance_set_classification_spec.rb",
+      "line": 35,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/acceptance_set_classification_spec.rb",
+      "line": 36,
+      "ok": false,
+      "kind": "parse",
+      "errors": [
+        "could not parse annotation: nesting is deeper than 100 levels (PROTOCOL.md §1.1(c)) (line 1, column 225)"
+      ]
+    }
+  ]
+}

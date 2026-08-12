@@ -292,7 +292,7 @@ suite rather than leaving a stale claim here — in
 | input | Ruby path | Go backend |
 |---|---|---|
 | a payload that is still not JSON after normalisation | Ruby's `JSON::ParserError` text | `expected a JSON value (line 1, column 102)` |
-| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
+| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | `input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)` |
 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
 

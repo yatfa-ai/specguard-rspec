@@ -27,7 +27,8 @@ RSpec.describe SpecGuard::RSpec::ViolationRenderer do
   end
 
   describe "ordering reproduces the validator walker" do
-    # bin/validate-intent:150-210 evaluates, per node: type, enum, every
+    # `Schema#validate` (open-test-intent, cmd/validate-intent/validate.go)
+    # evaluates, per node: type, enum, every
     # missing required key in SCHEMA order, then each instance property in
     # INSERTION order. json_schemer's own order is different for all three.
     it "puts required before the instance's own properties" do

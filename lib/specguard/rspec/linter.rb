@@ -43,12 +43,13 @@ module SpecGuard
     # `FAIL bad_spec.rb — could not read file: ...` line as if the two tools
     # emitted the same bytes. They do not:
     #
-    #   * a file that is not valid UTF-8 — the binary names the offending
-    #     position; `Scanner.scan_text` emits a fixed string. Both refuse the
-    #     file, which is what PROTOCOL.md §1.1 requires; neither wording is
-    #     specified.
+    #   * a file that is not valid UTF-8 — the binary says `input is not
+    #     well-formed UTF-8 (PROTOCOL.md §1.1 requires it)`;
+    #     `Scanner.scan_text` says `invalid UTF-8 byte sequence`. Both name the
+    #     condition rather than an offset, and both refuse the file, which is
+    #     what PROTOCOL.md §1.1 requires; neither wording is specified.
     #   * a file that does not exist — the binary reports it on *stderr* as
-    #     `error: no file(s) match "<path>"` (its arguments are glob patterns);
+    #     `error: no file(s) match '<path>'` (its arguments are glob patterns);
     #     `Scanner.scan_file` reports it on stdout as a read failure of that
     #     path (its arguments are paths).
     #
@@ -76,9 +77,10 @@ module SpecGuard
 
         # A read failure is not line-scoped: nothing in the file was ever seen,
         # and slice 1's `line` is a 0 sentinel rather than a location. The
-        # reference drops the line for exactly these findings
-        # (`bin/validate-intent:521` — "when a finding is not line-scoped ...
-        # kind is null"), and `:0` is not somewhere a reader can go: anything
+        # binary drops the line for exactly these findings (`JSONFinding` in
+        # open-test-intent's cmd/validate-intent/report.go — "`line` is null
+        # where a finding is not line-scoped, `kind` is null on a passing
+        # finding"), and `:0` is not somewhere a reader can go: anything
         # parsing `file:line` — CI annotations, editor quickfix, review
         # comments — would point at a line that does not exist.
         #

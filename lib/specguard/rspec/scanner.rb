@@ -31,7 +31,7 @@ module SpecGuard
       #   RATIFIED DIFFERENCE from the binary, for a path that does not exist.
       #   `validate-intent` expands its arguments as glob PATTERNS, so a name
       #   matching nothing is a statement about the pattern —
-      #   `error: no file(s) match "<path>"`, on stderr, before any file is
+      #   `error: no file(s) match '<path>'`, on stderr, before any file is
       #   opened. This linter does no globbing: explicit files are checked as
       #   given and `--changed` derives its list from git, so every argument
       #   here is a PATH, and an unopenable one is a read failure OF THAT PATH —
@@ -64,11 +64,12 @@ module SpecGuard
         #
         # RATIFIED DIFFERENCE from the binary, in the REASON TEXT only. Both
         # refuse the file — PROTOCOL.md §1.1 makes UTF-8 part of what a JSON
-        # text IS, and neither side repairs the bytes — but they word it
-        # differently: the binary names the offending position, this names the
-        # condition. Neither wording is specified, so neither is wrong; what
-        # matters is that both classify it as a READ failure and neither
-        # substitutes U+FFFD and carries on.
+        # text IS, and neither side repairs the bytes — and both name the
+        # CONDITION rather than an offset: the binary says `input is not
+        # well-formed UTF-8 (PROTOCOL.md §1.1 requires it)`, this says
+        # `invalid UTF-8 byte sequence`. Neither wording is specified, so
+        # neither is wrong; what matters is that both classify it as a READ
+        # failure and neither substitutes U+FFFD and carries on.
         #
         # What is shared is asserted in spec/specguard/rspec/validator_backend_spec.rb:
         # same classification, same file, same `FAIL <file> — could not read
@@ -136,8 +137,13 @@ module SpecGuard
       #     accepts it; §1.1(a) refuses it, because a surrogate escape must form
       #     a pair. Ruby refuses only the HIGH half, which is why the rule here
       #     is narrower than "surrogate escapes diverge".
-      #   * The nesting BOUNDARY, which sits a little deeper here than
-      #     §1.1(c)'s 100.
+      #   * The nesting BOUNDARY, by exactly one level and only for an EMPTY
+      #     container. §1.1(c) refuses any container deeper than 100. Ruby
+      #     checks the depth when it is about to parse a VALUE, so a container
+      #     sitting at depth 101 with nothing in it is never checked and is
+      #     accepted; put anything inside it and Ruby refuses too. Measured on
+      #     json 2.21.2 and pinned, both halves, in
+      #     `spec/specguard/rspec/validator_backend_spec.rb`.
       #
       # The surrogate one is not merely a verdict difference. What `JSON.parse`
       # returns for `"\udc00"` is a String whose `valid_encoding?` is FALSE: it
@@ -146,15 +152,26 @@ module SpecGuard
       # cost §1.1(a) exists to remove, and it is still paid on this path.
       #
       # It produces two shapes, depending on whether the payload this parser
-      # accepts then passes the schema:
+      # accepts then passes the schema. BOTH ARE REACHABLE, one per survivor:
       #
-      #   (v)  NOT schema-valid — the CLASSIFICATION would differ. Unreachable
-      #        today: a schema-valid payload has to put the offending syntax in
-      #        a value the schema permits, and every such value is a string or
-      #        an array of strings (`SpecGuard::RSpec::SCHEMA_PATH`) — so the
-      #        surviving member always lands in a string, and always in (vi).
-      #   (vi) schema-valid — the VERDICT differs. This path reports nothing and
-      #        exits 0; the backend reports a parse failure and exits 1.
+      #   (v)  NOT schema-valid — the CLASSIFICATION differs. The NESTING
+      #        survivor lands here and only here. A container at depth 101 is
+      #        a container, so it can never occupy a schema-legal slot: every
+      #        value the schema permits is a string or an array of strings. So
+      #        a payload deep enough to diverge is a payload the schema refuses,
+      #        and the two tools refuse it for different stated reasons —
+      #
+      #          binary: "kind": "parse"   nesting is deeper than 100 levels
+      #                                    (PROTOCOL.md §1.1(c))
+      #          gem:    "kind": "schema"  preconditions[0]: expected type
+      #                                    string, got array
+      #
+      #        The VERDICT agrees (both fail, both exit 1); only the `kind` and
+      #        the reason differ.
+      #   (vi) schema-valid — the VERDICT differs. The SURROGATE survivor lands
+      #        here: it lives inside a string, and a string is what the schema
+      #        permits. This path reports nothing and exits 0; the backend
+      #        reports a parse failure and exits 1.
       #
       # RATIFIED, and the reason is scope rather than preference. This gem's
       # hand-rolled validation logic is slated for REMOVAL by the roadmap that
@@ -164,14 +181,15 @@ module SpecGuard
       # closes it by deletion.
       #
       # Asserted from both sides — what this parser accepts, the convergence,
-      # and the surviving divergence — in
+      # and both surviving divergences — in
       # `spec/specguard/rspec/validator_backend_spec.rb` under "the JSON
       # acceptance set".
       #
       # Note that `JSON::NestingError` is a subclass of `JSON::ParserError`, so
-      # a nesting refusal is already carried by the rescue below; it needs no
-      # clause of its own, and adding one would suggest the classification
-      # differs when it does not.
+      # a nesting refusal Ruby DOES make is already carried by the rescue below
+      # and needs no clause of its own. That is about the refusals the two
+      # share; it is not a claim that the classification always agrees, which
+      # at depth 101 it does not — see (v).
       #
       # @return [Finding]
       def parse(raw, file:, line:)

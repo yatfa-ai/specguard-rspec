@@ -29,7 +29,8 @@ module SpecGuard
     # 1. **Order.** json_schemer emits in its own traversal order —
     #    `additionalProperties` before `required`, `minLength` before
     #    `required`. The validator walks the document deliberately (see
-    #    `validate` at `bin/validate-intent:150-210`): per node, `type`, then
+    #    `Schema#validate` in open-test-intent's
+    #    cmd/validate-intent/validate.go): per node, `type`, then
     #    `enum`, then every missing `required` key in *schema* order, then each
     #    instance property in *insertion* order (recursing, or reporting the
     #    disallowed additional property), then array, string and number
@@ -39,7 +40,7 @@ module SpecGuard
     #
     # 2. **Cardinality.** Two missing required keys are one json_schemer error
     #    carrying `details.missing_keys = ["action", "layer"]`; the validator
-    #    prints one line per key (its loop at `bin/validate-intent:163-165`).
+    #    prints one line per key (that function's `required` loop).
     #    The batch is fanned back out here.
     #
     # 3. **`additionalProperties` does not have the type you would guess.** It

@@ -136,7 +136,8 @@ RSpec.describe "the specguard-lint exit contract" do
       expect(out).not_to include("checked")
     end
 
-    # Criterion 5 — parity with bin/validate-intent:858-862, which prints
+    # Criterion 5 — parity with the binary's `schemaLoadError`
+    # (open-test-intent, cmd/validate-intent/main.go), which prints
     # `error: could not load schema ...` and returns 2.
     describe "an unloadable vendored schema" do
       it "exits 2 when the schema file is missing" do
