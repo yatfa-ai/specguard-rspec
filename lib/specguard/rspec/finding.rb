@@ -54,10 +54,6 @@ module SpecGuard
       def problem?
         !problem.nil?
       end
-
-      def location
-        "#{file}:#{line}"
-      end
     end
   end
 end
