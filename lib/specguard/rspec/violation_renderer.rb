@@ -363,14 +363,23 @@ module SpecGuard
       # [...]` is a line CI logs get diffed on.
       #
       # Only the String and Array arms are reachable from `Schema#violations`:
-      # the schema types every property `string` or array-of-`string`, has no
-      # numeric bounds, and sets `additionalProperties: false`, so a non-string
+      # the schema types every property `string` or array-of-`string`, carries
+      # no numeric bounds (`minimum`/`maximum`/`multipleOf` are all absent;
+      # `minLength` is present, but its message reports a character count, not
+      # the value), and sets `additionalProperties: false`, so a non-string
       # value produces a type-mismatch line and the one message that would
       # interpolate the instance value (`enum_entry`) is dropped by
-      # `drop_shadowed_by_type_mismatch`. That schema shape plus the shadowing
-      # is what keeps the remaining arms from ever differing from Go's in a
-      # message anyone reads — and it is ALL that keeps them, since neither
-      # snapshot above can reach an arm no payload can produce.
+      # `drop_shadowed_by_type_mismatch`. Neither snapshot above can reach the
+      # remaining arms, so nothing pins THOSE against the binary — but they are
+      # not all unheld. violation_renderer_spec.rb drives some of them from this
+      # side, with expectations phrased the validator's way: a bare `enum`
+      # property with no `type` (so there is no type-mismatch line to shadow the
+      # enum message) asserts `None` and `True`, and a hypothetical grown schema
+      # carrying `minimum`/`maximum` asserts `value 3 is below minimum 5`. Edit
+      # the nil, `true` or Integer arm and that file goes red — this gem holding
+      # itself to Go's spelling, with the binary not consulted at all. The
+      # `false` arm and the `inspect` fallback have no such example: blanking
+      # both leaves the suite green.
       def render_value(value)
         case value
         when String then render_quoted(value)
