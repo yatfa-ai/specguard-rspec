@@ -17,6 +17,12 @@ module SpecGuard
     # and an unparseable payload both land in `problem`, which makes the two
     # indistinguishable downstream once flattened to prose.
     #
+    # `line` is the 1-based line the annotation sits on — except under
+    # {KIND_READ}, where nothing in the file was ever seen and
+    # {Scanner.scan_file} / {Scanner.scan_text} construct the Finding with a
+    # `line` of 0. That 0 is a sentinel standing in for "no line", not a
+    # position anything can be pointed at.
+    #
     # NOTE: this is a subclass of an anonymous `Data.define` rather than a
     # `Data.define do ... end` block, because a constant assigned inside that
     # block binds to the *lexically* enclosing module (SpecGuard::RSpec) rather
@@ -55,9 +61,14 @@ module SpecGuard
         !problem.nil?
       end
 
-      def location
-        "#{file}:#{line}"
-      end
+      # Deliberately no `#location` here. Rendering `file:line` off a Finding
+      # prints `file:0` for the {KIND_READ} sentinel above, and `:0` is not
+      # somewhere a reader can go — anything parsing `file:line` would be sent
+      # to a line that does not exist. {Linter::Result#line_scoped?} is where
+      # that rule lives, and both renderers that obey it ({CLI#report_failure}
+      # and {JSONReporter}) are sited on that object so neither can drift from
+      # it. A copy of the predicate on this one is the third spelling that
+      # comment warns against, so render a Finding through {Linter::Result}.
     end
   end
 end
