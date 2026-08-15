@@ -339,14 +339,28 @@ module SpecGuard
 
       # The ecosystem's shared vocabulary for interpolating a VALUE into a
       # violation message. `validate-intent` renders the same values the same
-      # way (its `RenderValue`) BY CONVENTION — no spec pins the two renderers
-      # against each other. message_parity_spec.rb runs four payloads through
-      # `Schema#violations` and asserts the result against strings hand-copied
-      # from the binary; its own header refuses to be read as a proof about two
-      # programs. validator_backend_spec.rb, the nearest cross-tool comparison,
-      # replays reports RECORDED from the binary through a shell stub rather
-      # than executing it. Getting this wrong is still not cosmetic, because
-      # `value 'e2e' is not one of [...]` is a line CI logs get diffed on.
+      # way (its `RenderValue`) BY CONVENTION — neither program is generated
+      # from the other — but EDITING THIS METHOD IS PINNED, so expect red.
+      # validator_backend_spec.rb asserts this path's rendered stdout, byte for
+      # byte, against reports RECORDED from the binary and committed as
+      # spec/fixtures/validator/source-corpus.json, which carries the binary's
+      # own text; message_parity_spec.rb asserts four payloads through
+      # `Schema#violations` against strings hand-copied from the binary (its
+      # header refuses to be read as a proof about two programs, and is right —
+      # four hand-copied strings are not a second process). Change the String
+      # arm and BOTH SNAPSHOTS fail, quoting the binary's spelling back at you:
+      # message_parity_spec.rb, and validator_backend_spec.rb on both stdout
+      # and `--json`. (This gem's own unit and regression specs go red as well,
+      # but those are the gem checking itself, not the binary.) That is the
+      # coupling working, not unrelated breakage.
+      #
+      # The pin runs ONE WAY. Both are snapshots taken from the binary, and
+      # nothing in this gem executes it — validator_backend_spec.rb replays the
+      # recorded stdout through a four-line shell stub it writes to a tmpdir.
+      # So a change on THIS side is caught immediately, while a change on the
+      # Go side is caught only once someone re-records the corpus. Getting it
+      # wrong is not cosmetic either way, because `value 'e2e' is not one of
+      # [...]` is a line CI logs get diffed on.
       #
       # Only the String and Array arms are reachable from `Schema#violations`:
       # the schema types every property `string` or array-of-`string`, has no
@@ -354,8 +368,9 @@ module SpecGuard
       # value produces a type-mismatch line and the one message that would
       # interpolate the instance value (`enum_entry`) is dropped by
       # `drop_shadowed_by_type_mismatch`. That schema shape plus the shadowing
-      # — not a parity spec — is what keeps the remaining arms from ever
-      # differing from Go's in a message anyone reads.
+      # is what keeps the remaining arms from ever differing from Go's in a
+      # message anyone reads — and it is ALL that keeps them, since neither
+      # snapshot above can reach an arm no payload can produce.
       def render_value(value)
         case value
         when String then render_quoted(value)
