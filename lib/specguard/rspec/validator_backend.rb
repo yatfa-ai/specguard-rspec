@@ -119,6 +119,19 @@ module SpecGuard
     # a document reporting no findings is exactly what a clean run looks like,
     # so the mapping below is correct and the disagreement is upstream of it.
     #
+    # It has NOT always been the only one, and the other one ran the DANGEROUS
+    # way round. Until SPGD-512 the binary's `@intent:` payload search was
+    # unbounded where {AnnotationScanner#payload_brace} bounds it at the next
+    # token, so on a line carrying a malformed token followed by a well-formed
+    # one the binary adopted the neighbour's literal, reported it valid and
+    # exited 0 where the Ruby path reported no-payload and exited 1 — backend
+    # permissive, Ruby strict, the reverse of the surviving case above. That is
+    # the direction that costs something: opting into the backend bought a
+    # false green. SPGD-512 ported the bound, which is why the claim above
+    # holds again; it is recorded rather than deleted because the shape can
+    # recur any time a scanner-stage rule lands in one implementation only, and
+    # a reader who sees only the surrogate case will not think to look for it.
+    #
     # == Everything that can go wrong here is exit 2
     #
     # A missing binary, a binary that will not execute, a non-zero exit this
