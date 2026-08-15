@@ -405,7 +405,7 @@ module SpecGuard
       # disagree about how much it checked is worse than one that only prints
       # prose: the disagreement is unfalsifiable from outside the process.
       def report_results(results, files:, json:, ok:)
-        annotations, unread = results.partition { |result| result.kind != Finding::KIND_READ }
+        annotations, unread = results.partition(&:line_scoped?)
 
         if json
           @stdout.puts JSONReporter.render(results, files: files, annotations: annotations.length, ok: ok)
