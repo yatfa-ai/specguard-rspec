@@ -263,7 +263,6 @@ RSpec.describe SpecGuard::RSpec::FileSelector do
         commit(root, "base")
         git("checkout", "-q", "-b", "feature", chdir: root)
         write(root, "spec/child_spec.rb")
-        FileUtils.mkdir_p(File.join(root, "spec"))
         File.symlink("missing_target.rb", File.join(root, "spec/broken_spec.rb"))
         commit(root, "add a spec and a broken symlink")
 

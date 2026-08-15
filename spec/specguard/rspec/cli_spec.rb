@@ -603,9 +603,14 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
 
       expect(err).to include("selected 0 spec files")
-      expect(err).to include("2 changed spec files")
-      expect(err).to include("but 1 is outside")
-      expect(err).to include("and 1 could not be read")
+      # Asserted as one shape rather than three independent `include`s: the
+      # point of this example is that the two clauses appear TOGETHER and in
+      # order. Separate matchers stay green if a refactor split them onto
+      # their own lines, reversed them, or repeated a count — which is
+      # precisely the regression this example exists to catch.
+      expect(err).to match(
+        /2 changed spec files against \S+, but 1 is outside \S+ \(--changed selects only files under the current directory\) and 1 could not be read/
+      )
     end
   end
 end
