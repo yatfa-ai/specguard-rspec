@@ -47,9 +47,7 @@ RSpec.describe SpecGuard::RSpec do
     # the cheap, in-process half of that check — schema_packaging_spec.rb
     # asserts the same equality against a *built* gem, but only after shelling
     # out to `gem build`. Reading the gemspec directly fails fast, and fails
-    # loudly if anyone ever hardcodes a version into it. Note the gemspec builds
-    # its file list via `IO.popen("git ls-files")`, so this example needs a git
-    # worktree — it will not pass from an unpacked tarball.
+    # loudly if anyone ever hardcodes a version into it.
     it "is the version the gemspec publishes, not a literal copied into it" do
       gemspec_path = File.expand_path("../specguard-rspec.gemspec", __dir__)
       gemspec = Gem::Specification.load(gemspec_path)
