@@ -583,5 +583,29 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
       expect(err).to include("1 changed spec file")
     end
+
+    # Two filters emptied this selection, and naming only the first is the
+    # exact failure this whole block exists to prevent. "2 changed spec files
+    # … but 1 is outside" reads as complete arithmetic: 2 matched, 1 excluded,
+    # so the reader concludes the remaining one was checked. It was not. The
+    # unreadable file is the reason the run linted nothing, and it has to
+    # appear alongside the other cause, not behind it.
+    it "names the unreadable files too when both filters emptied the selection" do
+      repo_with_nested_spec do |dir|
+        # A symlink to a missing target: git tracks it (so it survives
+        # `--diff-filter=d` and is counted as a changed spec) but `File.file?`
+        # refuses it, which is the `unreadable` branch.
+        File.symlink("missing_target.rb", File.join(dir, "sub/broken_spec.rb"))
+        git("add", "-A", chdir: dir)
+        git("commit", "-q", "-m", "add a broken symlink spec", chdir: dir)
+
+        Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
+      end
+
+      expect(err).to include("selected 0 spec files")
+      expect(err).to include("2 changed spec files")
+      expect(err).to include("but 1 is outside")
+      expect(err).to include("and 1 could not be read")
+    end
   end
 end
