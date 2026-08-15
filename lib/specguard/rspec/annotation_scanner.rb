@@ -57,7 +57,7 @@ module SpecGuard
             token_at = line.index(INTENT_TOKEN, pos)
             break if token_at.nil?
 
-            brace_at = line.index("{", token_at + INTENT_TOKEN.length)
+            brace_at = payload_brace(line, token_at)
             if brace_at.nil?
               yield line_no, nil, NO_PAYLOAD
               break
@@ -78,6 +78,51 @@ module SpecGuard
             pos = finish
           end
         end
+      end
+
+      # Returns the index of the `{` opening the payload of the `@intent:`
+      # token at `token_at`, or nil when that token has no payload.
+      #
+      # The search is **bounded by the next `@intent:` token on the line**. An
+      # unbounded search reads to end of line, so a malformed token followed by
+      # a well-formed one adopts its neighbour's object literal and is yielded
+      # with `problem: nil` — a typo'd annotation reported as valid, carrying
+      # somebody else's intent, and (because the caller resumes past the
+      # captured payload) swallowing the well-formed token on the way. That is
+      # the exact opposite of {each_intent}'s "reported, not skipped" contract,
+      # and PROTOCOL.md §1 supports the bounded reading: a payload is the object
+      # *following* its own token, which a literal on the far side of a second
+      # token is not.
+      #
+      # The bound can only ever *shrink* the search — it never picks a
+      # different brace, only declines one — so a token whose payload lies
+      # beyond the next token takes the {NO_PAYLOAD} path instead of a false
+      # pass.
+      #
+      # `line.index` is a naive string search, so it also finds an `@intent:`
+      # written inside a quoted string. That is harmless for the case it looks
+      # like it would break — a token quoted *inside a payload* is by definition
+      # after that payload's `{`, so the bound is inert and the payload is
+      # captured as before. The occurrence has to sit between the token and its
+      # `{` to matter at all, which means it is in the prose separating them:
+      #
+      #   # @intent: like the "@intent:" above { entity: "Order", ... }
+      #
+      # That line now reports NO_PAYLOAD where it previously captured the
+      # literal. It is the one shape this bound makes stricter, and the
+      # stricter answer is the right one: the line is genuinely ambiguous about
+      # which token owns the literal, and declining to guess is the loud answer
+      # this scanner is supposed to give. Moving the quoted mention after the
+      # payload, or dropping the quotes, restores the capture.
+      def payload_brace(line, token_at)
+        after_token = token_at + INTENT_TOKEN.length
+        brace_at = line.index("{", after_token)
+        return nil if brace_at.nil?
+
+        next_token = line.index(INTENT_TOKEN, after_token)
+        return nil if next_token && brace_at > next_token
+
+        brace_at
       end
 
       # Returns the index just past the `}` matching the `{` at `text[start]`.

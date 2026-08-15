@@ -85,6 +85,36 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).not_to include("FAIL")
       expect(out).to include("checked 7 @intent annotations, 0 malformed")
     end
+
+    # The end of the false green. A malformed `@intent:` followed on the same
+    # line by a well-formed one used to have its neighbour's payload attributed
+    # to it, so the whole run reported "checked 1 @intent annotation, 0
+    # malformed" and exited 0 — the gate reporting success having checked
+    # nothing that was actually wrong. Asserted through the CLI because the
+    # exit code is what a CI job reads; the scanner-level assertions live in
+    # annotation_scanner_spec.rb.
+    #
+    # The neighbour payload must be schema-**valid** for this example to pin
+    # anything. With an incomplete one the adopted payload fails validation on
+    # its own missing properties, so the run already exits non-zero before the
+    # fix and both the exit-code and "1 malformed" assertions hold either way —
+    # green for a reason that has nothing to do with the bound. Measured on
+    # this fixture: pre-fix "0 malformed", exit 0; post-fix "1 malformed",
+    # exit 1. All three assertions below discriminate.
+    it "fails the run on a malformed annotation that is followed by a well-formed one" do
+      code = Dir.mktmpdir do |dir|
+        path = File.join(dir, "adopted_payload_spec.rb")
+        File.write(path, %(# @intent: (entity: Order) - superseded by @intent: ) +
+                         %({ entity: "Order", action: "checkout", ) +
+                         %(behavior: "returns 402 payment required on expired card", ) +
+                         %(layer: "request" }\n))
+        cli.run([path])
+      end
+
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+      expect(out).to include("checked 1 @intent annotation, 1 malformed")
+      expect(out).to include("no '{...}' object literal")
+    end
   end
 
   describe "options" do

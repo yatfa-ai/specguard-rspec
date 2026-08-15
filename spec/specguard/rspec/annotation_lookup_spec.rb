@@ -191,6 +191,21 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
 
       expect(intent["entity"]).to eq("First")
     end
+
+    # The formatter's half of the false green. When the first token was
+    # malformed, the unbounded payload search handed it the SECOND token's
+    # literal, so this coordinate shipped a schema-valid intent nobody had
+    # written for it — invented telemetry, indistinguishable on the platform
+    # from a real declaration. Downgrading to nil costs one row's metadata;
+    # the alternative costs the truth of `annotated_specs_count`.
+    it "ships no intent at all when the first token is malformed" do
+      intent = intent_at(<<~RUBY, 2)
+        # @intent: (entity: Order) — superseded by @intent: { entity: "Second", action: "checkout", behavior: "returns 402 payment required on expired card", layer: "request" }
+        it "rejects checkout" do
+      RUBY
+
+      expect(intent).to be_nil
+    end
   end
 
   # Criterion 3. Each of these is an annotation the *linter* fails the build
