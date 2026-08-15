@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "rubygems"
-
 # Proves the gem loads, reserves the SpecGuard::RSpec namespace, and exposes a
 # version constant that is a usable release identifier.
 #
@@ -23,14 +21,21 @@ RSpec.describe SpecGuard::RSpec do
 
     # Deliberately stronger than `be_a(String)`, which would pass for "",
     # "banana", or "0.2" and leave this guard unable to fail. The shape asserted
-    # is the one the release path actually requires: RubyGems publishes it as
-    # the gem version and bump-version.sh splits it on "." to compute the next
-    # patch and the vX.Y.Z tag, so anything that is not MAJOR.MINOR.PATCH breaks
-    # the release rather than the suite.
+    # is exactly the shape the release path handles, and the pattern deliberately
+    # mirrors the sed on bump-version.sh:69 (`[0-9]+\.[0-9]+\.[0-9]+`): that sed
+    # rewrites the one VERSION line, and line 47-48 splits the current value on
+    # "." to compute the next patch and the vX.Y.Z tag. Anything that is not
+    # MAJOR.MINOR.PATCH breaks the release rather than the suite — a prerelease
+    # like "0.2.1-rc.1" is a legal RubyGems version (Gem::Version.correct? is
+    # true) but the sed would not match it and `$((PATCH + 1))` would die on
+    # `1-rc.1` with a bash arithmetic error, inside a workflow_dispatch-only
+    # release where nothing sees it. So no prerelease branch here: the assertion
+    # and this justification have to agree, and the release path is the stricter
+    # of the two.
     it "is a well-formed semver string" do
       expect(version).to be_a(String)
       expect(version).not_to be_empty
-      expect(version).to match(/\A\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\z/)
+      expect(version).to match(/\A\d+\.\d+\.\d+\z/)
     end
 
     it "is frozen, so no caller can mutate the value the gemspec published" do
@@ -42,7 +47,9 @@ RSpec.describe SpecGuard::RSpec do
     # the cheap, in-process half of that check — schema_packaging_spec.rb
     # asserts the same equality against a *built* gem, but only after shelling
     # out to `gem build`. Reading the gemspec directly fails fast, and fails
-    # loudly if anyone ever hardcodes a version into it.
+    # loudly if anyone ever hardcodes a version into it. Note the gemspec builds
+    # its file list via `IO.popen("git ls-files")`, so this example needs a git
+    # worktree — it will not pass from an unpacked tarball.
     it "is the version the gemspec publishes, not a literal copied into it" do
       gemspec_path = File.expand_path("../specguard-rspec.gemspec", __dir__)
       gemspec = Gem::Specification.load(gemspec_path)
