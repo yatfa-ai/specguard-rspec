@@ -104,9 +104,16 @@ module SpecGuard
       # like it would break — a token quoted *inside a payload* is by definition
       # after that payload's `{`, so the bound is inert and the payload is
       # captured as before. The occurrence has to sit between the token and its
-      # `{` to matter at all, which means it is in the prose separating them: a
-      # line ambiguous about which token owns the literal, where declining to
-      # guess is the loud answer this scanner is supposed to give.
+      # `{` to matter at all, which means it is in the prose separating them:
+      #
+      #   # @intent: like the "@intent:" above { entity: "Order", ... }
+      #
+      # That line now reports NO_PAYLOAD where it previously captured the
+      # literal. It is the one shape this bound makes stricter, and the
+      # stricter answer is the right one: the line is genuinely ambiguous about
+      # which token owns the literal, and declining to guess is the loud answer
+      # this scanner is supposed to give. Moving the quoted mention after the
+      # payload, or dropping the quotes, restores the capture.
       def payload_brace(line, token_at)
         after_token = token_at + INTENT_TOKEN.length
         brace_at = line.index("{", after_token)

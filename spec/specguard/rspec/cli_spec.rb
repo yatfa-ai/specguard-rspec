@@ -93,10 +93,21 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # nothing that was actually wrong. Asserted through the CLI because the
     # exit code is what a CI job reads; the scanner-level assertions live in
     # annotation_scanner_spec.rb.
+    #
+    # The neighbour payload must be schema-**valid** for this example to pin
+    # anything. With an incomplete one the adopted payload fails validation on
+    # its own missing properties, so the run already exits non-zero before the
+    # fix and both the exit-code and "1 malformed" assertions hold either way —
+    # green for a reason that has nothing to do with the bound. Measured on
+    # this fixture: pre-fix "0 malformed", exit 0; post-fix "1 malformed",
+    # exit 1. All three assertions below discriminate.
     it "fails the run on a malformed annotation that is followed by a well-formed one" do
       code = Dir.mktmpdir do |dir|
         path = File.join(dir, "adopted_payload_spec.rb")
-        File.write(path, %(# @intent: (entity: Order) - superseded by @intent: {"entity":"Order"}\n))
+        File.write(path, %(# @intent: (entity: Order) - superseded by @intent: ) +
+                         %({ entity: "Order", action: "checkout", ) +
+                         %(behavior: "returns 402 payment required on expired card", ) +
+                         %(layer: "request" }\n))
         cli.run([path])
       end
 
