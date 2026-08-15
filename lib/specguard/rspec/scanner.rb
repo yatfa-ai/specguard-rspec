@@ -133,6 +133,18 @@ module SpecGuard
       #
       # WHAT SURVIVES RUNS THE OTHER WAY: this parser is now the permissive one.
       #
+      # Read that as scoped to PARSING, which is all this register has ever
+      # covered. It is not a statement that the two backends agree everywhere
+      # else: the stage BEFORE this one diverged too, and in the opposite
+      # direction. Until SPGD-512 the binary's `@intent:` payload search was
+      # unbounded where {AnnotationScanner#payload_brace} bounds it at the next
+      # token, so a malformed token followed by a well-formed one was captured
+      # as valid by the binary and reported no-payload by this gem — binary
+      # permissive, gem strict. The Go port of that bound closed it. The lesson
+      # worth keeping is that a divergence can live at extraction as easily as
+      # at parse, so "what survives" below is the parser's list, not the
+      # backends' list.
+      #
       #   * A LONE LOW surrogate escape (`\udc00`-`\udfff`). `JSON.parse`
       #     accepts it; §1.1(a) refuses it, because a surrogate escape must form
       #     a pair. Ruby refuses only the HIGH half, which is why the rule here
