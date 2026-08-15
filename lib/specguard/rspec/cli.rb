@@ -342,14 +342,29 @@ module SpecGuard
         elsif stats.spec_matches.zero?
           "#{stats.changed} file#{'s' unless stats.changed == 1} changed against #{base}, " \
             "none matching *_spec.rb"
-        elsif stats.outside_root.positive?
-          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base}, " \
-            "but #{stats.outside_root} #{stats.outside_root == 1 ? 'is' : 'are'} outside #{Dir.pwd} " \
-            "(--changed selects only files under the current directory)"
         else
-          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base} " \
-            "could not be read"
+          changed_excluded_reason(stats, base)
         end
+      end
+
+      # `outside_root` and `unreadable` are independent counters over disjoint
+      # branches of the same partition (`file_selector.rb`), so both can be
+      # positive at once. Naming only the first one found is the failure the
+      # comment above forbids: the reader does the arithmetic, sees that
+      # `spec_matches - outside_root` files are unaccounted for, and concludes
+      # they were checked. They were not — the selection is empty. So the
+      # clauses are additive, and a selection emptied by both causes says so.
+      def changed_excluded_reason(stats, base)
+        matched = "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base}"
+
+        # Nothing outside the root: `unreadable` is then the only filter left
+        # that can have emptied the selection, so it needs no count of its own.
+        return "#{matched} could not be read" unless stats.outside_root.positive?
+
+        reason = "#{matched}, but #{stats.outside_root} #{stats.outside_root == 1 ? 'is' : 'are'} " \
+                 "outside #{Dir.pwd} (--changed selects only files under the current directory)"
+        reason += " and #{stats.unreadable} could not be read" if stats.unreadable.positive?
+        reason
       end
 
       # The FAIL block, in the shape `bin/validate-intent --source` emits: two

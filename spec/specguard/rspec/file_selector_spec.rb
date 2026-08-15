@@ -250,6 +250,29 @@ RSpec.describe SpecGuard::RSpec::FileSelector do
         expect(selection.stats.outside_root).to eq(1)
       end
 
+      # The same rule as the example above, for the other filter in the same
+      # three-way partition. `unreadable` exists so the caller can say "could
+      # not be read" instead of guessing at whichever filter it happens to
+      # check first; a count nobody produces a spec for is a count nobody
+      # notices going wrong. A committed symlink to a missing target is a
+      # changed path git reports (so it survives `--diff-filter=d`) that
+      # `File.file?` still refuses.
+      it "excludes changed specs that cannot be read, and counts them" do
+        init_repo(root)
+        write(root, "README.md", "hello\n")
+        commit(root, "base")
+        git("checkout", "-q", "-b", "feature", chdir: root)
+        write(root, "spec/child_spec.rb")
+        File.symlink("missing_target.rb", File.join(root, "spec/broken_spec.rb"))
+        commit(root, "add a spec and a broken symlink")
+
+        selection = described_class.select(changed: true, root: root)
+
+        expect(selection.files).to eq(["spec/child_spec.rb"])
+        expect(selection.stats.spec_matches).to eq(2)
+        expect(selection.stats.unreadable).to eq(1)
+      end
+
       it "does not confuse a sibling directory sharing a name prefix with the root" do
         init_repo(root)
         write(root, "README.md", "hello\n")
