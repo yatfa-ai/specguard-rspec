@@ -339,9 +339,23 @@ module SpecGuard
 
       # The ecosystem's shared vocabulary for interpolating a VALUE into a
       # violation message. `validate-intent` renders the same values the same
-      # way (its `RenderValue`), and message_parity_spec.rb pins the two
-      # against each other — getting this wrong is not cosmetic, because
+      # way (its `RenderValue`) BY CONVENTION — no spec pins the two renderers
+      # against each other. message_parity_spec.rb runs four payloads through
+      # `Schema#violations` and asserts the result against strings hand-copied
+      # from the binary; its own header refuses to be read as a proof about two
+      # programs. validator_backend_spec.rb, the nearest cross-tool comparison,
+      # replays reports RECORDED from the binary through a shell stub rather
+      # than executing it. Getting this wrong is still not cosmetic, because
       # `value 'e2e' is not one of [...]` is a line CI logs get diffed on.
+      #
+      # Only the String and Array arms are reachable from `Schema#violations`:
+      # the schema types every property `string` or array-of-`string`, has no
+      # numeric bounds, and sets `additionalProperties: false`, so a non-string
+      # value produces a type-mismatch line and the one message that would
+      # interpolate the instance value (`enum_entry`) is dropped by
+      # `drop_shadowed_by_type_mismatch`. That schema shape plus the shadowing
+      # — not a parity spec — is what keeps the remaining arms from ever
+      # differing from Go's in a message anyone reads.
       def render_value(value)
         case value
         when String then render_quoted(value)
