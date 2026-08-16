@@ -590,9 +590,15 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # Decide whether it really is a statement about a FILE rather than about an
   # annotation site — that is what excluding it asserts — and only then update
   # this list.
+  #
+  # Membership, not order: `#check_annotation_count` asks `.include?`, and the
+  # order here is only whatever order `KINDS` happens to be written in. Pinning
+  # it with `eq` would fire on a harmless reorder while this comment told the
+  # reader a kind had been added — the false-diagnosis shape this whole change
+  # exists to close. `contain_exactly` fails by naming the extra kind instead.
   describe "the kinds that are not annotation sites" do
     it "excludes exactly the file-level kinds the port can report, and no others" do
-      expect(described_class::Runner::NON_ANNOTATION_KINDS).to eq(%w[read no-match])
+      expect(described_class::Runner::NON_ANNOTATION_KINDS).to contain_exactly("read", "no-match")
     end
 
     # `#check_annotation_count` reads it on every backend run; a mutable
