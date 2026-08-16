@@ -539,7 +539,26 @@ same corruption, deferred until something replays it — and says so once:
 SpecGuard: skipped test telemetry for a dry run (rspec --dry-run executes no
 example bodies, so this run's durations and outcomes would not be
 measurements). Nothing was sent or written; the test run is unaffected.
+Annotation coverage is a fact about source, not about execution, so it
+survives the refusal — this working tree: 6 examples, 3 annotated,
+3 unannotated (50% annotated).
+  the 3 unannotated examples, by definition site:
+    spec/orders_spec.rb:7   Order has no annotation
+    spec/orders_spec.rb:16  Order has a malformed annotation
+    spec/orders_spec.rb:21  Order has a schema-invalid annotation
 ```
+
+The refusal throws away less than it used to. `duration` and `outcome` are
+fabricated by a dry run, which is what makes them unpublishable — but the
+third field the formatter computes per example, `annotated` / `unannotated`,
+comes from scanning the **spec file's source text** and is identical whether or
+not a body ran. Since a dry run still builds every example, it holds the exact
+numerator and denominator of the annotation-coverage metric, so `--dry-run` is
+also the way to ask *"where are we?"* without a commit, a push, and a CI round
+trip. The figure describes **your working tree right now**, so it will differ
+from the dashboard's the moment you edit a spec — that difference is the point.
+
+Nothing is published either way: the report goes to stderr and to nowhere else.
 
 This matters most where you are least likely to look for it: an API key is
 usually an environment-level secret rather than a job-level one, so a lint job

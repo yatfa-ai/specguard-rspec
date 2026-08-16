@@ -1061,12 +1061,43 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # SPGD-639 edited this example's *measurement*, not its claim, and this
+      # is the note the ticket asked for rather than a quiet edit.
+      #
+      # The claim was always "one announcement per run, not one per example" —
+      # which is why the body runs three examples through and why the title
+      # says "exactly once". `lines.length == 1` was the mechanical form of
+      # that claim back when the announcement was the only thing on stderr and
+      # happened to be a single line. The dry-run report is deliberately
+      # multi-line (one `SpecGuard:` header, then an unindented worklist), so
+      # the old form now measures "the report is one line", which was never the
+      # contract and is not a property anyone wants pinned.
+      #
+      # Restated as the number of `SpecGuard:`-prefixed lines, which is the same
+      # contract `formatter_run_spec.rb` pins at the process level and the one
+      # the budget-bypass in `#skip_dry_run` has to keep true. Note it is *not*
+      # weakened to `>= 1`: three examples through a formatter that announced
+      # per-example would read 3 here and still fail, so the regression the
+      # original was built to catch is still caught.
       it "says so on stderr, exactly once" do
         3.times { finish(build_example) }
         formatter.close(nil)
 
         expect(errors.string).to include(described_class::DRY_RUN_WARNING_PREFIX)
-        expect(errors.string.lines.length).to eq(1)
+        expect(errors.string.scan(/SpecGuard:/).length).to eq(1)
+      end
+
+      # The other half of the line above, and the reason it can no longer be a
+      # line count: the report enumerates *examples*, so three unannotated ones
+      # get three worklist entries under the single header.
+      it "lists every unannotated example under that one header" do
+        3.times { finish(build_example) }
+        formatter.close(nil)
+
+        worklist = errors.string.lines.grep(%r{spec/orders_spec\.rb:4})
+
+        expect(worklist.length).to eq(3)
+        expect(errors.string).to include("3 examples, 0 annotated, 3 unannotated (0% annotated)")
       end
 
       # Only the *delivery* decision changes. Capture is left exactly as it
@@ -1083,6 +1114,116 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       it "does not raise out of close" do
         expect { formatter.close(nil) }.not_to raise_error
+      end
+
+      # SPGD-639. SPGD-154's own scope said capture stays inspectable "so a
+      # caller — or a future replay path — can still inspect what the run
+      # looked like". This is the first thing built to inspect it, and these
+      # examples pin the decisions the ticket asked to be made deliberately
+      # rather than fallen into.
+      describe "the local annotation-coverage report" do
+        # Not a restatement of the two examples above. Those measure the
+        # *shape* of the announcement; these measure the numbers in it against
+        # a suite whose annotated/unannotated split is known and mixed, which
+        # the shared `annotations` double (nil for everything) cannot produce.
+        def mixed_suite!
+          allow(annotations).to receive(:intent_for).and_return(intent, nil, intent, nil)
+        end
+
+        it "reports the split, and names each unannotated example with its site" do
+          mixed_suite!
+          finish(build_example(name: "a", line_number: 1))
+          finish(build_example(name: "b", line_number: 2))
+          finish(build_example(name: "c", line_number: 3))
+          finish(build_example(name: "d", line_number: 4))
+          formatter.close(nil)
+
+          expect(errors.string).to include("4 examples, 2 annotated, 2 unannotated (50% annotated)")
+          expect(errors.string).to include("spec/orders_spec.rb:2", "b")
+          expect(errors.string).to include("spec/orders_spec.rb:4", "d")
+          expect(errors.string).not_to include("spec/orders_spec.rb:1")
+          expect(errors.string).not_to include("spec/orders_spec.rb:3")
+        end
+
+        # Criterion 5: the state the metric exists to reach is not an error,
+        # and gets no worklist rather than an empty heading over nothing.
+        it "treats a fully-annotated suite as the goal, not a problem" do
+          allow(annotations).to receive(:intent_for).and_return(intent)
+          2.times { finish(build_example) }
+          formatter.close(nil)
+
+          expect(errors.string).to include("2 examples, 2 annotated, 0 unannotated (100% annotated)")
+          expect(errors.string).not_to include("by definition site")
+          expect(errors.string.scan(/SpecGuard:/).length).to eq(1)
+        end
+
+        # The degenerate denominator. `close` runs even when nothing was
+        # captured, so this path is reachable by anyone who dry-runs a filter
+        # that matches nothing — and it must not divide by zero.
+        it "says there is nothing to measure rather than dividing by zero" do
+          expect { formatter.close(nil) }.not_to raise_error
+
+          expect(errors.string).to include("No examples were built")
+          expect(errors.string).not_to include("%")
+        end
+
+        # The `@warned` decision, pinned in both directions.
+        #
+        # A spent budget must not swallow the report. This is the case where
+        # the report matters *most*: the scanner failing classifies every
+        # example `unannotated`, so a reader who saw only "0% annotated"
+        # without the warning would blame their specs for SpecGuard's fault.
+        it "is not swallowed by a warning budget an earlier failure already spent" do
+          allow(annotations).to receive(:intent_for).and_raise(IOError, "spec file vanished")
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "IOError")
+          expect(errors.string).to include("1 example, 0 annotated, 1 unannotated")
+        end
+
+        # ...and the converse: nothing went wrong here, so the report must not
+        # spend the budget a genuine later warning still needs.
+        it "leaves the warning budget unspent for a real warning that follows" do
+          finish(build_example)
+          formatter.close(nil)
+          formatter.send(:warn_once, IOError.new("the sink went away"))
+
+          expect(errors.string).to include("1 example, 0 annotated, 1 unannotated")
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "the sink went away")
+        end
+
+        # Rounding must not claim a boundary the suite has not reached. 199 of
+        # 200 rounds to 100%, and a report that printed it would say a suite
+        # with an unannotated spec in it was fully annotated — while its own
+        # worklist, one line below, showed otherwise.
+        it "never rounds up to 100% while an example is still unannotated" do
+          expect(formatter.send(:annotated_percentage, 199, 200)).to eq(99)
+          expect(formatter.send(:annotated_percentage, 200, 200)).to eq(100)
+        end
+
+        it "never rounds down to 0% once an example is annotated" do
+          expect(formatter.send(:annotated_percentage, 1, 500)).to eq(1)
+          expect(formatter.send(:annotated_percentage, 0, 500)).to eq(0)
+        end
+
+        # The report is the *only* thing added. Both sinks stay refused.
+        it "publishes nothing, to either sink" do
+          StubIngestEndpoint.run do |server|
+            SpecGuard::RSpec.configure do |config|
+              config.endpoint = server.endpoint
+              config.api_key = "sgk_abc123"
+              config.timeout = 5
+            end
+
+            finish(build_example)
+            formatter.close(nil)
+
+            expect(server.requests).to be_empty
+            expect(sink_lines).to be_empty
+            expect(errors.string).to include("1 unannotated")
+          end
+        end
       end
     end
 

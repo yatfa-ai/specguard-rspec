@@ -1560,6 +1560,117 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(@dry.stdout).not_to include("SpecGuard:")
       end
     end
+
+    # SPGD-639. The refusal above throws away a verdict the formatter had
+    # already computed: `status` comes from the annotation lookup, which reads
+    # source text, so unlike `duration` and `outcome` it is fabricated by
+    # neither dry-run mechanism. A dry run builds every example, so it holds
+    # the whole numerator and denominator of the adoption metric.
+    #
+    # `ANNOTATED_SUITE` is the fixture for this and needs nothing added to it:
+    # 6 examples, 3 annotated, with the malformed and schema-invalid cases
+    # included precisely because they must count as unannotated in the report
+    # exactly as they do in the payload.
+    describe "reporting local annotation coverage instead of discarding it" do
+      before(:context) do
+        @dry = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE, dry_run: true)
+        @normal = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE)
+      end
+
+      it "names the denominator, the numerator and the gap" do
+        expect(@dry.stderr).to include("6 examples, 3 annotated, 3 unannotated (50% annotated)")
+      end
+
+      # Exactly the three the fixture documents at its definition — the
+      # unannotated one, the unterminated literal, and the `entiity` typo — and
+      # exactly not the three that are annotated. A report that listed the
+      # malformed ones as annotated, or skipped them, would be the same defect
+      # the payload's `status` field exists to prevent.
+      it "lists precisely the unannotated examples, by definition site" do
+        worklist = @dry.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
+
+        expect(worklist.length).to eq(3)
+        expect(worklist[0]).to start_with("sample_spec.rb:7")
+        expect(worklist[1]).to start_with("sample_spec.rb:16")
+        expect(worklist[2]).to start_with("sample_spec.rb:21")
+        expect(worklist.join("\n")).to include("has no annotation", "has a malformed annotation",
+                                               "has a schema-invalid annotation")
+      end
+
+      # The worklist carries `full_description`, not merely the site, so the
+      # local list and the server's `latest_run.unannotated_examples` have the
+      # same shape — and the nested example proves the description is the
+      # example's own and not the file's.
+      it "carries each example's full description alongside its site" do
+        expect(@dry.stderr).to include("user has no annotation")
+      end
+
+      # A fact about the working tree, not about the last delivered run. Those
+      # legitimately differ the moment a spec is edited, which is the entire
+      # point, so the line must not read as the dashboard's headline.
+      it "says which tree it measured, and does not claim to speak for the repository" do
+        expect(@dry.stderr).to include("this working tree")
+        expect(@dry.stderr).not_to include("your repository")
+      end
+
+      # Criterion 6, measured rather than asserted. The local figure is
+      # recomputed here from a payload captured by a *normal* run of the same
+      # fixture, using the platform's own predicate (`annotated_specs` rejects
+      # "unannotated"). Two counters over one source-derived field.
+      it "agrees with the payload a normal run of the same tree produces" do
+        specs = JSON.parse(@normal.lines.fetch(0)).fetch("specs")
+        unannotated = specs.reject { |spec| spec["status"] == "annotated" }
+
+        expect(specs.length).to eq(6)
+        expect(unannotated.length).to eq(3)
+        expect(@dry.stderr).to include("#{specs.length} examples, " \
+                                       "#{specs.length - unannotated.length} annotated, " \
+                                       "#{unannotated.length} unannotated")
+      end
+
+      # SPGD-154 criteria 1 and 2, re-asserted against the suite that now has
+      # something to say. A third destination was added; neither sink moved.
+      it "still publishes nothing — no POST, no line, not even a sink" do
+        expect(@dry.lines).to be_empty
+        expect(@dry.sink_exists).to be(false)
+        expect(@normal.sink_exists).to be(true)
+      end
+
+      it "still leaves the exit status and stdout alone" do
+        expect(@dry.exit_status).to eq(0)
+        expect(@dry.stdout).to include("6 examples, 0 failures")
+        expect(@dry.stdout).not_to include("SpecGuard:")
+      end
+
+      # One `SpecGuard:` voice per run, however many lines the report needs.
+      it "keeps the whole report under a single SpecGuard-prefixed header" do
+        expect(@dry.stderr.scan(/SpecGuard:/).length).to eq(1)
+        expect(@dry.stderr.lines.length).to eq(5)
+      end
+
+      # The control that stops all of the above being vacuously green: without
+      # the flag, this same suite says none of it and writes its line as usual.
+      it "says none of this on a normal run, which delivers as before" do
+        expect(@normal.stderr).to be_empty
+        expect(@normal.lines.length).to eq(1)
+      end
+
+      # The worklist is ordered by definition site, not by the order RSpec
+      # happened to build the examples in — so two runs of the same tree
+      # produce a diffable list.
+      #
+      # This example is only worth its runtime because the seed discriminates:
+      # measured at `FIXED_SEED`, capture order is 7, 21, 16, so an
+      # implementation that emitted the list as captured fails here. (Under the
+      # file's default defined ordering the two orders coincide, which is why
+      # none of the examples above can make this claim.)
+      it "orders the worklist by site even when RSpec ran the examples shuffled" do
+        shuffled = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE, dry_run: true, order: :random)
+        worklist = shuffled.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
+
+        expect(worklist.map { |line| line[/:(\d+)/, 1] }).to eq(%w[7 16 21])
+      end
+    end
   end
 
   # Criterion 6, at the process level, for slice 2's own failure modes.
