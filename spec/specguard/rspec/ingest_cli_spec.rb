@@ -215,13 +215,23 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `Api::V1::IngestsController#create` forms an opinion about a payload in
     # exactly one place, `render_bad_request(payload.errors)`. Every other
     # non-2xx is covered under exit 2 below.
-    it "exits 1 for the one status that carries a verdict about the payload" do
+    #
+    # The boundary is therefore drawn on the STATUS, never on what the body
+    # happens to say. This body is the 401's message word for word, and it is
+    # still a 400: the code decides the verdict, and the body only decides what
+    # gets echoed after it. Read against the 401 row in the table under exit 2
+    # — which says something equally auth-flavoured and exits 2 — the pair
+    # shows the discriminator is the status and nothing else.
+    it "exits 1 on the status alone, whatever the body reads like" do
       StubIngestEndpoint.run(status: 400, body: '{"message":"invalid api key"}') do |server|
+        path = sink(run_payload)
         code = described_class.new(stdout: stdout, stderr: stderr,
-                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
-                             .run([sink(run_payload)])
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run([path])
 
         expect(code).to eq(1)
+        expect(out).to include(
+          "line 1: refused — HTTP 400 — the endpoint rejected the payload — invalid api key"
+        )
       end
     end
 
