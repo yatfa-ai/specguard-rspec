@@ -574,6 +574,41 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # ------------------------------------------------------------------------ #
+  # Written as a LITERAL on purpose. `Runner::NON_ANNOTATION_KINDS` is derived
+  # from `Runner::KINDS`, and a pin that derives from the thing it pins can
+  # never fail. The derivation is what stops the two lists drifting; this is
+  # what keeps the derivation honest, because `KINDS` is the half that grows.
+  #
+  # It grows for a reason outside this repo: the port's kind vocabulary is a
+  # closed const block in open-test-intent, and `#failing_result` refuses an
+  # unknown kind BY NAME — so the first run carrying a new one demands a
+  # `KINDS` entry. A new entry mapping to `KIND_READ` would then widen what
+  # `check_annotation_count` declines to count, silently, with nothing else in
+  # the suite positioned to notice.
+  #
+  # **If this just failed, a kind was added to `KINDS` mapping to KIND_READ.**
+  # Decide whether it really is a statement about a FILE rather than about an
+  # annotation site — that is what excluding it asserts — and only then update
+  # this list.
+  #
+  # Membership, not order: `#check_annotation_count` asks `.include?`, and the
+  # order here is only whatever order `KINDS` happens to be written in. Pinning
+  # it with `eq` would fire on a harmless reorder while this comment told the
+  # reader a kind had been added — the false-diagnosis shape this whole change
+  # exists to close. `contain_exactly` fails by naming the extra kind instead.
+  describe "the kinds that are not annotation sites" do
+    it "excludes exactly the file-level kinds the port can report, and no others" do
+      expect(described_class::Runner::NON_ANNOTATION_KINDS).to contain_exactly("read", "no-match")
+    end
+
+    # `#check_annotation_count` reads it on every backend run; a mutable
+    # constant is one stray `<<` away from changing the count for the process.
+    it "is frozen" do
+      expect(described_class::Runner::NON_ANNOTATION_KINDS).to be_frozen
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
   # Every one of these is "the linter could not do its job". The contract has
   # already spent exit 1 on "an annotation is malformed" (see CLI), so none of
   # them may reach it — and none may be quietly absorbed either.
