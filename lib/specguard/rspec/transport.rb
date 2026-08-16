@@ -332,7 +332,6 @@ module SpecGuard
 
       # What the platform said about the refusal, or `nil` when the body did
       # not say anything this class can use.
-
       #
       # `Api::BaseController` shapes both refusal bodies deliberately for a
       # client to read: `render_bad_request` carries every validation failure

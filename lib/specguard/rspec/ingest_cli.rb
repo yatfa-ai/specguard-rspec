@@ -42,26 +42,46 @@ module SpecGuard
     # never offered — a tool failure wearing the costume of a content failure,
     # which is the defect {CLI} exists to keep out of the linter. So {#run}
     # rescues and *returns* rather than exits, and {EXIT_REFUSED} is produced in
-    # exactly one place — {#exit_code}, over a `:rejected` {Transport::Result} —
-    # so it means that and nothing else.
+    # exactly one place — {#exit_code}, over a `:refused` {LineResult} — so it
+    # means that and nothing else.
     #
     # `Interrupt`, `SignalException` and `SystemExit` are deliberately not
     # caught. Ctrl-C halfway through a 40-line file must stay Ctrl-C.
     #
     # == Where the line between 1 and 2 actually falls
     #
-    # {Transport::Result} already draws it and this class does not redraw it:
-    # `:rejected` is *the endpoint answered and said no* — it read the payload,
-    # so a verdict about the content exists — and `:failed` is *the endpoint
-    # never answered* — connection refused, DNS, TLS, a read timeout. Nothing
-    # was delivered on that line and no verdict exists, so it is a 2. A
-    # connection refused reported as a 1 would be this tool telling an operator
-    # their run is bad on the strength of a socket error.
+    # Not where {Transport::Result} draws it. That struct answers `:rejected`
+    # for *any* non-2xx, and "a non-2xx came back" is not the same claim as
+    # "the endpoint read this payload and judged it" — so this class redraws
+    # the line rather than inheriting it.
     #
-    # 2 also dominates: a file where line 3 was refused and line 7 never arrived
-    # exits 2, because the second fact is the one that leaves work undone. Both
-    # are printed either way — the exit code chooses what to shout, never what
-    # to say.
+    # The platform emits exactly one verdict about a payload:
+    # `Api::V1::IngestsController#create` reaches
+    # `render_bad_request(payload.errors)`, a **400**. Every other non-2xx is
+    # the endpoint declining to look at the run — a 401 is answered by
+    # `authenticate_api_key!`'s `before_action` before the action runs at all,
+    # so `Ingest::Payload` is never even constructed — or the endpoint not
+    # being there (404), or the platform failing (429, 5xx). **Nothing was
+    # stored in any of them**, and none of them is a statement about anyone's
+    # suite. They are `:undelivered`, and they are a 2.
+    #
+    # `:failed` — connection refused, DNS, TLS, a read timeout — is a 2 for the
+    # same reason arrived at from further away: nothing was delivered and no
+    # verdict exists. A socket error reported as a 1 would be this tool telling
+    # an operator their run is bad on the strength of a broken pipe; a 404
+    # reported as a 1 would be it telling them the same thing on the strength
+    # of a typo in `SPECGUARD_ENDPOINT`, while its own advice line says to go
+    # fix that variable.
+    #
+    # That last case is the one that fixes the rule in place: an **unset**
+    # `SPECGUARD_ENDPOINT` is a 2 from {#build_transport}, so an endpoint set
+    # to the *wrong URL* must be a 2 as well. Same operator mistake, same fix,
+    # and the case where this tool knows more must not report worse.
+    #
+    # 2 also dominates: a file where line 3 was refused and line 7 never
+    # arrived exits 2, because the second fact is the one that leaves work
+    # undone. Both are printed either way — the exit code chooses what to
+    # shout, never what to say.
     #
     # == It re-delivers EVERY line, and will not guess which ones were failures
     #
@@ -77,6 +97,14 @@ module SpecGuard
     # confidently wrong about which runs reach the platform. So the tool is
     # explicit and user-initiated instead, `--help` says so in as many words,
     # and no line is filtered.
+    #
+    # `--from-line` is the one thing that narrows the set, and it narrows it by
+    # a number the user typed after reading the report — which is the opposite
+    # of a guess. It exists because {LineResult}'s numbering is only half of
+    # criterion 3: a report that says line 7 was refused is worth little if
+    # acting on it means re-sending lines 1 through 6, and re-sending a line
+    # that carries no `ci_run_id` is not free — `RunRecorder` has no identity to
+    # fold it onto, so it becomes a second row.
     #
     # == What it will not claim
     #
@@ -100,24 +128,28 @@ module SpecGuard
         log/test_results.jsonl written by the RSpec formatter — one whole run per
         line, byte-for-byte the body the endpoint was offered.
 
-        EVERY line in <file> is delivered. The formatter writes to this file both
-        when a delivery failed and when no API key was configured at all, and the
-        two are indistinguishable on the line, so a laptop's file is a file of
-        ordinary local runs and all of them will be sent. Nothing is filtered and
-        nothing is guessed at.
+        EVERY line in <file> is delivered — every line from --from-line onward,
+        if you give it. The formatter writes to this file both when a delivery
+        failed and when no API key was configured at all, and the two are
+        indistinguishable on the line, so a laptop's file is a file of ordinary
+        local runs and all of them will be sent. Nothing is filtered and nothing
+        is guessed at.
 
         Each line is delivered once, with no retry, and reported by its line
-        number in <file> — so a file that was only partly accepted can be resumed
-        rather than blindly re-sent.
+        number in <file>. Use --from-line to resume a file that was only partly
+        accepted, instead of re-sending all of it.
 
         Reads SPECGUARD_ENDPOINT, SPECGUARD_API_KEY and SPECGUARD_TIMEOUT.
 
         Exit codes:
           0  every line was accepted
-          1  at least one line was refused by the endpoint
+          1  at least one line was refused by the endpoint — it read the payload
+             and said no (HTTP 400)
           2  this tool could not do its job — bad flags, no endpoint or API key,
-             an unreadable file, an unparseable line, or a delivery that never
-             reached the endpoint
+             an unreadable file, an unparseable line, a delivery that never
+             reached the endpoint, or one the endpoint answered without ever
+             reading it (401, 404, 429, 5xx — nothing was stored, so none of
+             them is a verdict about your run)
       TEXT
 
       # Every line in the file was accepted by the endpoint — including the
@@ -125,14 +157,34 @@ module SpecGuard
       # exactly the reason `specguard-lint`'s empty selection is: the contract
       # has no code for "there was nothing to do", so the warning carries it.
       EXIT_OK = 0
-      # At least one line was refused. The only code reached by the endpoint
-      # having read a payload, and the only path to it is a `:rejected`
-      # {Transport::Result}.
+      # At least one line was refused. The only code that says something about
+      # the *content* of a run, and the only path to it is a non-2xx whose
+      # status is in {CONTENT_REFUSAL_CODES}.
       EXIT_REFUSED = 1
       # This tool could not do its job: bad flags, no endpoint or API key
-      # configured, a file it could not read, a line it could not parse, or a
-      # delivery that never reached the endpoint at all.
+      # configured, a file it could not read, a line it could not parse, a
+      # delivery that never reached the endpoint at all, or one the endpoint
+      # answered without ever reading — a 401, 404, 429 or 5xx.
       EXIT_MISUSE = 2
+
+      # The status codes that carry a verdict about the payload — which on this
+      # platform is exactly one.
+      #
+      # `Api::V1::IngestsController#create` reaches
+      # `render_bad_request(payload.errors)` and nothing else. A 401 comes from
+      # `authenticate_api_key!`'s `before_action` before the action runs, so
+      # `Ingest::Payload` is never constructed and no verdict about the run
+      # exists to report; a 403, 404, 429 or 5xx never gets as far as a body
+      # either. See the class comment for what that costs an operator when it
+      # is got wrong.
+      #
+      # A list of one rather than `code == 400`, so a platform that grows a
+      # second verdict is a one-line change here — and deliberately *not*
+      # pre-seeded with a 422 the platform does not send. An unlisted refusal
+      # is reported as `:undelivered`, which under-claims, and under-claiming
+      # is the safe direction: it sends an operator to look at their setup
+      # rather than at a suite that was never judged.
+      CONTENT_REFUSAL_CODES = [400].freeze
 
       # What happened to one line of the file. `number` is its 1-based position
       # in the file *as given*, counting the blank lines that were skipped, so
@@ -141,10 +193,17 @@ module SpecGuard
       LineResult = Struct.new(:number, :status, :detail, :test_run_id, :ci_run_id, keyword_init: true)
 
       # The file, as this tool reads it: the numbered lines that carry a
-      # payload, and a count of the blank ones that do not. The blanks are
-      # counted rather than dropped because a summary that quietly narrows what
-      # it is summarising is the failure this project keeps finding.
-      Source = Struct.new(:path, :lines, :blank, keyword_init: true)
+      # payload, a count of the blank ones that do not, and a count of the ones
+      # `--from-line` held back. The blanks and the skips are counted rather
+      # than dropped because a summary that quietly narrows what it is
+      # summarising is the failure this project keeps finding.
+      Source = Struct.new(:path, :lines, :blank, :skipped, keyword_init: true)
+
+      # What the command line asked for. A struct rather than a bare path,
+      # because `--from-line` is the second half of the same question — which
+      # lines of which file — and threading it as an ivar would put a value
+      # {#run} depends on somewhere {#run} does not name.
+      Options = Struct.new(:path, :from_line, keyword_init: true)
 
       STATUS_LABELS = {
         accepted: "accepted",
@@ -163,8 +222,8 @@ module SpecGuard
       # @return [Integer] 0, 1 or 2 — never anything else, and never by letting
       #   an exception reach the shell
       def run(argv)
-        path = parse_options(argv)
-        return EXIT_OK if path.nil? # --help / --version already printed
+        options = parse_options(argv)
+        return EXIT_OK if options.nil? # --help / --version already printed
 
         # Before the file is opened, deliberately. "There is nowhere to send
         # this" is the earlier question — which lines to send does not matter
@@ -173,7 +232,7 @@ module SpecGuard
         # about a path that was never the point.
         transport = build_transport
 
-        source = read_source(path)
+        source = read_source(options.path, options.from_line)
         results = source.lines.map { |number, text| deliver_line(number, text, transport) }
 
         report(source, results)
@@ -222,7 +281,11 @@ module SpecGuard
           LineResult.new(number: number, status: :accepted, detail: "HTTP #{result.code}",
                          test_run_id: result.test_run_id, ci_run_id: ci_run_id)
         when :rejected
-          LineResult.new(number: number, status: :refused, detail: result.reason, ci_run_id: ci_run_id)
+          # A non-2xx is not automatically a verdict. {CONTENT_REFUSAL_CODES}
+          # names the ones the platform actually forms an opinion in; the rest
+          # arrived, stored nothing, and said nothing about this run.
+          status = CONTENT_REFUSAL_CODES.include?(result.code) ? :refused : :undelivered
+          LineResult.new(number: number, status: status, detail: result.reason, ci_run_id: ci_run_id)
         else
           LineResult.new(number: number, status: :undelivered, detail: result.reason, ci_run_id: ci_run_id)
         end
@@ -275,15 +338,19 @@ module SpecGuard
         raise UsageError, e.message
       end
 
+      # @param from_line [Integer] the first line to deliver. Everything before
+      #   it is counted and held back, never renumbered — the whole value of
+      #   resuming from a report is that line 12 is still line 12.
       # @raise [UsageError] for every way a file can refuse to be read. All of
       #   them are exit 2 — the tool was pointed at something it cannot work
       #   from, which is not a verdict about anybody's run.
-      def read_source(path)
+      def read_source(path, from_line)
         raise UsageError, "no such file: #{path}" unless File.exist?(path)
         raise UsageError, "not a file: #{path}" unless File.file?(path)
 
         lines = []
         blank = 0
+        skipped = 0
 
         # Numbered from the file, not from the payloads: a blank line still
         # advances the count, so line 12 in this report is line 12 in an editor.
@@ -295,14 +362,16 @@ module SpecGuard
         # the file still delivers. Swallowing it here would lose a line silently
         # and letting it raise would report a bug in this tool.
         File.foreach(path).with_index(1) do |text, number|
-          if text.valid_encoding? && text.strip.empty?
+          if number < from_line
+            skipped += 1
+          elsif text.valid_encoding? && text.strip.empty?
             blank += 1
           else
             lines << [number, text]
           end
         end
 
-        Source.new(path: path, lines: lines, blank: blank)
+        Source.new(path: path, lines: lines, blank: blank, skipped: skipped)
       rescue SystemCallError, IOError => e
         raise UsageError, "could not read #{path}: #{e.message}"
       end
@@ -312,14 +381,29 @@ module SpecGuard
       # `specguard-lint` already makes.
       def report(source, results)
         if results.empty?
-          @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to deliver" \
-                       "#{" (#{source.blank} blank line#{'s' unless source.blank == 1})" if source.blank.positive?}"
+          @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to deliver#{empty_detail(source)}"
           return
         end
 
         results.each { |result| @stdout.puts line_report(result) }
         @stdout.puts summary_line(source, results)
         folding_observations(results).each { |observation| @stdout.puts observation }
+      end
+
+      # Why there was nothing to do, when there is a reason other than "the file
+      # is empty". A `--from-line` past the end of the file and a genuinely
+      # empty file are the same silence otherwise, and only one of them is the
+      # user's mistake.
+      def empty_detail(source)
+        parts = []
+        parts << "#{source.blank} blank line#{'s' unless source.blank == 1}" if source.blank.positive?
+        parts << skipped_clause(source) if source.skipped.positive?
+
+        parts.empty? ? "" : " (#{parts.join('; ')})"
+      end
+
+      def skipped_clause(source)
+        "#{source.skipped} earlier line#{'s' unless source.skipped == 1} skipped by --from-line"
       end
 
       def line_report(result)
@@ -356,6 +440,7 @@ module SpecGuard
         parts << "#{counts[:undelivered]} could not be delivered" if counts[:undelivered]
         parts << "#{counts[:unparseable]} could not be parsed" if counts[:unparseable]
         parts << "#{source.blank} blank line#{'s' unless source.blank == 1} skipped" if source.blank.positive?
+        parts << skipped_clause(source) if source.skipped.positive?
 
         parts.join("; ")
       end
@@ -381,13 +466,27 @@ module SpecGuard
           end
       end
 
+      # @return [Options, nil] `nil` when `--help` or `--version` has already
+      #   said everything the invocation was asking for.
       def parse_options(argv)
+        from_line = 1
+
         parser = OptionParser.new do |o|
           o.banner = BANNER
           o.separator ""
           o.separator DESCRIPTION
           o.separator ""
           o.separator "Options:"
+          # `Integer` rather than a String and a `to_i`: `--from-line twelve`
+          # would otherwise become 0 and silently deliver the whole file, which
+          # is the one outcome a resume flag exists to prevent. OptionParser
+          # raises `InvalidArgument` instead, and that is a 2 like every other
+          # misuse.
+          o.on("--from-line N", Integer, "Start at line N of <file>, skipping the lines before it") do |value|
+            raise UsageError, "--from-line must be 1 or greater, got #{value}" if value < 1
+
+            from_line = value
+          end
           o.on("-v", "--version", "Print the version and exit") do
             @stdout.puts "specguard-rspec #{VERSION}"
             return nil
@@ -402,7 +501,7 @@ module SpecGuard
         raise UsageError, "no file given — #{BANNER}" if files.empty?
         raise UsageError, "one file at a time, got #{files.length}: #{files.join(', ')}" if files.length > 1
 
-        files.first
+        Options.new(path: files.first, from_line: from_line)
       rescue OptionParser::ParseError => e
         # Uncaught, this is the likeliest way a user sees a false "the endpoint
         # refused your run": OptionParser raises and Ruby exits 1. Retyping it

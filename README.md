@@ -590,11 +590,24 @@ have during the run.
 > data that does not say would be confidently wrong about which of your runs
 > reach the platform. Check the file before you replay one you did not write.
 
-**Each line is reported by its line number**, so a file that was only partly
-accepted can be resumed rather than blindly re-sent, and each is delivered
-**once** — the command runs out of band and costs your CI nothing, but a retry
-loop cannot see *why* an attempt failed and you can, so re-running the command
-is the retry.
+**Each line is reported by its line number**, and `--from-line N` starts at one —
+so a file that was only partly accepted is resumed from the line the report
+named, rather than blindly re-sent:
+
+```bash
+bundle exec specguard-ingest --from-line 7 log/test_results.jsonl
+```
+
+The numbering never shifts: line 7 is line 7 of the file you gave it, both times.
+Re-sending a line that already landed is harmless *only* when it carries a
+`ci_run_id` — that is the identity SpecGuard folds a redelivery onto. A line
+**without** one has nothing to fold onto and becomes a second run, and a keyless
+local file is made entirely of those, so `--from-line` is worth the two seconds
+it takes to read the previous report.
+
+Each line is delivered **once** — the command runs out of band and costs your CI
+nothing, but a retry loop cannot see *why* an attempt failed and you can, so
+re-running the command is the retry.
 
 **A dry run is never in the file**, so nothing here can replay one: the
 formatter refuses both sinks for `rspec --dry-run` (see above), which means this
@@ -605,14 +618,21 @@ The exit code is the contract, and it is `specguard-lint`'s:
 | Code | Meaning |
 | --- | --- |
 | `0` | every line was accepted |
-| `1` | at least one line was **refused by the endpoint** — its own reasons are rendered, exactly as the formatter renders them |
-| `2` | the command could not do its job — no endpoint or API key, an unreadable file, an unparseable line, a delivery that never arrived, or a bad flag |
+| `1` | at least one line was **refused by the endpoint** — it read the payload and said no, with its own reasons rendered exactly as the formatter renders them |
+| `2` | the command could not do its job — no endpoint or API key, an unreadable file, an unparseable line, a bad flag, or a delivery the platform never stored |
 
-`1` is reachable only by the endpoint having read a payload and said no. A
-connection refused, a DNS failure or a timeout is a `2`: nothing was delivered
-on that line, no verdict about it exists, and reporting one would be this
-command telling you your run is bad on the strength of a socket error. When a
-file produces both, `2` wins — every line is still printed either way.
+`1` is reachable only by the endpoint having read a payload and said no, which
+is an **HTTP 400** and nothing else: that is the one response SpecGuard forms an
+opinion about your run in. A `401` is answered before the request reaches the
+code that would read the payload; a `404`, `429` or `5xx` never gets that far
+either. **Nothing was stored in any of them**, so all of them are a `2` — as are
+a connection refused, a DNS failure and a timeout. Reporting any of these as a
+`1` would be the command telling you your suite is bad on the strength of a
+rotated key, a typo in `SPECGUARD_ENDPOINT`, or a bad afternoon at the platform.
+Note what that buys you: `1` means *fix the payload*, `2` means *fix the setup
+or try again later*, and a `404` and an unset `SPECGUARD_ENDPOINT` — the same
+mistake — give you the same code. When a file produces both, `2` wins, and every
+line is still printed either way.
 
 **What it will not tell you** is whether a replayed line *created* a new run or
 *folded into* an existing one. The ingest endpoint's `202` carries the run's id

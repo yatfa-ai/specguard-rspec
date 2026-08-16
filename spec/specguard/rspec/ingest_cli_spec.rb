@@ -211,17 +211,17 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
-    # The endpoint ANSWERED — it read the payload and said no — which is what
-    # separates a 1 from a 2 here, and the reason names the credential so the
-    # code is never the only thing the operator has to go on.
-    it "exits 1 for a 401, naming the key rather than only the number" do
-      StubIngestEndpoint.run(status: 401, body: '{"message":"invalid api key"}') do |server|
+    # The 400 is the ONLY status that reaches this code, and this is why:
+    # `Api::V1::IngestsController#create` forms an opinion about a payload in
+    # exactly one place, `render_bad_request(payload.errors)`. Every other
+    # non-2xx is covered under exit 2 below.
+    it "exits 1 for the one status that carries a verdict about the payload" do
+      StubIngestEndpoint.run(status: 400, body: '{"message":"invalid api key"}') do |server|
         code = described_class.new(stdout: stdout, stderr: stderr,
                                    env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
                              .run([sink(run_payload)])
 
         expect(code).to eq(1)
-        expect(out).to include("line 1: refused — HTTP 401 — the API key was not accepted — invalid api key")
       end
     end
 
@@ -396,6 +396,75 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to include("1 could not be delivered")
     end
 
+    # `Transport::Result`'s `:rejected` means "a non-2xx came back", which is
+    # NOT the claim "the endpoint read this payload and judged it". The platform
+    # answers a 401 from `authenticate_api_key!`'s `before_action` without ever
+    # constructing `Ingest::Payload`, and a 403, 404, 429 or 5xx never reaches a
+    # body either. Nothing was stored in any of them, so none of them may borrow
+    # the code that means "your run was refused".
+    describe "when the endpoint answered without ever reading the payload" do
+      {
+        401 => "the API key was not accepted",
+        403 => "this API key may not write to that repository",
+        404 => "no ingest endpoint at that URL — check SPECGUARD_ENDPOINT",
+        429 => "rate limited by the endpoint",
+        500 => nil,
+        503 => nil
+      }.each do |status, advice|
+        it "exits 2 for a #{status}, reporting it as not delivered" do
+          StubIngestEndpoint.run(status: status, body: '{"message":"nope"}') do |server|
+            code = described_class.new(stdout: stdout, stderr: stderr,
+                                       env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                                 .run([sink(run_payload)])
+
+            expect(code).to eq(2)
+            expect(out).to include("line 1: not delivered — HTTP #{status}")
+            expect(out).to include(advice) if advice
+            expect(out).to include("1 could not be delivered")
+          end
+        end
+      end
+
+      # The case that fixes the rule in place: an UNSET endpoint is a 2 from
+      # `build_transport`, so an endpoint set to the WRONG URL must be a 2 as
+      # well — same operator mistake, same fix. A 1 would also contradict the
+      # tool's own advice on the very same line, which tells them to go and fix
+      # `SPECGUARD_ENDPOINT`.
+      it "agrees with itself: a wrong endpoint URL exits the same as an unset one" do
+        unset = described_class.new(stdout: StringIO.new, stderr: StringIO.new,
+                                    env: { "SPECGUARD_API_KEY" => "sgk_abc" }).run([sink(run_payload)])
+
+        StubIngestEndpoint.run(status: 404, body: '{"message":"not found"}') do |server|
+          wrong = described_class.new(stdout: stdout, stderr: stderr,
+                                      env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                                .run([sink(run_payload)])
+
+          expect([unset, wrong]).to eq([2, 2])
+        end
+      end
+
+      # A 500 is not hypothetical here: the formatter's own README lists it
+      # among the statuses that write the fallback line, so it is a first-class
+      # inhabitant of the files this command is pointed at. Retrying once the
+      # platform recovers is the right move, and exit 1 is the signal that says
+      # do not — so 2 has to outrank a genuine 400 on the same file.
+      it "lets a 5xx outrank a real content refusal on the same file" do
+        StubIngestEndpoint.run(responses: [{ status: 400, body: '{"message":"spec 2: outcome is required"}' },
+                                           { status: 500, body: '{"message":"upstream boom"}' }]) do |server|
+          path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"))
+          code = described_class.new(stdout: stdout, stderr: stderr,
+                                     env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run([path])
+
+          expect(code).to eq(2)
+          expect(out).to eq(<<~OUT)
+            line 1: refused — HTTP 400 — the endpoint rejected the payload — spec 2: outcome is required
+            line 2: not delivered — HTTP 500 — upstream boom
+            specguard-ingest: delivered 0 of 2 runs from #{path}; 1 refused; 1 could not be delivered
+          OUT
+        end
+      end
+    end
+
     describe "misuse of the command line" do
       let(:endpoint) { "https://specguard.example.com" }
 
@@ -445,6 +514,85 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         expect(out).to include("line 1: accepted")
         expect(out).to include("line 4: accepted")
         expect(out).to include("delivered 2 of 2 runs from #{path}; 2 blank lines skipped")
+      end
+    end
+  end
+
+  # Criterion 3's second half. Numbering a partly-accepted file is only worth
+  # something if acting on the report does not mean re-sending the lines that
+  # already landed — and re-sending is not free: a line carrying no `ci_run_id`
+  # has no identity for `RunRecorder` to fold onto, so it becomes a second row.
+  describe "--from-line, resuming a partly-accepted file" do
+    it "skips the lines before N and delivers the rest" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--from-line", "2", path])
+
+        expect(code).to eq(0)
+        expect(server.requests.map { |request| request.json["ci_run_id"] }).to eq(%w[b c])
+      end
+    end
+
+    # The whole point of resuming from a report: the numbers have to be the
+    # SAME numbers. A renumbered report (which is what `tail -n +2` would give
+    # you) makes the second run's "line 2" a different line from the first's.
+    it "keeps the file's own numbering rather than renumbering from the resume point" do
+      StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
+        path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run(["--from-line", "3", path])
+
+        expect(out).to eq(<<~OUT)
+          line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id c
+          specguard-ingest: delivered 1 of 1 run from #{path}; 2 earlier lines skipped by --from-line
+        OUT
+      end
+    end
+
+    # A skip that is not reported is a summary quietly narrowing what it is
+    # summarising — and here it would read as "your whole file is delivered".
+    it "says so on stderr when it skipped past everything" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload, run_payload)
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--from-line", "9", path])
+
+        expect(code).to eq(0)
+        expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to deliver " \
+                          "(2 earlier lines skipped by --from-line)\n")
+        expect(server.requests).to be_empty
+      end
+    end
+
+    it "delivers the whole file when the flag is absent" do
+      StubIngestEndpoint.run do |server|
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run([sink(run_payload, run_payload)])
+
+        expect(server.requests.length).to eq(2)
+      end
+    end
+
+    context "when the flag itself is misused" do
+      let(:endpoint) { "https://specguard.example.com" }
+
+      # `to_i` would make this 0 and silently deliver the whole file — the one
+      # outcome a resume flag exists to prevent — so it is a 2 instead.
+      it "exits 2 on a non-numeric N rather than falling back to the whole file" do
+        expect(cli.run(["--from-line", "twelve", "file.jsonl"])).to eq(2)
+        expect(err).to include("invalid argument: --from-line twelve")
+      end
+
+      [0, -3].each do |value|
+        it "exits 2 on --from-line #{value}" do
+          expect(cli.run(["--from-line", value.to_s, "file.jsonl"])).to eq(2)
+          expect(err).to eq("specguard-ingest: error: --from-line must be 1 or greater, got #{value}\n")
+        end
       end
     end
   end
