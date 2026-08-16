@@ -489,6 +489,26 @@ SpecGuard: could not deliver test telemetry (HTTP 401 — the API key was not
 accepted). Falling back to log/test_results.jsonl; the test run is unaffected.
 ```
 
+**That line carries the endpoint's own words when it has any.** A `400` refusal
+names the offending spec by index, file and line, so a rejected payload is a
+thing you can fix from the CI log rather than one you have to reproduce
+locally:
+
+```
+SpecGuard: could not deliver test telemetry (HTTP 400 — the endpoint rejected
+the payload — spec 3 (spec/orders_spec.rb:9): line_number is required and must
+be a positive integer; spec 7 (spec/orders_spec.rb:31): outcome must be one of
+passed, failed, pending). Falling back to log/test_results.jsonl; the test run
+is unaffected.
+```
+
+It stays **one** line whatever comes back. A systemic problem can have the
+endpoint refusing every spec in the suite, so at most three reasons are spelled
+out and the rest are counted (`… and 497 more`); anything that arrives without
+a reason it can read — an empty body, or the HTML a proxy answers a `413` with
+— prints the bare status line above and is still reported as a refusal, not as
+an error.
+
 There are **no retries**, and the whole delivery is bounded by `timeout`
 (10 seconds by default, against `Net::HTTP`'s own 60): telemetry is explicitly
 allowed to be lost, and a retry would only double what a hung endpoint can cost
