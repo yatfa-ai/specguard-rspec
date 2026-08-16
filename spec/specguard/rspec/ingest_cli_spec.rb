@@ -607,6 +607,209 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     end
   end
 
+  # The command's own README paragraph says a laptop's file is a file of
+  # ordinary local runs, that all of them will be sent, and to "check the file
+  # before you replay one you did not write" — and until `--list` there was no
+  # way to check it. `--from-line` does not close the loop: the report that
+  # names the line number runs *after* every line has been delivered, so the
+  # documented route to the number requires first committing the hazard.
+  #
+  # Reading the file by hand is not the alternative either. One line is one
+  # whole run, and at 20,000 examples that is megabytes of JSON on a single
+  # physical line.
+  describe "--list, previewing a file before sending it" do
+    # Criterion 1, and the half of it that matters: "delivers nothing" asserted
+    # against a real socket that recorded everything that arrived, not against
+    # a mock expectation on a method this test chose to watch. The endpoint is
+    # configured and reachable here on purpose — nothing was sent because
+    # listing does not send, not because sending was impossible.
+    it "prints a row per line and sends nothing, even with a live endpoint configured" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload(ci_run_id: "17442"), run_payload(ci_run_id: nil, commit_sha: "abc123"))
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--list", path])
+
+        expect(code).to eq(0)
+        expect(server.requests).to be_empty
+        expect(out).to eq(<<~OUT)
+          line 1: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 1 example, 1.25s
+          line 2: branch main, commit_sha abc123, no ci_run_id, 1 example, 1.25s
+          specguard-ingest: listed 2 lines from #{path}; nothing was delivered
+        OUT
+      end
+    end
+
+    # ⭐ Criterion 2, and the load-bearing one. `#run` asks `build_transport`
+    # before it opens the file, deliberately — but the file that most needs
+    # checking is the one the formatter wrote BECAUSE no API key was set
+    # (`return append(data) if blank?(configuration.api_key)`). A listing that
+    # demanded credentials would be unavailable in exactly the situation that
+    # produces the hazard it exists to prevent, so `--list` short-circuits
+    # ahead of `build_transport` and this example is what holds it there.
+    it "lists with neither SPECGUARD_ENDPOINT nor SPECGUARD_API_KEY set" do
+      path = sink(run_payload(ci_run_id: nil))
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
+
+      expect(code).to eq(0)
+      expect(out).to include("line 1: branch main")
+      expect(err).to be_empty
+    end
+
+    # The same invocation without `--list` is the control: it exits 2 naming
+    # the endpoint. The pair shows the credential check is genuinely skipped
+    # for listing rather than happening to pass.
+    it "is the only mode that runs unconfigured — delivering the same file exits 2" do
+      path = sink(run_payload)
+      listed = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
+      delivered = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {}).run([path])
+
+      expect([listed, delivered]).to eq([0, 2])
+    end
+
+    # The decision-relevant field, per the README: a line WITHOUT a `ci_run_id`
+    # has nothing for `RunRecorder` to fold onto and becomes a second run, and
+    # a keyless local file is made entirely of those. Its absence is stated,
+    # never left as a gap in the row for the reader to notice.
+    it "names the absence of a ci_run_id rather than leaving a gap" do
+      described_class.new(stdout: stdout, stderr: stderr, env: {})
+                     .run(["--list", sink(run_payload(ci_run_id: nil))])
+
+      expect(out).to include("no ci_run_id")
+    end
+
+    it "counts the examples the run carries" do
+      payload = run_payload
+      payload["specs"] = Array.new(3) { payload["specs"].first }
+      described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", sink(payload)])
+
+      expect(out).to include("3 examples, 1.25s")
+    end
+
+    # `#scalar`, for the same reason `#deliver_line` uses it on `ci_run_id`:
+    # the envelope is free-form, and rendering `{"a"=>1}` as a branch would be
+    # this tool inventing structure the line does not have.
+    it "reports a non-scalar field as absent rather than rendering its structure" do
+      described_class.new(stdout: stdout, stderr: stderr, env: {})
+                     .run(["--list", sink({ "branch" => { "a" => 1 }, "ci_run_id" => %w[x] })])
+
+      expect(out).to include("line 1: no branch, no commit_sha, no ci_run_id, no specs, no duration_seconds")
+      expect(out).not_to include("=>")
+    end
+
+    # Criterion 3. Listing exists to be read before `--from-line`, so the
+    # numbers it prints must be the numbers that flag takes — the file's own.
+    it "composes with --from-line, keeping the file's own numbering" do
+      path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--from-line", "3", path])
+
+      expect(code).to eq(0)
+      expect(out).to include("line 3: branch main")
+      expect(out).not_to include("line 1:")
+      expect(out).to include("listed 1 line from #{path}; 2 earlier lines skipped by --from-line; " \
+                             "nothing was delivered")
+    end
+
+    it "counts the blank lines it skipped rather than dropping them from the listing" do
+      path = File.join(@dir, "gappy.jsonl")
+      File.write(path, "#{JSON.generate(run_payload)}\n\n#{JSON.generate(run_payload)}\n")
+      described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
+
+      expect(out).to include("line 1: branch main")
+      expect(out).to include("line 3: branch main")
+      expect(out).to include("listed 2 lines from #{path}; 1 blank line skipped; nothing was delivered")
+    end
+
+    # Criterion 4, reusing `#read_source`'s existing discipline rather than
+    # re-implementing it: a line that is not valid UTF-8 is kept rather than
+    # dropped, so `#parse_payload` can name it — and the rest of the file is
+    # still listed.
+    it "lists an unparseable line as unparseable and keeps going" do
+      path = File.join(@dir, "binary.jsonl")
+      File.open(path, "wb") do |file|
+        file.write("#{JSON.generate(run_payload)}\n")
+        file.write([0xC3, 0x28, 0xFF, 0x0A].pack("C*"))
+        file.write("{truncated\n")
+        file.write("#{JSON.generate(run_payload(ci_run_id: 'last'))}\n")
+      end
+
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
+
+      expect(code).to eq(0)
+      expect(out).to include("line 2: unparseable — the line is not valid UTF-8, so it cannot be a run")
+      expect(out).to include("line 3: unparseable — could not parse the line as JSON:")
+      expect(out).to include("line 4: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, " \
+                             "ci_run_id last")
+      expect(err).to be_empty
+    end
+
+    # ⭐ Criterion 5. Listing delivers nothing, so it can never carry a verdict
+    # about anybody's run — `EXIT_REFUSED` stays produced in exactly one place,
+    # `#exit_code`, which listing does not reach. Both files below are ones the
+    # DELIVERY path exits non-zero on: the first would be a 1 (the endpoint
+    # refuses it), the second a 2 (a line will not parse). Listed, both are 0.
+    it "never reaches exit 1 — a file that delivery would refuse still lists as 0" do
+      StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
+        path = sink(run_payload)
+        configured = env.merge("SPECGUARD_ENDPOINT" => server.endpoint)
+
+        listed = described_class.new(stdout: stdout, stderr: stderr, env: configured).run(["--list", path])
+        delivered = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: configured).run([path])
+
+        expect([listed, delivered]).to eq([0, 1])
+      end
+    end
+
+    it "exits 0 on a file whose lines delivery would exit 2 for" do
+      expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
+                            .run(["--list", sink("{not json", "null")])).to eq(0)
+      expect(out).to include("line 1: unparseable")
+      expect(out).to include("line 2: unparseable — the line is NilClass JSON, and a run is an object")
+    end
+
+    it "exits 2 on a file that does not exist, without asking for credentials first" do
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {})
+                            .run(["--list", File.join(@dir, "gone.jsonl")])
+
+      expect(code).to eq(2)
+      expect(err).to eq("specguard-ingest: error: no such file: #{File.join(@dir, 'gone.jsonl')}\n")
+      expect(out).to be_empty
+    end
+
+    it "exits 2 on a directory" do
+      expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", @dir])).to eq(2)
+      expect(err).to eq("specguard-ingest: error: not a file: #{@dir}\n")
+    end
+
+    # `--liist` is close enough to `--list` that OptionParser appends its own
+    # "Did you mean?" line, which is welcome and is why this asserts the retyped
+    # prefix rather than the whole of stderr. The property under test is the
+    # code: a typo'd flag must not borrow the 1 that means "the endpoint refused
+    # your run", and in listing mode nothing was ever offered to an endpoint.
+    it "exits 2 on a bad flag alongside --list" do
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--liist", "f.jsonl"])
+
+      expect(code).to eq(2)
+      expect(err).to start_with("specguard-ingest: error: invalid option: --liist\n")
+    end
+
+    it "exits 2 on --list with no file given" do
+      expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list"])).to eq(2)
+      expect(err).to eq("specguard-ingest: error: no file given — #{described_class::BANNER}\n")
+    end
+
+    # A listing that printed nothing and exited 0 would read as "your file is
+    # clear" — the same silent-success failure the empty delivery guards.
+    it "says so on stderr when there was nothing to list, rather than printing nothing" do
+      path = File.join(@dir, "empty.jsonl")
+      File.write(path, "")
+
+      expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])).to eq(0)
+      expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to list\n")
+      expect(out).to be_empty
+    end
+  end
+
   describe "--help and --version" do
     let(:endpoint) { "https://specguard.example.com" }
 
@@ -624,6 +827,18 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       expect(out).to include("EVERY line in <file> is delivered")
       expect(out).to include("when no API key was configured at all")
+    end
+
+    # The hazard above was stated with no remedy for as long as there was none.
+    # `--help` is where a user meets both, so it must name the thing that lets
+    # them act on the warning — and say that it costs no credentials, since the
+    # file worth checking is the keyless one.
+    it "names the remedy next to the hazard, and that listing needs no key" do
+      cli.run(["--help"])
+
+      expect(out).to include("--list prints one row per line")
+      expect(out).to include("no SPECGUARD_ENDPOINT and no SPECGUARD_API_KEY")
+      expect(out).to include("List the runs in <file> without delivering any of them")
     end
 
     it "prints the gem version" do
