@@ -675,8 +675,13 @@ or try again later*, and a `404` and an unset `SPECGUARD_ENDPOINT` — the same
 mistake — give you the same code. When a file produces both, `2` wins, and every
 line is still printed either way.
 
-`--list` sits outside that table's `1`: it makes no request, so no endpoint has
-read anything and there is no verdict to report. A listing exits `0` or `2` only.
+`--list` sits outside that table's `1`, and outside most of its `2`: it makes no
+request, so no endpoint has read anything and there is no verdict to report. A
+listing exits `0` or `2` only, and the only `2`s it can reach are a bad flag and
+a file it could not read. The other causes in that row are delivery's, not
+listing's — listing needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`,
+and an unparseable line becomes a row in the listing that names it rather than
+an exit code.
 
 **What it will not tell you** is whether a replayed line *created* a new run or
 *folded into* an existing one. The ingest endpoint's `202` carries the run's id

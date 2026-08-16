@@ -179,7 +179,10 @@ module SpecGuard
              an unreadable file, an unparseable line, a delivery that never
              reached the endpoint, or one the endpoint answered without ever
              reading it (401, 404, 429, 5xx — nothing was stored, so none of
-             them is a verdict about your run)
+             them is a verdict about your run). With --list the only reachable
+             2s are a bad flag and a file that cannot be read: listing needs no
+             credentials, and an unparseable line becomes a row in the listing
+             rather than an exit code
       TEXT
 
       # Every line in the file was accepted by the endpoint — including the

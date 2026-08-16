@@ -798,6 +798,31 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(err).to eq("specguard-ingest: error: no file given — #{described_class::BANNER}\n")
     end
 
+    # ⭐ The exit-code table is the other half of what `--help` promises, and it
+    # is the half that went stale: it enumerates causes of a `2` — "no endpoint
+    # or API key", "an unparseable line" — that listing is defined not to have,
+    # and that the examples above prove it does not. Left unqualified, one
+    # --help screen told a reader both that listing needs no credentials and
+    # that missing credentials are a 2. Asserting the carve-out ALONGSIDE the
+    # behaviour it describes is what stops the row drifting out of step again:
+    # this fails if the table stops saying it, and equally if listing ever
+    # starts exiting 2 for either cause.
+    it "documents which 2s listing can reach, and reaches only those" do
+      cli.run(["--help"])
+      table = out.gsub(/\s+/, " ")
+
+      expect(table).to include("With --list the only reachable 2s are a bad flag and a file that cannot be read")
+      expect(table).to include("listing needs no credentials")
+      expect(table).to include("an unparseable line becomes a row in the listing rather than an exit code")
+
+      unconfigured = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+                                    .run(["--list", sink(run_payload)])
+      unparseable = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+                                   .run(["--list", sink("{not json")])
+
+      expect([unconfigured, unparseable]).to eq([0, 0])
+    end
+
     # A listing that printed nothing and exited 0 would read as "your file is
     # clear" — the same silent-success failure the empty delivery guards.
     it "says so on stderr when there was nothing to list, rather than printing nothing" do
