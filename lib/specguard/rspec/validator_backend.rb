@@ -362,7 +362,16 @@ module SpecGuard
         # annotation site. They contribute nothing to `summary.annotations`,
         # exactly as `CLI#summary_line` keeps unread files out of the gem's own
         # annotation count.
-        NON_ANNOTATION_KINDS = %w[read no-match].freeze
+        #
+        # DERIVED from {KINDS}, not transcribed beside it: folding into
+        # KIND_READ is what "about a file, not about a site" MEANS here, so the
+        # filter is the rule rather than a copy of it. The copy could only go
+        # one way — {#failing_result} raises by name on a kind {KINDS} has not
+        # been taught, so the port growing its vocabulary forces an edit there
+        # and none here, and that one-line edit is exactly what would silence
+        # the guard while leaving a hand-written list behind. The set is pinned
+        # by name in the spec, so widening it stays a decision someone makes.
+        NON_ANNOTATION_KINDS = KINDS.select { |_kind, mapped| mapped == Finding::KIND_READ }.keys.freeze
 
         # A full audit passes every spec file in the repository — thousands of
         # arguments on a large suite — and an argument vector has two separate
