@@ -106,6 +106,28 @@ module SpecGuard
     # that carries no `ci_run_id` is not free — `RunRecorder` has no identity to
     # fold it onto, so it becomes a second row.
     #
+    # == `--list`, which is what makes "check the file first" an instruction
+    #
+    # Having refused to guess *for* the user, this command owes them what they
+    # need to decide. {#list} prints one row per line off the fields the
+    # envelope already carries — `branch`, `commit_sha`, `ci_run_id` or its
+    # absence, how many examples, how long — and delivers nothing. Reading the
+    # file by hand is not the alternative: one line is one whole run, and at
+    # this project's design point that is megabytes of JSON on a single
+    # physical line.
+    #
+    # It short-circuits **ahead of {#build_transport}**, deliberately, and that
+    # ordering is the load-bearing part. `build_transport` raises for a blank
+    # `SPECGUARD_ENDPOINT` or `SPECGUARD_API_KEY`, and the file that most needs
+    # checking is the one written *because no API key was set*
+    # (`Formatter` — `return append(data) if blank?(configuration.api_key)`).
+    # Requiring a key to look at the file would withdraw the instrument in
+    # exactly the situation that produces the hazard.
+    #
+    # Listing delivers nothing, so it can never be a content verdict: it
+    # answers 0 or 2 and never routes through {#exit_code}, which stays the one
+    # place {EXIT_REFUSED} is produced.
+    #
     # == What it will not claim
     #
     # The natural question about a replay is whether a line *folded onto* an
@@ -135,6 +157,13 @@ module SpecGuard
         local runs and all of them will be sent. Nothing is filtered and nothing
         is guessed at.
 
+        So check the file first: --list prints one row per line — branch, commit,
+        ci_run_id or its absence, how many examples, how long — and delivers
+        nothing at all. It needs no SPECGUARD_ENDPOINT and no SPECGUARD_API_KEY,
+        because the file most worth checking is the one written when no API key
+        was set. It composes with --from-line, so you can list the exact set you
+        are about to send.
+
         Each line is delivered once, with no retry, and reported by its line
         number in <file>. Use --from-line to resume a file that was only partly
         accepted, instead of re-sending all of it.
@@ -142,14 +171,18 @@ module SpecGuard
         Reads SPECGUARD_ENDPOINT, SPECGUARD_API_KEY and SPECGUARD_TIMEOUT.
 
         Exit codes:
-          0  every line was accepted
+          0  every line was accepted — or, with --list, the file was listed
           1  at least one line was refused by the endpoint — it read the payload
-             and said no (HTTP 400)
+             and said no (HTTP 400). Unreachable with --list, which delivers
+             nothing and so can never carry a verdict about a run
           2  this tool could not do its job — bad flags, no endpoint or API key,
              an unreadable file, an unparseable line, a delivery that never
              reached the endpoint, or one the endpoint answered without ever
              reading it (401, 404, 429, 5xx — nothing was stored, so none of
-             them is a verdict about your run)
+             them is a verdict about your run). With --list the only reachable
+             2s are a bad flag and a file that cannot be read: listing needs no
+             credentials, and an unparseable line becomes a row in the listing
+             rather than an exit code
       TEXT
 
       # Every line in the file was accepted by the endpoint — including the
@@ -202,8 +235,10 @@ module SpecGuard
       # What the command line asked for. A struct rather than a bare path,
       # because `--from-line` is the second half of the same question — which
       # lines of which file — and threading it as an ivar would put a value
-      # {#run} depends on somewhere {#run} does not name.
-      Options = Struct.new(:path, :from_line, keyword_init: true)
+      # {#run} depends on somewhere {#run} does not name. `list` is the third
+      # half of the same question: whether those lines are to be *shown* or
+      # *sent*.
+      Options = Struct.new(:path, :from_line, :list, keyword_init: true)
 
       STATUS_LABELS = {
         accepted: "accepted",
@@ -224,6 +259,14 @@ module SpecGuard
       def run(argv)
         options = parse_options(argv)
         return EXIT_OK if options.nil? # --help / --version already printed
+
+        # Ahead of `build_transport`, and that is the whole point of the branch
+        # being here rather than after it. Listing sends nothing, so it needs no
+        # endpoint and no key — and the file that most wants looking at is the
+        # one the formatter wrote *because* no key was set. A listing that
+        # demanded credentials would be unavailable in exactly the case it
+        # exists for.
+        return list(options) if options.list
 
         # Before the file is opened, deliberately. "There is nowhere to send
         # this" is the earlier question — which lines to send does not matter
@@ -260,6 +303,91 @@ module SpecGuard
         return EXIT_REFUSED if results.any? { |result| result.status == :refused }
 
         EXIT_OK
+      end
+
+      # `--list`: read the file, print what is in it, deliver nothing.
+      #
+      # Note what this does *not* do — it does not call {#exit_code}. Listing
+      # makes no request, so no endpoint has read anything and no verdict about
+      # anyone's run exists; routing it through the shared code would put a
+      # second producer behind {EXIT_REFUSED} and cost exit 1 the single meaning
+      # the class comment is built around. The two codes reachable from here are
+      # 0 (listed) and, via the {UsageError} {#read_source} raises, 2.
+      #
+      # It reuses {#read_source} rather than reading the file itself, which is
+      # what makes the numbers here the same numbers `--from-line` takes and
+      # what makes an invalid-UTF-8 line arrive as a line to be named rather
+      # than an exception.
+      def list(options)
+        source = read_source(options.path, options.from_line)
+
+        if source.lines.empty?
+          @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to list#{empty_detail(source)}"
+          return EXIT_OK
+        end
+
+        source.lines.each { |number, text| @stdout.puts list_row(number, text) }
+        @stdout.puts list_summary(source)
+        EXIT_OK
+      end
+
+      # One line of the file, as facts rather than as a judgement. An
+      # unparseable line is listed *as unparseable* — the same discipline
+      # {#deliver_line} applies, for the same reason: a line silently dropped
+      # from a preview is a preview that under-reports what the delivery would
+      # do.
+      def list_row(number, text)
+        payload, problem = parse_payload(text)
+        return "line #{number}: #{STATUS_LABELS.fetch(:unparseable)} — #{problem}" if payload.nil?
+
+        "line #{number}: #{listed_fields(payload).join(', ')}"
+      end
+
+      # The envelope is free-form, so every field is reported through {#scalar}
+      # for the reason {#deliver_line} reports `ci_run_id` that way: rendering
+      # `{"a"=>1}` as a branch would be this tool inventing structure the line
+      # does not have. `ci_run_id` is the decision-relevant one — a line without
+      # it has nothing for `RunRecorder` to fold onto and becomes a second run —
+      # so its absence is stated rather than left as a gap in the row.
+      def listed_fields(payload)
+        [named("branch", scalar(payload["branch"])),
+         named("commit_sha", scalar(payload["commit_sha"])),
+         named("ci_run_id", scalar(payload["ci_run_id"])),
+         example_count(payload),
+         listed_duration(payload)]
+      end
+
+      def named(name, value)
+        value ? "#{name} #{value}" : "no #{name}"
+      end
+
+      # `0 examples` and `no specs` are different facts: an empty list is a run
+      # that carried none, a missing or non-Array `specs` is a line that does
+      # not say.
+      def example_count(payload)
+        specs = payload["specs"]
+        return "no specs" unless specs.is_a?(Array)
+
+        "#{specs.length} example#{'s' unless specs.length == 1}"
+      end
+
+      def listed_duration(payload)
+        value = payload["duration_seconds"]
+        value.is_a?(Numeric) ? "#{value}s" : "no duration_seconds"
+      end
+
+      # Says what was listed and, last and unconditionally, that nothing left
+      # the machine — the one thing a reader of a preview must not have to infer
+      # from the absence of a delivery report.
+      def list_summary(source)
+        parts = ["specguard-ingest: listed #{source.lines.length} line#{'s' unless source.lines.length == 1} " \
+                 "from #{source.path}"]
+
+        parts << blank_clause(source) if source.blank.positive?
+        parts << skipped_clause(source) if source.skipped.positive?
+        parts << "nothing was delivered"
+
+        parts.join("; ")
       end
 
       # One line, one attempt, one result — and no retry loop.
@@ -406,6 +534,10 @@ module SpecGuard
         "#{source.skipped} earlier line#{'s' unless source.skipped == 1} skipped by --from-line"
       end
 
+      def blank_clause(source)
+        "#{source.blank} blank line#{'s' unless source.blank == 1} skipped"
+      end
+
       def line_report(result)
         detail = [result.detail, identity(result)].compact.join(", ")
         line = "line #{result.number}: #{STATUS_LABELS.fetch(result.status)}"
@@ -439,7 +571,7 @@ module SpecGuard
         parts << "#{counts[:refused]} refused" if counts[:refused]
         parts << "#{counts[:undelivered]} could not be delivered" if counts[:undelivered]
         parts << "#{counts[:unparseable]} could not be parsed" if counts[:unparseable]
-        parts << "#{source.blank} blank line#{'s' unless source.blank == 1} skipped" if source.blank.positive?
+        parts << blank_clause(source) if source.blank.positive?
         parts << skipped_clause(source) if source.skipped.positive?
 
         parts.join("; ")
@@ -470,6 +602,7 @@ module SpecGuard
       #   said everything the invocation was asking for.
       def parse_options(argv)
         from_line = 1
+        list = false
 
         parser = OptionParser.new do |o|
           o.banner = BANNER
@@ -477,6 +610,11 @@ module SpecGuard
           o.separator DESCRIPTION
           o.separator ""
           o.separator "Options:"
+          # Deliberately alongside --from-line rather than instead of it: the
+          # two compose, so the set you list is the set you are about to send.
+          o.on("--list", "List the runs in <file> without delivering any of them") do
+            list = true
+          end
           # `Integer` rather than a String and a `to_i`: `--from-line twelve`
           # would otherwise become 0 and silently deliver the whole file, which
           # is the one outcome a resume flag exists to prevent. OptionParser
@@ -501,7 +639,7 @@ module SpecGuard
         raise UsageError, "no file given — #{BANNER}" if files.empty?
         raise UsageError, "one file at a time, got #{files.length}: #{files.join(', ')}" if files.length > 1
 
-        Options.new(path: files.first, from_line: from_line)
+        Options.new(path: files.first, from_line: from_line, list: list)
       rescue OptionParser::ParseError => e
         # Uncaught, this is the likeliest way a user sees a false "the endpoint
         # refused your run": OptionParser raises and Ruby exits 1. Retyping it

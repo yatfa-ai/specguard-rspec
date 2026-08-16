@@ -588,7 +588,48 @@ have during the run.
 > file is a file of ordinary local runs, and this command will send all of them.
 > There is no filter and no heuristic: guessing which lines "were failures" from
 > data that does not say would be confidently wrong about which of your runs
-> reach the platform. Check the file before you replay one you did not write.
+> reach the platform. Check the file first with
+> [`--list`](#checking-a-file-before-you-send-it----list), and check it before
+> you replay one you did not write.
+
+#### Checking a file before you send it — `--list`
+
+`--list` prints one row per line and **delivers nothing**:
+
+```bash
+bundle exec specguard-ingest --list log/test_results.jsonl
+```
+
+```
+line 1: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 412 examples, 93.4s
+line 2: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 388 examples, 91.2s
+line 3: branch spike/local, commit_sha 9c2e7a10b4d3, no ci_run_id, 6 examples, 0.4s
+line 4: unparseable — could not parse the line as JSON: unexpected end of input
+specguard-ingest: listed 4 lines from log/test_results.jsonl; nothing was delivered
+```
+
+Every field on the row is already on the line — nothing is guessed at, and a
+line the command cannot parse is listed **as unparseable** rather than quietly
+dropped from the preview. `no ci_run_id` is the one to read for: that line has
+no identity for SpecGuard to fold a redelivery onto, so sending it creates a new
+run rather than joining an existing one.
+
+Reading the file yourself is not the alternative. One line is one whole run, and
+at 20,000 examples that is megabytes of JSON on a single physical line.
+
+**It needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`** — deliberately.
+The file most worth checking is the one written *because* no API key was set, so
+requiring a key to look at it would withdraw the instrument in exactly the
+situation that produces the hazard. It composes with `--from-line` too, so you
+can list the exact set you are about to send:
+
+```bash
+bundle exec specguard-ingest --list --from-line 7 log/test_results.jsonl
+```
+
+Listing sends nothing, so it can never be a verdict about a run: it exits `0`
+when it listed the file and `2` when it could not read it or the flags were
+wrong. **`1` is unreachable with `--list`.**
 
 **Each line is reported by its line number**, and `--from-line N` starts at one —
 so a file that was only partly accepted is resumed from the line the report
@@ -633,6 +674,14 @@ Note what that buys you: `1` means *fix the payload*, `2` means *fix the setup
 or try again later*, and a `404` and an unset `SPECGUARD_ENDPOINT` — the same
 mistake — give you the same code. When a file produces both, `2` wins, and every
 line is still printed either way.
+
+`--list` sits outside that table's `1`, and outside most of its `2`: it makes no
+request, so no endpoint has read anything and there is no verdict to report. A
+listing exits `0` or `2` only, and the only `2`s it can reach are a bad flag and
+a file it could not read. The other causes in that row are delivery's, not
+listing's — listing needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`,
+and an unparseable line becomes a row in the listing that names it rather than
+an exit code.
 
 **What it will not tell you** is whether a replayed line *created* a new run or
 *folded into* an existing one. The ingest endpoint's `202` carries the run's id
