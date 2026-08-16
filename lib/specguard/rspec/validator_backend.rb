@@ -92,10 +92,9 @@ module SpecGuard
     # spells it its own way. The third is not a wording difference at all,
     # which is why this list does not call the group "text differences":
     #
-    #   * the read-failure tail — see {Scanner.scan_text}, which records why
-    #     the gem emits a fixed string where the binary names the offending
-    #     position. Both refuse the file; PROTOCOL.md §1.1 requires that much
-    #     and specifies no prose.
+    #   * the read-failure tail — see {Scanner.scan_text}, which records the
+    #     ratified difference and both spellings. Both refuse the file;
+    #     PROTOCOL.md §1.1 requires that much and specifies no prose.
     #   * the parse-failure tail — see {Scanner#parse} (1). A payload that
     #     survives normalisation and still is not JSON is described by
     #     whichever JSON parser saw it, so the Ruby path carries Ruby's
