@@ -829,6 +829,20 @@ module SpecGuard
     # dead stream is still not worth failing a run over ({#emit_warning} makes
     # the same trade). The never-block-CI contract is not suspended by a
     # reporting feature.
+    #
+    # Both rescues are *behaviour*, not decoration, so both are pinned by an
+    # example that fails if they are removed or emptied:
+    #
+    # * the inner one degrades to the refusal rather than to silence — which is
+    #   the whole reason {DRY_RUN_REFUSAL} is a constant — and "reports the
+    #   refusal, and only the refusal, when the report cannot be built" asserts
+    #   the emitted text *equals* it, so both emptying the fallback and
+    #   swallowing it fail.
+    # * the outer one keeps a dead stream from spending the run's one warning
+    #   through `close`'s {#never_fail_the_run}. Without it, a stream that
+    #   failed here would consume the budget a *genuine* later failure needs,
+    #   trading a line nobody could read for one somebody needed; "does not
+    #   spend the run's one warning when the error stream is dead" pins it.
     def skip_dry_run
       lines =
         begin
@@ -887,7 +901,7 @@ module SpecGuard
       return [] if specs.empty?
 
       sites = specs.map { |spec| ["#{spec['spec_file_path']}:#{spec['line_number']}", spec] }
-                   .sort_by { |site, spec| [spec["spec_file_path"].to_s, spec["line_number"].to_i, site] }
+                   .sort_by { |_site, spec| [spec["spec_file_path"].to_s, spec["line_number"].to_i] }
       width = sites.map { |site, _| site.length }.max
 
       heading = "#{REPORT_INDENT}the #{specs.length} unannotated " \
@@ -903,9 +917,14 @@ module SpecGuard
     # the suite had reached — or had never left — a state it had not, which is
     # the one way a coverage figure actively misleads rather than merely
     # approximates.
+    #
+    # There is deliberately no `total.zero?` guard here. {#coverage_sentence}
+    # already returns before reaching this, so a guard would be a branch no
+    # input could reach — and an unreachable branch is one nothing can falsify,
+    # which is exactly what the two clamps below are not. One zero-denominator
+    # answer, in one place, pinned by "says there is nothing to measure rather
+    # than dividing by zero".
     def annotated_percentage(annotated, total)
-      return 0 if total.zero?
-
       percentage = (annotated * 100.0 / total).round
       return 99 if percentage >= 100 && annotated < total
       return 1 if percentage <= 0 && annotated.positive?

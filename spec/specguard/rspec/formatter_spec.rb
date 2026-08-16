@@ -1132,17 +1132,25 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
         it "reports the split, and names each unannotated example with its site" do
           mixed_suite!
-          finish(build_example(name: "a", line_number: 1))
-          finish(build_example(name: "b", line_number: 2))
-          finish(build_example(name: "c", line_number: 3))
-          finish(build_example(name: "d", line_number: 4))
+          finish(build_example(name: "alpha", line_number: 1))
+          finish(build_example(name: "beta", line_number: 2))
+          finish(build_example(name: "gamma", line_number: 3))
+          finish(build_example(name: "delta", line_number: 4))
           formatter.close(nil)
 
           expect(errors.string).to include("4 examples, 2 annotated, 2 unannotated (50% annotated)")
-          expect(errors.string).to include("spec/orders_spec.rb:2", "b")
-          expect(errors.string).to include("spec/orders_spec.rb:4", "d")
-          expect(errors.string).not_to include("spec/orders_spec.rb:1")
-          expect(errors.string).not_to include("spec/orders_spec.rb:3")
+          # Site *and* name matched on one line, rather than as two `include`s
+          # over the whole stream. Names were `"a"`/`"b"` and so on until the
+          # SPGD-639 review pointed out that single characters are already
+          # substrings of the boilerplate refusal ("bodies", "dry"), so the
+          # name half of this example's claim could not fail — an
+          # implementation that emitted sites and dropped names entirely passed
+          # it. Distinctive names anchored to their own line make the assertion
+          # mean what the title says.
+          expect(errors.string).to match(%r{^\s+spec/orders_spec\.rb:2\s+beta$})
+          expect(errors.string).to match(%r{^\s+spec/orders_spec\.rb:4\s+delta$})
+          expect(errors.string).not_to include("spec/orders_spec.rb:1", "alpha")
+          expect(errors.string).not_to include("spec/orders_spec.rb:3", "gamma")
         end
 
         # Criterion 5: the state the metric exists to reach is not an error,
@@ -1205,6 +1213,55 @@ RSpec.describe SpecGuard::RSpecFormatter do
         it "never rounds down to 0% once an example is annotated" do
           expect(formatter.send(:annotated_percentage, 1, 500)).to eq(1)
           expect(formatter.send(:annotated_percentage, 0, 500)).to eq(0)
+        end
+
+        # Criterion 4's second half, and the branch the SPGD-639 review
+        # rejected the first attempt for leaving unfalsified.
+        #
+        # "A failure while building the report must not fail the run" has two
+        # halves. The no-raise half was already covered by "does not raise out
+        # of close". The *what-is-said-instead* half was not covered by
+        # anything: mutating the fallback from `[DRY_RUN_REFUSAL]` to `[]` —
+        # turning "degrade to the old behaviour" into precisely the silence the
+        # branch exists to prevent — failed 0 of 1034 examples.
+        #
+        # `eq` rather than `include`, deliberately, and it is what makes this
+        # example bite in both directions: an emptied fallback fails it (the
+        # stream is bare), and so does one that emits the refusal *plus* a
+        # half-built report, which would be worse than either — figures nobody
+        # should trust, printed by the path that exists because they could not
+        # be computed.
+        it "reports the refusal, and only the refusal, when the report cannot be built" do
+          allow(formatter).to receive(:unannotated_worklist).and_raise(IOError, "scanner died mid-report")
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(errors.string.strip).to eq(described_class::DRY_RUN_REFUSAL)
+          expect(errors.string).not_to include("Annotation coverage", "by definition site")
+        end
+
+        # The outer rescue's companion, which is a different claim from the one
+        # above: not "what is said when the report cannot be built" but "what is
+        # *kept* when it cannot be written".
+        #
+        # A dead stream here is unreportable by definition — there is nowhere to
+        # say so. What must survive is the run's one warning, which a genuine
+        # later failure still needs. Without the local rescue the exception
+        # reaches `close`'s `never_fail_the_run`, which spends the budget on a
+        # warning that goes to the same dead stream: a line nobody can read,
+        # traded for one somebody needed.
+        it "does not spend the run's one warning when the error stream is dead" do
+          dead = instance_double(StringIO)
+          allow(dead).to receive(:puts).and_raise(IOError, "stderr closed")
+          formatter.instance_variable_set(:@error_stream, dead)
+          finish(build_example)
+
+          expect { formatter.close(nil) }.not_to raise_error
+
+          formatter.instance_variable_set(:@error_stream, errors)
+          formatter.send(:warn_once, IOError.new("the sink went away"))
+
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "the sink went away")
         end
 
         # The report is the *only* thing added. Both sinks stay refused.
