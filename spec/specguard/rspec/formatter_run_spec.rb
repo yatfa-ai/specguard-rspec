@@ -481,15 +481,15 @@ end
 # derives `total_specs_count=6 annotated_specs_count=3`. Against slice 1's
 # output, the same file returns one error *per spec*
 # ("status must be one of annotated, unannotated") and the controller
-# (`api/v1/ingests_controller.rb:10`) renders 400.
+# (`Api::V1::IngestsController#create`) renders 400 via `render_bad_request`.
 #
 # Note what the second probe also showed: without `status`, the platform's
-# `annotated_specs` — which *rejects* `"unannotated"` rather than selecting
-# `"annotated"` (`payload.rb:33`) — counted all six as annotated. So the field
+# `Ingest::Payload#annotated_specs` — which *rejects* `"unannotated"` rather
+# than selecting `"annotated"` — counted all six as annotated. So the field
 # is not merely required; it is the one that stops the headline metric being
 # 100% for a suite with no annotations in it at all.
 module IngestContract
-  STATUSES = %w[annotated unannotated].freeze # payload.rb:17
+  STATUSES = %w[annotated unannotated].freeze # Ingest::Payload::STATUSES
 
   module_function
 
@@ -499,23 +499,23 @@ module IngestContract
     label = "specs[#{index}]"
     errors = []
 
-    # payload.rb:101-106
+    # Ingest::Payload#validate_file_path
     unless spec["file_path"].is_a?(String) && !spec["file_path"].to_s.strip.empty?
       errors << "#{label}: file_path is required and must be a non-empty string"
     end
 
-    # payload.rb:108-113
+    # Ingest::Payload#validate_line_number
     unless spec["line_number"].is_a?(Integer) && spec["line_number"].positive?
       errors << "#{label}: line_number is required and must be a positive integer"
     end
 
-    # payload.rb:115-119
+    # Ingest::Payload#validate_status
     errors << "#{label}: status must be one of #{STATUSES.join(', ')}" unless STATUSES.include?(spec["status"])
 
     errors + intent_errors(spec, label)
   end
 
-  # payload.rb:124-141
+  # Ingest::Payload#validate_intent
   def intent_errors(spec, label)
     intent = spec["intent"]
 
@@ -524,8 +524,9 @@ module IngestContract
       return ["#{label}: intent is required when status is \"annotated\""] if intent.nil?
       return ["#{label}: intent must be a JSON object"] unless intent.is_a?(Hash)
 
-      # payload.rb:134 — the platform re-validates every annotated intent
-      # against the same OpenTestIntent schema this gem vendors.
+      # `Ingest::Payload#validate_intent` calls `OpenTestIntent.validation_errors`
+      # — the platform re-validates every annotated intent against the same
+      # OpenTestIntent schema this gem vendors.
       schema.violations(intent).map { |reason| "#{label}: intent is invalid — #{reason}" }
     when "unannotated"
       intent.nil? ? [] : ["#{label}: intent must be null when status is \"unannotated\""]
@@ -1007,9 +1008,10 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(unannotated.map { |spec| spec["intent"] }).to all(be_nil)
       end
 
-      # The counts the platform derives from this payload (`payload.rb:38-46`),
-      # and the reason `status` is load-bearing rather than informational: this
-      # ratio is the headline dashboard metric.
+      # The counts the platform derives from this payload
+      # (`Ingest::Payload#test_run_attributes`), and the reason `status` is
+      # load-bearing rather than informational: this ratio is the headline
+      # dashboard metric.
       it "supports the annotated ratio the platform derives, rather than a vacuous 100%" do
         annotated = specs.count { |spec| spec["status"] == "annotated" }
 

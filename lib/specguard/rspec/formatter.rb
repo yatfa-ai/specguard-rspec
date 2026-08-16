@@ -206,8 +206,7 @@ module SpecGuard
     DRY_RUN_WARNING_PREFIX = "SpecGuard: skipped test telemetry for a dry run"
 
     # `Ingest::Payload::STATUSES`, restated. The platform validates every spec
-    # against this pair (`payload.rb:17`), so they are the contract and not a
-    # local naming choice.
+    # against this pair, so they are the contract and not a local naming choice.
     STATUS_ANNOTATED = "annotated"
     STATUS_UNANNOTATED = "unannotated"
 
@@ -830,9 +829,9 @@ module SpecGuard
         # string every consumer reads back out of JSON.
         "outcome" => result&.status&.to_s,
         "status" => intent.nil? ? STATUS_UNANNOTATED : STATUS_ANNOTATED,
-        # Written explicitly rather than omitted. `Ingest::Payload` accepts
-        # either for an unannotated spec (`payload.rb:138` — nil is nil whether
-        # the key was absent or null), and a present null is the difference
+        # Written explicitly rather than omitted. `Ingest::Payload#validate_intent`
+        # accepts either for an unannotated spec (nil is nil whether the key was
+        # absent or null), and a present null is the difference
         # between "we looked and there was no annotation" and "this producer
         # does not report annotations", which is precisely what slice 1's
         # payload could not say.
