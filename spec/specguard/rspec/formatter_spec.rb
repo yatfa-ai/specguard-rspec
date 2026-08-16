@@ -841,6 +841,46 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
+    # The end-to-end of SPGD-584: the platform names the offending spec in the
+    # refusal body, and that name has to survive all the way to the one line
+    # the run is allowed — without costing the fallback write, and without
+    # becoming two lines.
+    describe "when the endpoint says why it refused" do
+      let(:detail) do
+        "spec 3 (spec/foo_spec.rb:9): line_number is required and must be a positive integer"
+      end
+
+      it "puts the platform's reason on the one line it warns with" do
+        StubIngestEndpoint.run(status: 400, body: JSON.generate("details" => [detail])) do |server|
+          deliver_to(server)
+
+          expect(errors.string).to include("HTTP 400", detail)
+          expect(errors.string.lines.length).to eq(1)
+        end
+      end
+
+      # Recoverable loss stays recoverable. Naming the cause is an addition to
+      # the warning, not a substitute for keeping the run.
+      it "still writes the run to the fallback file" do
+        StubIngestEndpoint.run(status: 400, body: JSON.generate("details" => [detail])) do |server|
+          deliver_to(server)
+
+          expect(sink_lines.length).to eq(1)
+        end
+      end
+
+      it "stays on one line when the endpoint refuses every spec in the run" do
+        body = JSON.generate("details" => Array.new(500) { |i| "spec #{i}: name is required" })
+
+        StubIngestEndpoint.run(status: 400, body: body) do |server|
+          deliver_to(server)
+
+          expect(errors.string.lines.length).to eq(1)
+          expect(errors.string).to include("and 497 more")
+        end
+      end
+    end
+
     # Criterion 4: a raised exception takes the same path as a refused
     # response. One outcome, one warning, one fallback write.
     describe "when the request cannot be made at all" do
