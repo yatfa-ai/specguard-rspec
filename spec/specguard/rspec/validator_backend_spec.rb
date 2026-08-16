@@ -18,8 +18,9 @@ require "open3"
 # forbids this gem a cross-repo runtime dependency, and a spec that shelled out
 # to a Go binary would pass on one container and be unrunnable on every other.
 # The live cross-repo comparison — gem-with-Go-backend vs gem-with-Ruby-backend
-# over a shared corpus — belongs in open-test-intent's
-# the recorded-report comparisons below, and it is there.
+# over a shared corpus — belongs in open-test-intent's own suite, where a Go
+# toolchain can be assumed. What belongs HERE is the recorded-report
+# comparisons below, and they are here.
 #
 # What IS proven here, without leaving the gem:
 #
@@ -30,10 +31,11 @@ require "open3"
 #   * that a recorded document renders BYTE FOR BYTE what the Ruby path renders
 #     for the same corpus — the ticket's first success criterion, asserted
 #     rather than assumed;
-#   * that the one residual difference in an ANNOTATION-level message — the
-#     parse-failure tail, Ruby's `JSON::ParserError` against the port's
-#     the binary's own diagnostic — is enumerated and asserted from BOTH sides,
-#     so closing it fails this file rather than leaving a stale claim;
+#   * that ALL FOUR residual message differences — the four rows of README.md's
+#     table, three read failures and the parse-failure tail — are enumerated and
+#     asserted from BOTH sides, so closing one fails this file rather than
+#     leaving a stale claim. They are labelled `ENUMERATED DIFFERENCE n of 4`
+#     below, numbered by their row in that table;
 #   * that every way the backend can fail is exit 2 and never exit 1.
 RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   subject(:backend) { described_class }
@@ -549,14 +551,14 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(no_match_result("spec/nope_spec.rb").location).to eq("spec/nope_spec.rb")
     end
 
-    # ENUMERATED DIFFERENCE 1 of 2. The escaped pattern is an artifact of this
+    # ENUMERATED DIFFERENCE 3 of 4. The escaped pattern is an artifact of this
     # file; reporting it would misname what the caller asked for. `[[]1]` is
     # not a path anyone typed.
     it "reports the path the caller named, not the escaped pattern" do
       expect(no_match_result("bracket[1]_spec.rb").file).to eq("bracket[1]_spec.rb")
     end
 
-    # ENUMERATED DIFFERENCE 1 of 2, the text half. Go says "no file(s) match
+    # ENUMERATED DIFFERENCE 3 of 4, the text half. Go says "no file(s) match
     # <pattern>" — a statement about a glob, which specguard-lint does not
     # have, and which would carry the escaped spelling into the report. The
     # Ruby path says "could not read file: No such file or directory @
@@ -904,7 +906,7 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # ------------------------------------------------------------------------ #
-  # THE ONE ENUMERATED DIFFERENCE THAT IS NOT A READ FAILURE.
+  # ENUMERATED DIFFERENCE 1 of 4 — and THE ONE THAT IS NOT A READ FAILURE.
   #
   # The corpus above is byte-identical on both backends, and that is a true
   # statement about THAT corpus rather than about the linter: its findings are
@@ -1055,6 +1057,294 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(ruby_tails.length).to eq(2)
       expect(ruby_tails).to all(satisfy { |tail| !tail.empty? })
       expect(ruby_tails).to all(satisfy { |tail| !tail.start_with?("expected a ") })
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # ENUMERATED DIFFERENCE 2 of 4 — a file that is not well-formed UTF-8.
+  #
+  # `Scanner#scan_text` has carried a RATIFIED DIFFERENCE note about this shape
+  # since it was written, and README.md's table has carried the row. Neither
+  # was asserted by anything until this block: the citation was re-pointed at
+  # this file by SPGD-403 and the comparison was never ported, so the Go side's
+  # wording could have moved with nothing going red (SPGD-596).
+  #
+  # PROTOCOL.md §1.1 makes UTF-8 part of what a JSON text IS, so both sides
+  # refuse the FILE and neither substitutes U+FFFD and carries on. What is
+  # shared is what `scanner.rb` claims is shared — same classification, same
+  # file, same `could not read file: ` prefix, a non-empty reason on both sides,
+  # and exit 1 — and it is asserted here in the same two-sided shape the parse
+  # tail above uses: the shared half AND the fact that the tails still differ,
+  # so closing the difference fails this file rather than leaving a stale claim.
+  #
+  # spec/fixtures/validator/utf8-divergence.json is RECORDED from
+  # `validate-intent-go --source --json spec/fixtures/invalid_utf8_spec.rb
+  # spec/fixtures/order_spec.rb`, run from the gem root.
+  #
+  # The clean file is named alongside on purpose. A read failure must not stop
+  # either tool checking the good files beside it — `scan_file`'s comment says
+  # so in those words — and that is the half of this comparison that would be
+  # invisible in a one-file run.
+  describe "the not-well-formed-UTF-8 text is each backend's own" do
+    let(:paths) { %w[spec/fixtures/invalid_utf8_spec.rb spec/fixtures/order_spec.rb] }
+    let(:recorded) { File.read("spec/fixtures/validator/utf8-divergence.json") }
+
+    def run_cli(env)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+      [stdout.string, stderr.string, code]
+    end
+
+    def both_ways
+      ruby = run_cli({})
+      go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+      [ruby, go]
+    end
+
+    def fail_lines(stdout)
+      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+    end
+
+    def read_prefix
+      "could not read file: "
+    end
+
+    # Non-vacuity, and the one that matters most here: the fixture is a handful
+    # of bytes, and a well-meaning "fix the encoding" edit would leave every
+    # comparison below passing over a file both backends read happily.
+    it "is running against a file that really is not well-formed UTF-8" do
+      expect(paths).to all(satisfy { |path| File.file?(path) })
+      expect(File.read(paths.first, encoding: "UTF-8").valid_encoding?).to be(false)
+    end
+
+    it "reported exactly one unreadable file on each side" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(fail_lines(ruby_stdout).length).to eq(1)
+      expect(fail_lines(go_stdout).length).to eq(1)
+      expect(fail_lines(go_stdout)).to all(include(read_prefix))
+      expect(fail_lines(ruby_stdout)).to all(include(read_prefix))
+    end
+
+    # The shared half. Same file, and no line — unlike a parse failure this is a
+    # statement about the FILE, so neither side points a reader at a line.
+    it "names the same file, without a line, under the same prefix" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
+
+      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
+      expect(locations.call(go_stdout)).to eq(["FAIL  spec/fixtures/invalid_utf8_spec.rb"])
+    end
+
+    # "Same classification" stops being a claim about prose here. An unreadable
+    # file is counted as a file that could not be READ, never as an annotation
+    # that was checked and found clean — and the seven annotations belong to the
+    # file beside it, which both backends still checked.
+    it "counts it identically, as an unread file rather than a checked annotation" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
+
+      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
+      expect(summary.call(go_stdout))
+        .to eq("specguard-lint: checked 7 @intent annotations, 0 malformed; 1 file could not be read")
+    end
+
+    it "exits 1 on both — an unreadable spec file is still a failed run" do
+      (*, ruby_code), (*, go_code) = both_ways
+
+      expect(go_code).to eq(ruby_code)
+      expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+    end
+
+    it "says nothing on stderr on either backend beyond the line naming the validator" do
+      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+
+      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+      expect(stderr_beyond_provenance(go_stderr)).to be_empty
+    end
+
+    # The other side of the ratification. If these ever agree, the difference
+    # has been closed and this block should be retired along with the README row
+    # rather than left asserting a distinction that no longer exists.
+    it "still differs in the tail, and only in the tail" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
+
+      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
+      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
+        expect(ruby_tail).not_to be_empty
+        expect(go_tail).not_to be_empty
+        expect(go_tail).not_to eq(ruby_tail)
+      end
+    end
+
+    # Both halves are pinned IN FULL, and both can be: unlike the parse tail,
+    # neither wording comes from a default gem whose version tracks the Ruby the
+    # suite runs on. The binary's is its own prose, written against PROTOCOL.md;
+    # Ruby's is this gem's own literal in `Scanner#scan_text`, not an
+    # interpolated `JSON::ParserError#message`. Each moves only when somebody
+    # here moves it, and these are the two strings README.md's table quotes.
+    it "passes the binary's own wording through unaltered, and keeps the gem's own" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(go_stdout).to include("could not read file: input is not well-formed UTF-8 " \
+                                   "(PROTOCOL.md §1.1 requires it)")
+      expect(ruby_stdout).to include("could not read file: invalid UTF-8 byte sequence")
+    end
+
+    # Both name the CONDITION rather than an offset, which is the property
+    # `scanner.rb` ratifies the difference ON. Neither claims to know where the
+    # bad byte was, because neither stopped to find out.
+    it "names the condition rather than an offset on either side" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
+
+      expect(tails.call(ruby_stdout) + tails.call(go_stdout))
+        .to all(satisfy { |tail| !tail.match?(/\b(byte|offset|position|column)\s+\d/) })
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
+  # ENUMERATED DIFFERENCE 4 of 4 — a path that is not a regular file.
+  #
+  # This row shares the Go column with difference 3 (`no file at this path`) and
+  # that is the whole content of it. The binary's arguments are glob PATTERNS
+  # and a match is filtered to regular files, so a directory and a name matching
+  # nothing arrive at the same place: one `no-match` finding, which this gem
+  # folds into KIND_READ and re-words, because it has no patterns to report on.
+  # The Ruby path opens the path it was given, so it has an errno and says which
+  # one — `Is a directory @ io_fread - …` rather than `No such file or
+  # directory @ rb_sysopen - …`. Ruby distinguishes the two; the backend cannot,
+  # and does not pretend to.
+  #
+  # spec/fixtures/validator/not-a-regular-file.json is RECORDED from
+  # `validate-intent-go --source --json spec/fixtures/payloads
+  # spec/fixtures/order_spec.rb`, run from the gem root.
+  #
+  # `spec/fixtures/payloads` is a directory that already exists for its own
+  # reason, so this asserts against the repository rather than against a
+  # directory a test made — and the first example fails loudly if it ever stops
+  # being one.
+  describe "a path that is not a regular file" do
+    let(:paths) { %w[spec/fixtures/payloads spec/fixtures/order_spec.rb] }
+    let(:recorded) { File.read("spec/fixtures/validator/not-a-regular-file.json") }
+
+    def run_cli(env)
+      stdout = StringIO.new
+      stderr = StringIO.new
+      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
+      [stdout.string, stderr.string, code]
+    end
+
+    def both_ways
+      ruby = run_cli({})
+      go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+      [ruby, go]
+    end
+
+    def fail_lines(stdout)
+      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+    end
+
+    def read_prefix
+      "could not read file: "
+    end
+
+    # Non-vacuity: the whole comparison is about a path that exists and is not a
+    # regular file. If it ever became either a file or nothing, every assertion
+    # below would still pass while testing difference 3 over again.
+    it "is running against a path that exists and is not a regular file" do
+      expect(File.directory?(paths.first)).to be(true)
+      expect(File.file?(paths.first)).to be(false)
+      expect(File.file?(paths.last)).to be(true)
+    end
+
+    it "reported exactly one unreadable path on each side" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(fail_lines(ruby_stdout).length).to eq(1)
+      expect(fail_lines(go_stdout).length).to eq(1)
+      expect(fail_lines(go_stdout)).to all(include(read_prefix))
+      expect(fail_lines(ruby_stdout)).to all(include(read_prefix))
+    end
+
+    # The shared half: both sides name the same path, drop the line, and carry
+    # the same `could not read file: ` prefix.
+    #
+    # Escaping is NOT what this example pins, and saying so here would be a
+    # claim the example cannot make: no path in `paths` holds a glob
+    # metacharacter, so {ValidatorBackend.escape_glob} is the identity over it
+    # and the un-escaping map is unobservable from this document. That the
+    # backend reports the path the CALLER named rather than the escaped pattern
+    # is asserted under "a path that matched nothing (`no-match`)", on
+    # `bracket[1]_spec.rb`, where the two spellings actually differ.
+    it "names the same path, without a line, under the same prefix" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
+
+      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
+      expect(locations.call(go_stdout)).to eq(["FAIL  spec/fixtures/payloads"])
+    end
+
+    it "counts it identically, as an unread file rather than a checked annotation" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
+
+      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
+      expect(summary.call(go_stdout))
+        .to eq("specguard-lint: checked 7 @intent annotations, 0 malformed; 1 file could not be read")
+    end
+
+    it "exits 1 on both — an unreadable path is still a failed run" do
+      (*, ruby_code), (*, go_code) = both_ways
+
+      expect(go_code).to eq(ruby_code)
+      expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+    end
+
+    it "says nothing on stderr on either backend beyond the line naming the validator" do
+      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+
+      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
+      expect(stderr_beyond_provenance(go_stderr)).to be_empty
+    end
+
+    it "still differs in the tail, and only in the tail" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
+
+      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
+      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
+        expect(ruby_tail).not_to be_empty
+        expect(go_tail).not_to be_empty
+        expect(go_tail).not_to eq(ruby_tail)
+      end
+    end
+
+    # The two spellings README.md's table quotes. Ruby's is pinned only as far
+    # as the errno phrase `Errno::EISDIR` contributes — the `@ io_fread - <path>`
+    # tail is Ruby's own and has moved across versions, exactly the trap the
+    # parse block documents.
+    it "keeps Ruby's errno and declines to invent one for the backend" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+
+      expect(ruby_stdout).to include("could not read file: Is a directory")
+      expect(go_stdout).to include("could not read file: no file at this path")
+      expect(go_stdout).not_to include("io_fread")
+      expect(go_stdout).not_to include("Is a directory")
+    end
+
+    # What makes this a SEPARATE row from difference 3 rather than a restatement
+    # of it: the Ruby path tells the two apart, and the backend does not.
+    it "is the same backend wording difference 3 uses, and a different Ruby one" do
+      (ruby_stdout, *), (go_stdout, *) = both_ways
+      tail = ->(stdout) { fail_lines(stdout).first.split(read_prefix, 2).last }
+
+      expect(tail.call(go_stdout)).to eq("no file at this path")
+      expect(tail.call(ruby_stdout)).not_to include("No such file or directory")
     end
   end
 

@@ -285,16 +285,17 @@ is worth stating precisely rather than reassuringly.
 For every payload both JSON parsers accept, the two backends agree completely: the same finding
 against the same file at the same line, the same classification, the same counts and the same exit
 code. **The messages in the table below differ in their trailing text only** — the rows *are* the
-enumeration, not a sample of it, and each is asserted in both directions, so closing one fails the
-suite rather than leaving a stale claim here — in
-`spec/specguard/rspec/validator_backend_spec.rb`:
+enumeration, not a sample of it, and all four are asserted in both directions, so closing one fails
+the suite rather than leaving a stale claim here — in
+`spec/specguard/rspec/validator_backend_spec.rb`, where each row's comparison is labelled
+`ENUMERATED DIFFERENCE n of 4` under the number it carries here:
 
-| input | Ruby path | Go backend |
-|---|---|---|
-| a payload that is still not JSON after normalisation | Ruby's `JSON::ParserError` text | `expected a JSON value (line 1, column 102)` |
-| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | `input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)` |
-| a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
-| a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
+| # | input | Ruby path | Go backend |
+|---|---|---|---|
+| 1 | a payload that is still not JSON after normalisation | Ruby's `JSON::ParserError` text | `expected a JSON value (line 1, column 102)` |
+| 2 | a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | `input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)` |
+| 3 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
+| 4 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
 
 The first row is the one you are most likely to actually see: `parse` is one of the three things
 the linter reports, and **every** malformed-JSON annotation renders differently under the backend.
@@ -303,6 +304,12 @@ backend passes it through unaltered rather than inventing a third spelling. `PRO
 the accepted JSON *language*, not the words a validator refuses in, so two spellings of one refusal
 are both conformant. Both agree on which annotation broke, and on the line and column — only the
 prose moves. The other rows are read failures and need an unreadable path to reach at all.
+
+Rows 3 and 4 share a Go column, and that is the substance of row 4 rather than a typo. The
+binary's arguments are glob *patterns* and a match is filtered to regular files, so a directory and
+a name matching nothing reach it as the same answer; the Ruby path opens the path it was given, so
+it has an errno and names which one. Ruby tells the two apart, the backend cannot, and neither
+pretends otherwise.
 
 #### The difference that is not about wording
 

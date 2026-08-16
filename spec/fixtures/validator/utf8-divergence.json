@@ -1,0 +1,70 @@
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": {
+    "files": 2,
+    "annotations": 7,
+    "failed": 1
+  },
+  "findings": [
+    {
+      "file": "spec/fixtures/invalid_utf8_spec.rb",
+      "line": null,
+      "ok": false,
+      "kind": "read",
+      "errors": [
+        "could not read file: input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)"
+      ]
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 10,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 17,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 24,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 32,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 41,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 49,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 57,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    }
+  ]
+}

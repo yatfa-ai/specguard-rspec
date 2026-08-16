@@ -36,10 +36,12 @@ module SpecGuard
     # The CLASSIFICATION and the EXIT CODE are what match, and both are asserted
     # rather than described, in spec/specguard/rspec/validator_backend_spec.rb —
     # which runs this linter and the binary's recorded report over the same
-    # inputs and compares them.
+    # inputs and compares them. Each read-failure shape below has its own
+    # two-sided block there, so the shared half and the surviving difference are
+    # both pinned: converging either one fails that file.
     #
-    # The MESSAGE TEXT does not match on two of the read-failure shapes, and an
-    # earlier version of this comment claimed it did — it quoted a
+    # The MESSAGE TEXT does not match on any of the three read-failure shapes,
+    # and an earlier version of this comment claimed it did — it quoted a
     # `FAIL bad_spec.rb — could not read file: ...` line as if the two tools
     # emitted the same bytes. They do not:
     #
@@ -52,6 +54,16 @@ module SpecGuard
     #     `error: no file(s) match '<path>'` (its arguments are glob patterns);
     #     `Scanner.scan_file` reports it on stdout as a read failure of that
     #     path (its arguments are paths).
+    #   * a path that exists and is not a regular file — the binary's glob
+    #     filters it away, so it answers exactly as it does for a name matching
+    #     nothing: a `no-match` finding under `--json`. `no file at this path`
+    #     is not the binary's wording but this gem's, minted in
+    #     `ValidatorBackend#no_match_result`, because Go's "no file(s) match
+    #     <pattern>" is a statement about a glob pattern this CLI does not
+    #     have. `Scanner.scan_file` opened it and has an errno, so it reports
+    #     `Is a directory @ io_fread - <path>`. The distinction between a
+    #     missing path and a non-regular one is Ruby's alone; the binary does
+    #     not draw it and the backend cannot recover it.
     #
     # The line the contract actually draws is *the linter is broken* (2) versus
     # *the input it was pointed at is bad* (1). An unopenable file named on the
