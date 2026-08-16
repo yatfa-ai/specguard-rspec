@@ -44,6 +44,14 @@ module SpecGuard
       #   spec/specguard/rspec/validator_backend_spec.rb, along with the case
       #   that matters more — a missing file does not stop either tool checking
       #   the good files named beside it.
+      #
+      #   A path that exists and is NOT A REGULAR FILE lands in the same rescue
+      #   and is the same ratified difference one step further out: this rescue
+      #   has an errno and reports it (`Is a directory @ io_fread - <path>`),
+      #   while the binary's glob filters non-regular matches away and answers
+      #   exactly as it does for a name matching nothing. Ruby tells the two
+      #   apart and the backend cannot — asserted under "a path that is not a
+      #   regular file" in that same spec.
       def scan_file(path)
         begin
           text = File.read(path, encoding: "UTF-8")
@@ -71,9 +79,12 @@ module SpecGuard
         # neither is wrong; what matters is that both classify it as a READ
         # failure and neither substitutes U+FFFD and carries on.
         #
-        # What is shared is asserted in spec/specguard/rspec/validator_backend_spec.rb:
-        # same classification, same file, same `FAIL <file> — could not read
-        # file: ` prefix, a non-empty reason on both sides, and exit 1.
+        # What is shared is asserted in spec/specguard/rspec/validator_backend_spec.rb,
+        # under "the not-well-formed-UTF-8 text is each backend's own": same
+        # classification, same file, same `FAIL <file> — could not read file: `
+        # prefix, a non-empty reason on both sides, and exit 1 — and the tails
+        # are asserted to still DIFFER, so converging them fails that file
+        # rather than leaving this comment stale.
         unless text.valid_encoding?
           return [Finding.new(file: file, line: 0, problem: "could not read file: invalid UTF-8 byte sequence",
                               kind: Finding::KIND_READ)]

@@ -1,0 +1,70 @@
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": {
+    "files": 1,
+    "annotations": 7,
+    "failed": 1
+  },
+  "findings": [
+    {
+      "file": "spec/fixtures/payloads",
+      "line": null,
+      "ok": false,
+      "kind": "no-match",
+      "errors": [
+        "no file(s) match spec/fixtures/payloads"
+      ]
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 10,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 17,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 24,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 32,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 41,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 49,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    },
+    {
+      "file": "spec/fixtures/order_spec.rb",
+      "line": 57,
+      "ok": true,
+      "kind": null,
+      "errors": []
+    }
+  ]
+}
