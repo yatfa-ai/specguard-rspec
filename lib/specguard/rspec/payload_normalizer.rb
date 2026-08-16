@@ -20,7 +20,8 @@ module SpecGuard
     # It is a character-scanner rather than a regex substitution **so quoted
     # content is never rewritten** — a `behavior` sentence containing `it's` or
     # `{` is passed through untouched. Any `gsub`-then-`JSON.parse` port
-    # corrupts exactly those values; the fixture suite pins all four cases.
+    # corrupts exactly those values; the examples under "quoted content is
+    # never rewritten" in `payload_normalizer_spec.rb` pin them.
     #
     # The payload is *never* `eval`'d. It is attacker-controllable text taken
     # from a comment in someone's spec file, so it only ever reaches
