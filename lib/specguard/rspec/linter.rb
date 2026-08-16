@@ -55,10 +55,15 @@ module SpecGuard
     #     `Scanner.scan_file` reports it on stdout as a read failure of that
     #     path (its arguments are paths).
     #   * a path that exists and is not a regular file — the binary's glob
-    #     filters it away and it answers exactly as for the shape above, so the
-    #     backend reports `no file at this path`; `Scanner.scan_file` opened it
-    #     and has an errno, so it reports `Is a directory @ io_fread - <path>`.
-    #     The distinction is Ruby's alone; the backend does not invent it.
+    #     filters it away, so it answers exactly as it does for a name matching
+    #     nothing: a `no-match` finding under `--json`. `no file at this path`
+    #     is not the binary's wording but this gem's, minted in
+    #     `ValidatorBackend#no_match_result`, because Go's "no file(s) match
+    #     <pattern>" is a statement about a glob pattern this CLI does not
+    #     have. `Scanner.scan_file` opened it and has an errno, so it reports
+    #     `Is a directory @ io_fread - <path>`. The distinction between a
+    #     missing path and a non-regular one is Ruby's alone; the binary does
+    #     not draw it and the backend cannot recover it.
     #
     # The line the contract actually draws is *the linter is broken* (2) versus
     # *the input it was pointed at is bad* (1). An unopenable file named on the

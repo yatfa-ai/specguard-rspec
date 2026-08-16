@@ -1270,8 +1270,16 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(fail_lines(ruby_stdout)).to all(include(read_prefix))
     end
 
-    # The shared half. The backend reports the path the CALLER named, not the
-    # escaped pattern the document carries it under.
+    # The shared half: both sides name the same path, drop the line, and carry
+    # the same `could not read file: ` prefix.
+    #
+    # Escaping is NOT what this example pins, and saying so here would be a
+    # claim the example cannot make: no path in `paths` holds a glob
+    # metacharacter, so {ValidatorBackend.escape_glob} is the identity over it
+    # and the un-escaping map is unobservable from this document. That the
+    # backend reports the path the CALLER named rather than the escaped pattern
+    # is asserted under "a path that matched nothing (`no-match`)", on
+    # `bracket[1]_spec.rb`, where the two spellings actually differ.
     it "names the same path, without a line, under the same prefix" do
       (ruby_stdout, *), (go_stdout, *) = both_ways
 

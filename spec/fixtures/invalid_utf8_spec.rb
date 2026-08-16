@@ -12,9 +12,10 @@
 # spec/fixtures/validator/utf8-divergence.json for this file's recorded report.
 #
 # The annotation below is VALID on purpose. Both backends must refuse the file
-# without ever reaching it, so "checked 0 @intent annotations" is part of what
-# the comparison asserts — a file that could not be read is not a file that was
-# checked and found clean.
+# without ever reaching it, so this file contributes no annotation sites to the
+# count the two sides compare — every annotation in that count belongs to the
+# clean file named beside this one. A file that could not be read is not a file
+# that was checked and found clean.
 
 # @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }
 
