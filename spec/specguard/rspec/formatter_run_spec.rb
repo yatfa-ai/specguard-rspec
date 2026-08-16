@@ -4,6 +4,13 @@ require "tmpdir"
 require "open3"
 require "fileutils"
 
+# {FormatterRunHelpers::HERMETIC_ENV} derives itself from this class's key
+# lists. `specguard/rspec` deliberately does not require it (see the comment on
+# its own require list), and `spec_helper` loads only that — so naming it here
+# is what makes this file safe to run alone, or under `--order random`, rather
+# than dependent on some other spec having pulled it in first.
+require "specguard/rspec/configuration"
+
 require_relative "../../support/stub_ingest_endpoint"
 
 # Everything the out-of-process examples need, in a namespace of its own —
@@ -239,41 +246,34 @@ module FormatterRunHelpers
   # rather than the throwaway root's absence of one. Every example asserting on
   # those fields then passes on a laptop and fails on CI — which is exactly how
   # this list came to be written, when "the commit cannot be determined" turned
-  # red on Actions and green everywhere else. The list mirrors
-  # Configuration's COMMIT_SHA_KEYS / BRANCH_KEYS / RUN_ID_KEYS / SHARD_ID_KEYS;
-  # anything added there wants adding here.
-  HERMETIC_ENV = {
-    "SPECGUARD_API_KEY" => nil,
-    "SPECGUARD_ENDPOINT" => nil,
-    "SPECGUARD_TIMEOUT" => nil,
-    # commit
-    "SPECGUARD_COMMIT_SHA" => nil,
-    "GITHUB_SHA" => nil,
-    "CI_COMMIT_SHA" => nil,
-    "CIRCLE_SHA1" => nil,
-    "BUILDKITE_COMMIT" => nil,
-    "GIT_COMMIT" => nil,
-    # branch
-    "SPECGUARD_BRANCH" => nil,
-    "GITHUB_REF_NAME" => nil,
-    "CI_COMMIT_REF_NAME" => nil,
-    "CIRCLE_BRANCH" => nil,
-    "BUILDKITE_BRANCH" => nil,
-    "GIT_BRANCH" => nil,
-    # run id
-    "SPECGUARD_RUN_ID" => nil,
-    "GITHUB_RUN_ID" => nil,
-    "CI_PIPELINE_ID" => nil,
-    "CIRCLE_WORKFLOW_ID" => nil,
-    "BUILDKITE_BUILD_ID" => nil,
-    "BUILD_TAG" => nil,
-    # shard id
-    "SPECGUARD_SHARD_ID" => nil,
-    "TEST_ENV_NUMBER" => nil,
-    "CI_NODE_INDEX" => nil,
-    "CIRCLE_NODE_INDEX" => nil,
-    "BUILDKITE_PARALLEL_JOB" => nil
-  }.freeze
+  # red on Actions and green everywhere else.
+  #
+  # The list is **derived**, not transcribed. Every variable the gem reads is
+  # named in one of {SpecGuard::RSpec::Configuration}'s `*_KEYS` constants, and
+  # enumerating those constants — rather than the four, or the eight, that
+  # happened to exist the day this was written — means a newly declared list is
+  # cleared here from the moment it exists, with no edit to this file.
+  #
+  # The hand-typed version drifted twice, and the second repair shipped a list
+  # that was still incomplete: it was missing `SPECGUARD_OUTPUT_PATH`, which is
+  # the variable {#run_rspec} resolves its *own* sink from. On a machine that
+  # exported it the child wrote to the exported path while the assertions read
+  # the default one, so every sink-asserting example here failed — green on a
+  # laptop, red on that machine.
+  #
+  # The sibling list in `configuration_spec.rb` is spelled out by hand on
+  # purpose and must stay that way: it *asserts* what the gem reads, and a pin
+  # that derives from the thing it pins can never fail. This hash asserts
+  # nothing — it is harness setup, and it wants to track the code silently.
+  # That pin is also what keeps this derivation honest in the other direction:
+  # it fixes the *set* of matching constants, so an unrelated future constant
+  # ending in `_KEYS` fails there, by name, before it can quietly widen what
+  # this clears.
+  HERMETIC_ENV = SpecGuard::RSpec::Configuration
+                 .constants.grep(/_KEYS\z/)
+                 .flat_map { |list| SpecGuard::RSpec::Configuration.const_get(list) }
+                 .to_h { |key| [key, nil] }
+                 .freeze
 
   # Runs `rspec` as its own process in a throwaway project root, and reads back
   # everything an example might want to assert on before the root is removed.
