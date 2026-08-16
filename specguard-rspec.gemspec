@@ -10,10 +10,11 @@ Gem::Specification.new do |spec|
 
   spec.summary = "RSpec formatter and @intent annotation linter for SpecGuard."
   spec.description = "SpecGuard's Ruby client. Ships an additive RSpec formatter that posts " \
-                     "test-run telemetry to SpecGuard's ingest endpoint, and a CLI linter " \
+                     "test-run telemetry to SpecGuard's ingest endpoint, a CLI linter " \
                      "(specguard-lint) that validates OpenTestIntent @intent annotations in " \
-                     "*_spec.rb files. Telemetry never blocks CI; the linter blocks only on " \
-                     "malformed annotations."
+                     "*_spec.rb files, and a replayer (specguard-ingest) that re-delivers a run " \
+                     "the formatter saved when the endpoint could not be reached. Telemetry " \
+                     "never blocks CI; the linter blocks only on malformed annotations."
   spec.homepage = "https://github.com/yatfa-ai/specguard-rspec"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
@@ -31,7 +32,11 @@ Gem::Specification.new do |spec|
     end
   end
   spec.bindir = "bin"
-  spec.executables = ["specguard-lint"]
+  # Two commands. `specguard-lint` validates annotations; `specguard-ingest`
+  # replays a saved `log/test_results.jsonl` back through the ingest endpoint,
+  # which is what makes the formatter's fallback file recoverable rather than
+  # only written.
+  spec.executables = %w[specguard-lint specguard-ingest]
   spec.require_paths = ["lib"]
 
   # The linter validates each @intent payload against the vendored
