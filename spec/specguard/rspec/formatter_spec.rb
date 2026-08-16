@@ -506,8 +506,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
   # Criterion 1. `status` is the field whose absence made slice 1's payload a
   # guaranteed 400: `Ingest::Payload#validate_status` appends an error for every
-  # spec that lacks it (`payload.rb:115`), and `valid?` requires the error list
-  # to be empty (`payload.rb:28`), so the run is rejected whole.
+  # spec that lacks it, and `valid?` requires the error list to be empty, so the
+  # run is rejected whole.
   describe "#payload — status and intent" do
     it "reports an example the lookup resolved as annotated, carrying the intent" do
       allow(annotations).to receive(:intent_for).and_return(intent)
@@ -522,8 +522,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(formatter.payload["specs"].first).to include("status" => "unannotated", "intent" => nil)
     end
 
-    # `Ingest::Payload` reads intent by key, so a present null and an absent key
-    # are equivalent to it (`payload.rb:138`). Writing it is for the human and
+    # `Ingest::Payload#validate_intent` reads intent by key, so a present null
+    # and an absent key are equivalent to it. Writing it is for the human and
     # the archive: it is the difference between "we looked and found nothing"
     # and "this producer does not report annotations" — exactly the ambiguity
     # slice 1's payload could not resolve.
