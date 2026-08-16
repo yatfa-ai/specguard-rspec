@@ -154,7 +154,20 @@ module SpecGuard
       # `:rejected`, and only when the body actually said something this class
       # could read; a proxy's HTML 502 leaves it nil and the reader gets
       # exactly what they got before.
-      Result = Struct.new(:outcome, :code, :error, :reasons, keyword_init: true) do
+      #
+      # `body` is the mirror of that on the accepting side: the 202 document
+      # `Api::V1::IngestsController` renders — `test_run_id`, `total_specs`,
+      # `annotated_specs`, `annotated_ratio`, `embedding_status` — parsed, and
+      # populated only on `:success`. It was discarded until {IngestCLI}
+      # needed to say *which run* a re-delivered line landed on, and it is
+      # added rather than substituted: nothing that read a {Result} before
+      # reads a different one now.
+      #
+      # It degrades to `nil` on exactly the terms `reasons` does, and for the
+      # same reason turned around: a 202 whose body will not parse is still an
+      # acceptance, and relabelling it would tell the operator something untrue
+      # about a run the platform has already stored. See {#test_run_id}.
+      Result = Struct.new(:outcome, :code, :error, :reasons, :body, keyword_init: true) do
         # The status codes worth spelling out, because each implies a different
         # thing for the reader to *do*. A 401 means "rotate or fix the key"; a
         # 400 means "the payload this gem built was refused", which is a bug
@@ -186,6 +199,23 @@ module SpecGuard
         MAX_REASONS_LENGTH = 300
 
         def success? = outcome == :success
+
+        # The id of the `TestRun` this delivery landed on, as the endpoint
+        # reported it — `nil` whenever that cannot be said honestly: a refusal,
+        # an exception, a 202 with an unreadable body, or one whose
+        # `test_run_id` is not a scalar.
+        #
+        # Returned as a String so two deliveries can be compared without
+        # caring whether the platform spells an id as a UUID or a number. Two
+        # accepted lines answering with the same value landed on the same row;
+        # that is the only claim about folding this class can support, and
+        # {IngestCLI} makes exactly that one.
+        #
+        # @return [String, nil]
+        def test_run_id
+          value = body.is_a?(Hash) ? body["test_run_id"] : nil
+          value.is_a?(String) || value.is_a?(Numeric) ? value.to_s : nil
+        end
 
         # A single clause naming what went wrong, for the one stderr line a run
         # is allowed. `nil` on success, because there is nothing to say.
@@ -268,7 +298,8 @@ module SpecGuard
         response = post(JSON.generate(payload))
         code = response.code.to_i
 
-        return Result.new(outcome: :success, code: code) if response.is_a?(Net::HTTPSuccess)
+        return Result.new(outcome: :success, code: code, body: success_body(response)) if
+          response.is_a?(Net::HTTPSuccess)
 
         Result.new(outcome: :rejected, code: code, reasons: refusal_reasons(response))
       rescue ScriptError, StandardError => e
@@ -282,8 +313,26 @@ module SpecGuard
 
       private
 
+      # What the platform said about the run it accepted, or `nil` when the
+      # body did not say anything this class can use.
+      #
+      # The guard is {#refusal_reasons}'s, argued the other way round. There it
+      # keeps a refusal from being relabelled an exception; here it keeps an
+      # *acceptance* from being relabelled at all. The platform has stored the
+      # run by the time it writes this body, so a truncated read, an empty
+      # body, or a proxy that rewrote the 202 into HTML must cost the caller
+      # the decoration and nothing else. Every failure of reading degrades to
+      # `nil`, and `Result#success?` is what it was before this existed.
+      def success_body(response)
+        body = JSON.parse(response.body.to_s)
+        body if body.is_a?(Hash)
+      rescue ScriptError, StandardError
+        nil
+      end
+
       # What the platform said about the refusal, or `nil` when the body did
       # not say anything this class can use.
+
       #
       # `Api::BaseController` shapes both refusal bodies deliberately for a
       # client to read: `render_bad_request` carries every validation failure

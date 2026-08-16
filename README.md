@@ -4,6 +4,8 @@
 > and a CLI linter that validates `@intent` annotations.
 
 Two independent tools, one dependency — the [OpenTestIntent](https://github.com/yatfa-ai/open-test-intent) annotation format.
+A third command, [`specguard-ingest`](#replaying-a-saved-run--specguard-ingest), belongs to the first of them: it replays a
+run the formatter saved when the endpoint could not be reached.
 
 ## Install
 
@@ -489,7 +491,8 @@ rather than like a broken build.
 the run (a `401` from a rotated key, a `400`, a `500`) or cannot be reached at
 all (connection refused, DNS failure, timeout), the formatter prints **one**
 line to stderr naming the status or the error, and writes the payload to
-`log/test_results.jsonl` so the run can be replayed later:
+`log/test_results.jsonl` so the run can be replayed later with
+[`specguard-ingest`](#replaying-a-saved-run--specguard-ingest):
 
 ```
 SpecGuard: could not deliver test telemetry (HTTP 401 — the API key was not
@@ -550,6 +553,80 @@ hook rescues, warns once on stderr, and leaves the exit status to your suite
 alone. A non-2xx response gets the same treatment: `Net::HTTP` returns those as
 ordinary values rather than raising, so they are checked for explicitly instead
 of being left to a `rescue` that would never see them.
+
+### Replaying a saved run — `specguard-ingest`
+
+The suite is over by the time you see the `401`, and re-running it to recover
+the telemetry costs you the whole suite again. So the file the formatter wrote
+is the run: each line is byte-for-byte the body the endpoint refused, and
+`specguard-ingest` is the command that sends it.
+
+```bash
+export SPECGUARD_API_KEY=…            # the key that was rotated, fixed
+bundle exec specguard-ingest log/test_results.jsonl
+```
+
+```
+line 1: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 2: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+specguard-ingest: delivered 2 of 2 runs from log/test_results.jsonl
+specguard-ingest: lines 1, 2 carried ci_run_id 17442 and each came back with
+test_run_id 41f2c9b8 — the endpoint folded them onto one run
+```
+
+It reads the same `SPECGUARD_ENDPOINT`, `SPECGUARD_API_KEY` and
+`SPECGUARD_TIMEOUT` the formatter does, and sends each line through the same
+transport — so a run that was refused for a rotated key appears on the platform
+once the secret is fixed, with the shard folding described in
+[If you shard your suite](#if-you-shard-your-suite) applying exactly as it would
+have during the run.
+
+> **It re-delivers *every* line in the file you give it.** The formatter writes
+> to `log/test_results.jsonl` when a delivery **failed** *and* when no API key
+> was configured at all — and the two are indistinguishable on the line, because
+> nothing in the payload records which sink it was destined for. So a laptop's
+> file is a file of ordinary local runs, and this command will send all of them.
+> There is no filter and no heuristic: guessing which lines "were failures" from
+> data that does not say would be confidently wrong about which of your runs
+> reach the platform. Check the file before you replay one you did not write.
+
+**Each line is reported by its line number**, so a file that was only partly
+accepted can be resumed rather than blindly re-sent, and each is delivered
+**once** — the command runs out of band and costs your CI nothing, but a retry
+loop cannot see *why* an attempt failed and you can, so re-running the command
+is the retry.
+
+**A dry run is never in the file**, so nothing here can replay one: the
+formatter refuses both sinks for `rspec --dry-run` (see above), which means this
+command inherits that guarantee rather than re-checking it.
+
+The exit code is the contract, and it is `specguard-lint`'s:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | every line was accepted |
+| `1` | at least one line was **refused by the endpoint** — its own reasons are rendered, exactly as the formatter renders them |
+| `2` | the command could not do its job — no endpoint or API key, an unreadable file, an unparseable line, a delivery that never arrived, or a bad flag |
+
+`1` is reachable only by the endpoint having read a payload and said no. A
+connection refused, a DNS failure or a timeout is a `2`: nothing was delivered
+on that line, no verdict about it exists, and reporting one would be this
+command telling you your run is bad on the strength of a socket error. When a
+file produces both, `2` wins — every line is still printed either way.
+
+**What it will not tell you** is whether a replayed line *created* a new run or
+*folded into* an existing one. The ingest endpoint's `202` carries the run's id
+but no created-versus-updated flag, so the command reports what it can see: the
+`test_run_id` that came back, and whether the line carried a `ci_run_id` of its
+own. Two lines that went out with the same `ci_run_id` and came back with the
+same `test_run_id` landed on one record — that is the sentence above, and it is
+an observation rather than an inference.
+
+Bulk-importing an aged archive is **not** what this is for. The payload carries
+no execution timestamp and SpecGuard orders a repository's runs by when they
+were ingested, so a replayed run becomes the repository's latest. For the case
+this exists to serve — replay the run that just failed, right after fixing the
+credential — that is correct.
 
 ### If you shard your suite
 

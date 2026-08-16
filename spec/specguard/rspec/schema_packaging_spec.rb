@@ -91,9 +91,15 @@ RSpec.describe "the vendored OpenTestIntent schema" do
       expect(@spec.files & on_disk).to match_array(on_disk)
     end
 
-    it "packages the executable" do
-      expect(@spec.executables).to eq(["specguard-lint"])
-      expect(@spec.files).to include("bin/specguard-lint")
+    # Both of them, and pinned as a whole list rather than with `include`: an
+    # executable declared in `spec.executables` but absent from `spec.files` is
+    # installed as a broken shim, and one added to `bin/` but never declared is
+    # not installed at all. `spec.files` comes from `git ls-files`, so the
+    # second shape is one `git add` away at any time — this example is what
+    # caught `bin/specguard-ingest` while it was still untracked (SPGD-631).
+    it "packages both executables" do
+      expect(@spec.executables).to match_array(%w[specguard-lint specguard-ingest])
+      expect(@spec.files).to include("bin/specguard-lint", "bin/specguard-ingest")
     end
 
     it "does not package the spec fixtures, so they can never become load-bearing" do

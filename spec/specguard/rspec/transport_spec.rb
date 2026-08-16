@@ -437,6 +437,63 @@ RSpec.describe SpecGuard::RSpec::Transport do
         expect(transport_to(server).deliver(payload)).to be_success
       end
     end
+
+    # SPGD-631. The 202 body used to be dropped on the floor, which left a
+    # replayed line unable to say WHICH run it had landed on — the one fact
+    # that makes "these two deliveries folded onto one row" an observation
+    # rather than a guess. It is carried now, and every assertion above this
+    # one is unchanged, which is the whole of what "additively" claims.
+    describe "the body it now carries back" do
+      it "parses the endpoint's answer, so a caller can name the run it landed on" do
+        StubIngestEndpoint.run(status: 202, body: '{"test_run_id":"tr_42","annotated_ratio":0.5}') do |server|
+          result = transport_to(server).deliver(payload)
+
+          expect(result.body).to eq("test_run_id" => "tr_42", "annotated_ratio" => 0.5)
+          expect(result.test_run_id).to eq("tr_42")
+        end
+      end
+
+      # A numeric id is still an id. Stringified so two deliveries can be
+      # compared without the caller caring how the platform spells one.
+      it "stringifies a numeric id rather than dropping it" do
+        StubIngestEndpoint.run(status: 202, body: '{"test_run_id":42}') do |server|
+          expect(transport_to(server).deliver(payload).test_run_id).to eq("42")
+        end
+      end
+
+      # The mirror of `#refusal_reasons`' degradation, and the more important
+      # half: the platform has STORED the run by the time it writes this body,
+      # so a proxy that rewrote the 202 must cost the caller the decoration and
+      # nothing else. Relabelling it would report a stored run as lost.
+      [
+        ["an empty body", ""],
+        ["a body that is not JSON", "<html>accepted</html>"],
+        ["a JSON scalar", "202"],
+        ["a JSON array", '[{"test_run_id":"tr_42"}]']
+      ].each do |description, body|
+        it "stays a success with no body for #{description}" do
+          StubIngestEndpoint.run(status: 202, body: body) do |server|
+            result = transport_to(server).deliver(payload)
+
+            expect(result).to have_attributes(success?: true, outcome: :success, code: 202, reason: nil)
+            expect(result.body).to be_nil
+            expect(result.test_run_id).to be_nil
+          end
+        end
+      end
+
+      # A refusal has no body to carry, and reading one off a rejection would
+      # be the same relabelling in the other direction.
+      it "leaves the body nil on a refusal, where `reasons` is the field that speaks" do
+        StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
+          result = transport_to(server).deliver(payload)
+
+          expect(result.body).to be_nil
+          expect(result.test_run_id).to be_nil
+          expect(result.reasons).to eq(["no"])
+        end
+      end
+    end
   end
 
   # FIND 2, at its source. None of these raise, which is why a `rescue` alone

@@ -26,6 +26,9 @@ require "zlib"
 #
 #   status:   what to answer with — 202 for the happy path, 400/401/500 for the
 #             non-exception failures the formatter's `rescue` is blind to.
+#   responses: a different answer per request, in order, for a client that makes
+#             more than one — the replayer sends a whole file through one
+#             endpoint, so "line 2 refused, line 3 accepted" needs this.
 #   hang:     accept the connection and never answer, so a client's read timeout
 #             is the only thing that can end the request.
 #   requests: everything that arrived, so an example can assert on the exact
@@ -64,10 +67,22 @@ class StubIngestEndpoint
     server&.stop
   end
 
-  def initialize(status: 202, body: '{"test_run_id":"9f8e7d6","embedding_status":"pending"}', hang: false)
+  def initialize(status: 202, body: '{"test_run_id":"9f8e7d6","embedding_status":"pending"}', hang: false,
+                 responses: nil)
     @status = status
     @body = body
     @hang = hang
+    # A different answer per request, in order, for a client that makes more
+    # than one. `specguard-ingest` replays a whole file through one endpoint,
+    # so "line 2 was refused and line 3 was accepted" is only expressible if
+    # the server can change its mind between requests.
+    #
+    # `nil` keeps the single-answer behaviour every other caller relies on, and
+    # a list shorter than the number of requests repeats its last entry — so
+    # `[{status: 400}]` refuses everything, exactly as `status: 400` does.
+    # Each entry may set `status`, `body`, or both; whatever it omits falls
+    # back to the constructor's.
+    @responses = responses
     @requests = []
     @mutex = Mutex.new
     # Port 0: the kernel picks a free one, so parallel examples cannot collide
@@ -101,14 +116,15 @@ class StubIngestEndpoint
 
   def handle(socket)
     request = read_request(socket)
-    @mutex.synchronize { @requests << request } if request
+    index = 0
+    @mutex.synchronize { index = @requests.push(request).length - 1 } if request
 
     # Held, not closed: closing would hand the client an EOF, which
     # `Net::HTTP` reports as `EOFError` rather than the read timeout this is
     # here to provoke. The thread is killed in `stop`.
     return sleep if @hang
 
-    socket.write(response)
+    socket.write(response(index))
     socket.close
   rescue Errno::EPIPE, Errno::ECONNRESET, IOError
     nil
@@ -137,11 +153,15 @@ class StubIngestEndpoint
     headers
   end
 
-  def response
-    <<~HTTP.gsub("\n", "\r\n") + @body
-      HTTP/1.1 #{@status} #{REASONS.fetch(@status, 'Unknown')}
+  def response(index = 0)
+    answer = @responses ? (@responses[index] || @responses.last) : {}
+    status = answer.fetch(:status, @status)
+    body = answer.fetch(:body, @body)
+
+    <<~HTTP.gsub("\n", "\r\n") + body
+      HTTP/1.1 #{status} #{REASONS.fetch(status, 'Unknown')}
       Content-Type: application/json
-      Content-Length: #{@body.bytesize}
+      Content-Length: #{body.bytesize}
       Connection: close
 
     HTTP
