@@ -1398,6 +1398,14 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # That is not hypothetical. This block previously recorded that Ruby rescued
     # a high surrogate followed by ANY escape; a later `json` narrowed that, and
     # the stale claim sat here going red for a reason nobody had written down.
+    #
+    # Which `json` these boundaries were measured against is therefore part of
+    # the claim, and the Gemfile pins it (`~> 2.14`, floor measured — see the
+    # comment there). Before that pin the version was whatever the running Ruby
+    # shipped as a default gem, so this block asserted one parser's boundaries
+    # on a 4.x dev box and a five-minors-older parser's on CI's 3.2 — green in
+    # one place and red in the other, with no examples naming the difference.
+    # If this block goes red again, read the pin before reading the payloads.
     describe "what the gem's own JSON.parse accepts" do
       # Agrees with §1.1(b). Refused by both backends.
       it "refuses the non-finite literals, as PROTOCOL.md §1.1(b) does" do
