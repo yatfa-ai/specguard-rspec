@@ -1387,32 +1387,43 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     end
 
     # ---------------------------------------------------------------------- #
-    # What RUBY accepts, asserted against Ruby rather than described in prose.
+    # What the SUITE'S PINNED `json` accepts, asserted against that parser
+    # rather than described in prose.
     #
     # These examples do not touch the backend. They pin the BOUNDARY of the
     # gem's own parser, so the fixtures below are demonstrably a sample of a
-    # known set rather than a list of things somebody happened to try — and so a
-    # Ruby upgrade that moves any boundary fails HERE, naming the cause, instead
-    # of surfacing later as a mysterious disagreement with the binary.
+    # known set rather than a list of things somebody happened to try. WHICH
+    # `json` they were measured against is part of the claim, and the Gemfile
+    # fixes it to an EXACT version (see the comment there for why exact and not
+    # a floor: `Gemfile.lock` is gitignored, so a floor would re-float on every
+    # fresh CI resolve).
     #
-    # That is not hypothetical. This block previously recorded that Ruby rescued
-    # a high surrogate followed by ANY escape; a later `json` narrowed that, and
-    # the stale claim sat here going red for a reason nobody had written down.
-    #
-    # Which `json` these boundaries were measured against is therefore part of
-    # the claim, and the Gemfile fixes it to an EXACT version (see the comment
-    # there for why exact and not a floor: `Gemfile.lock` is gitignored, so a
-    # floor would re-float on every fresh CI resolve). Before that the version
-    # was whatever the running Ruby shipped as a default gem, so this block
-    # asserted one parser's boundaries on a 4.x dev box and a five-minors-older
-    # parser's on CI's 3.2 — green in one place and red in the other, with no
-    # examples naming the difference.
-    #
-    # So if this block goes red, read the Gemfile's `json` line before reading
-    # the payloads: red here should now mean somebody bumped that line and the
-    # bump moved a boundary. Re-measure and update these expectations — do not
+    # So the change that fails HERE, naming its cause, is a change to THAT LINE.
+    # If this block goes red, read the Gemfile's `json` version before reading
+    # the payloads: red means somebody bumped it and the bump moved a boundary.
+    # Re-measure against the new version and update these expectations — do NOT
     # widen them to span both parsers, which would silently forfeit exactly the
     # signal this block exists to give.
+    #
+    # That the version is part of the claim is not hypothetical. This block once
+    # recorded that Ruby rescued a high surrogate followed by ANY escape; a later
+    # `json` narrowed that, and the stale claim sat here going red for a reason
+    # nobody had written down. Before the pin the version was whatever the
+    # running Ruby shipped as a default gem, so this block asserted one parser's
+    # boundaries on a 4.x dev box and a five-minors-older parser's on CI's 3.2 —
+    # green in one place and red in the other, with no example naming the
+    # difference.
+    #
+    # A RUBY UPGRADE NO LONGER SURFACES HERE. That is the trade the pin makes,
+    # deliberately, and it is not free: because these boundaries are now fixed to
+    # one parser on every Ruby, this block can no longer report that the minimum
+    # supported environment classifies a payload differently. It does — Ruby 3.2
+    # is the gemspec's floor and ships json 2.9.1, under which a depth-101
+    # document comes back `kind=parse` where the pinned 2.21.2 says `kind=schema`,
+    # through live `SpecGuard::RSpec::CLI` code. Nothing covers that today. The
+    # Gemfile's `json` comment records the divergence in full and leaves the
+    # architectural question of how to close it explicitly open; read it there
+    # before concluding this block still watches it, because it does not.
     describe "what the gem's own JSON.parse accepts" do
       # Agrees with §1.1(b). Refused by both backends.
       it "refuses the non-finite literals, as PROTOCOL.md §1.1(b) does" do
