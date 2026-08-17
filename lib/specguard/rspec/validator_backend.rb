@@ -939,10 +939,10 @@ module SpecGuard
             raise ValidatorError, "#{describe} emitted a #{document.class} where a JSON object was expected"
           end
 
-          # `--source` is the only mode this asks for and the only one the port
-          # implements `--json` for. A document announcing anything else means
-          # the argument vector above no longer says what this code thinks it
-          # says.
+          # `--source` is the only mode this asks for. A document announcing
+          # anything else means the argument vector above no longer says what
+          # this code thinks it says — and a report read under the wrong mode's
+          # counting rules is worse than no report.
           mode = document["mode"]
           raise ValidatorError, "#{describe} reported mode #{mode.inspect}, expected \"source\"" unless mode == "source"
 
