@@ -23,11 +23,15 @@ require_relative "../../support/stub_ingest_endpoint"
 # guarding the same property from a different door — a tool failure must never
 # borrow the code that means "the platform said no to your run".
 #
-# NOT registered in `regression_targets_spec.rb`, deliberately. That file locks
-# `specguard-lint`'s default output path for SPGD-305's constraint (the `--json`
-# renderer must not have moved a byte of the human one), and this command has no
-# second renderer to hold it to. The byte-exact expectations it would hold live
-# here instead, next to the behaviour they describe.
+# NOW registered in `regression_targets_spec.rb`, which it deliberately was not
+# before SPGD-669. That file locks `specguard-lint`'s default output path for
+# SPGD-305's constraint — the `--json` renderer must not have moved a byte of the
+# human one — and the reason this command was exempt was that it had no second
+# renderer to be held to. It has one now, and the same edits that gave it one are
+# on the default path: `#report` and `#list` grew a branch, `#summary_line` took
+# its counts as an argument, and `#list_row` reads a struct instead of a payload.
+# So the byte lock is there for the same reason lint's is, and the behavioural
+# examples stay here, next to the behaviour they describe.
 RSpec.describe SpecGuard::RSpec::IngestCLI do
   subject(:cli) { described_class.new(stdout: stdout, stderr: stderr, env: env) }
 
@@ -1161,6 +1165,514 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])).to eq(0)
       expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to list\n")
       expect(out).to be_empty
+    end
+  end
+
+  # ⭐ SPGD-669. A 400 is the only PERMANENT verdict this command has — a refused
+  # line is refused every time it is offered — so the only way to land the run is
+  # to learn which specs the platform objected to. It names every one of them,
+  # one error per bad spec; `Transport::Result#reason` renders three of them,
+  # truncated to 300 characters, because it is built for the one stderr line an
+  # in-run CI warning is allowed. `--json` is the second channel that cap's own
+  # grounds hand over.
+  #
+  # Every example here is about the flag being a RENDERER: the same lines, the
+  # same statuses, the same counts and the same exit code, written out twice.
+  describe "--json, the second renderer" do
+    # 500 offending specs — the shape a systemic client bug takes on a large
+    # suite, and `Ingest::Payload` appends one error per bad spec. Kept short
+    # enough that three of them join to under `MAX_REASONS_LENGTH`, so the text
+    # line below is the cap's `take(3)` and nothing else.
+    def refusal_details(count = 500)
+      Array.new(count) { |i| "specs[#{i}] spec/u_spec.rb:#{i}: duration must be non-negative" }
+    end
+
+    def refusal_body(details)
+      JSON.generate("message" => details.first, "details" => details)
+    end
+
+    def document = JSON.parse(out)
+
+    def deliver(argv, responses: nil, status: 202, body: '{"test_run_id":"tr_7"}', stdout: nil, stderr: nil)
+      StubIngestEndpoint.run(status: status, body: body, responses: responses) do |server|
+        described_class.new(stdout: stdout || self.stdout, stderr: stderr || self.stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run(argv)
+      end
+    end
+
+    # ⭐ Criterion 1, both halves in one example so they cannot drift apart: the
+    # document carries ALL 500 of the platform's reasons, verbatim and in order,
+    # and the same run without the flag prints the same capped line it printed
+    # before this renderer existed — three reasons and a count, on one line.
+    it "lists every reason the platform sent, while the text line still shows three and a count" do
+      details = refusal_details
+      path = sink(run_payload)
+
+      code = deliver(["--json", path], status: 400, body: refusal_body(details))
+      entry = document["lines"].first
+
+      expect(code).to eq(1)
+      expect(entry["reasons"].length).to eq(500)
+      expect(entry["reasons"]).to eq(details)
+      expect(entry["code"]).to eq(400)
+      expect(entry["status"]).to eq("refused")
+
+      plain = StringIO.new
+      expect(deliver([path], status: 400, body: refusal_body(details), stdout: plain)).to eq(1)
+      expect(plain.string).to eq(<<~OUT)
+        line 1: refused — HTTP 400 — the endpoint rejected the payload — #{details.take(3).join('; ')} and 497 more
+        specguard-ingest: delivered 0 of 1 run from #{path}; 1 refused
+      OUT
+    end
+
+    # The cap is a cap on a LINE. Asserted as the two channels differing on the
+    # same refusal, so a change that started truncating the document — or one
+    # that lifted the cap on the warning the formatter still has to fit on one
+    # stderr line — fails here.
+    it "renders the same refusal at two different lengths, on purpose" do
+      details = refusal_details(40)
+      path = sink(run_payload)
+
+      deliver(["--json", path], status: 400, body: refusal_body(details))
+      plain = StringIO.new
+      deliver([path], status: 400, body: refusal_body(details), stdout: plain)
+
+      expect(document["lines"].first["reasons"].length).to eq(40)
+      expect(plain.string).to include("and 37 more")
+      expect(plain.string).not_to include(details.last)
+    end
+
+    # ⭐ Criterion 3. The flag touches `#report` and `#list`, both of which sit on
+    # the path to the return value, so parity is asserted at every status rather
+    # than argued for — including the case the contract is really about, where a
+    # refusal and an undelivered line share one file and 2 has to win.
+    #
+    # A fresh server per run, deliberately: `StubIngestEndpoint`'s `responses`
+    # list is indexed by request across the whole server, so replaying one argv
+    # twice through one server would answer the second run from the wrong end of
+    # the list.
+    {
+      "every line accepted" => [0, [{}, {}]],
+      "a line the endpoint refused" => [1, [{}, { status: 400, body: '{"message":"spec 1: outcome is required"}' }]],
+      "a line that never arrived" => [2, [{}, { status: 500, body: '{"message":"upstream boom"}' }]],
+      "a refusal and an undelivered line together" =>
+        [2, [{ status: 400, body: '{"message":"no"}' }, { status: 500, body: '{"message":"boom"}' }]]
+    }.each do |name, (expected, responses)|
+      it "exits #{expected} with and without the flag on #{name}" do
+        path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"))
+
+        plain = deliver([path], responses: responses, stdout: StringIO.new, stderr: StringIO.new)
+        json = deliver(["--json", path], responses: responses, stdout: StringIO.new, stderr: StringIO.new)
+
+        expect(json).to eq(plain)
+        expect(json).to eq(expected)
+      end
+    end
+
+    # The fourth status has no HTTP response behind it, so it gets its own
+    # example rather than a `responses` entry — and it is the one that proves the
+    # flag does not rescue anything the default path does not.
+    it "exits 2 either way on a line that is not a run at all" do
+      path = sink(run_payload, "{not json")
+
+      expect(deliver([path], stdout: StringIO.new)).to eq(2)
+      expect(deliver(["--json", path], stdout: StringIO.new)).to eq(2)
+    end
+
+    # Criterion 7, on the side a consumer meets first: an accepted line has
+    # nothing to say and says it as `[]`.
+    it "reports an accepted line with its code and an empty reasons list" do
+      expect(deliver(["--json", sink(run_payload)])).to eq(0)
+
+      expect(document["lines"]).to eq(
+        [{ "number" => 1, "status" => "accepted", "code" => 202, "reasons" => [],
+           "test_run_id" => "tr_7", "ci_run_id" => "17442" }]
+      )
+    end
+
+    # Criterion 7's other half. `Transport#refusal_reasons` degrades to nil for
+    # every body it cannot read — an empty one, HTML from a proxy, a JSON scalar
+    # — and `null` there would hand every consumer a type check.
+    it "reports a refusal whose body said nothing readable as an empty list, never null" do
+      expect(deliver(["--json", sink(run_payload)], status: 400, body: "<html>no</html>")).to eq(1)
+      entry = document["lines"].first
+
+      expect(entry["status"]).to eq("refused")
+      expect(entry["code"]).to eq(400)
+      expect(entry["reasons"]).to eq([])
+    end
+
+    # ⭐ Criterion 8. A 502 is a proxy answering for a platform that never saw the
+    # payload, and its body is HTML rather than the shape this gem reads. It is
+    # `undelivered` — not `refused`, because nothing was judged, and not
+    # `:failed`, because a response genuinely arrived — and the document is still
+    # a document.
+    it "renders a 502 answering with HTML as undelivered, with a valid document and no crash" do
+      code = deliver(["--json", sink(run_payload)], status: 502,
+                                                    body: "<html><body>502 Bad Gateway</body></html>")
+      entry = document["lines"].first
+
+      expect(code).to eq(2)
+      expect(entry["status"]).to eq("undelivered")
+      expect(entry["code"]).to eq(502)
+      expect(entry["reasons"]).to eq([])
+      expect(document["summary"]["undelivered"]).to eq(1)
+      expect(err).to be_empty
+    end
+
+    # A delivery that never got an answer has no code, and the exception's
+    # rendering is the whole of what there is to say — so it lands in `reasons`
+    # rather than being dropped for want of a field of its own. `code: null` next
+    # to a non-empty `reasons` is what tells a consumer this from a refusal.
+    it "reports a socket failure with no code and the error in reasons" do
+      code = described_class.new(stdout: stdout, stderr: stderr,
+                                env: env.merge("SPECGUARD_ENDPOINT" => dead_endpoint,
+                                               "SPECGUARD_TIMEOUT" => "2")).run(["--json", sink(run_payload)])
+      entry = document["lines"].first
+
+      expect(code).to eq(2)
+      expect(entry["status"]).to eq("undelivered")
+      expect(entry["code"]).to be_nil
+      expect(entry["reasons"].first).to start_with("Errno::ECONNREFUSED")
+    end
+
+    # A line that was never a run has no code and no ids either, and its parse
+    # problem is the only thing there is to say about it — collapsed into the same
+    # list, exactly as `JSONReporter#errors` collapses lint's `problem` into
+    # `errors`, so one code path reads every reason a line did not land.
+    it "collapses an unparseable line's problem into the same reasons list" do
+      expect(deliver(["--json", sink(run_payload, "{not json")])).to eq(2)
+      entry = document["lines"].last
+
+      expect(entry["status"]).to eq("unparseable")
+      expect(entry["code"]).to be_nil
+      expect(entry["reasons"].length).to eq(1)
+      expect(entry["reasons"].first).to start_with("could not parse the line as JSON:")
+    end
+
+    it "reports every reasons list as a list of strings, whatever the line did" do
+      responses = [{}, { status: 400, body: refusal_body(refusal_details(4)) }, { status: 500, body: "" }]
+      expect(deliver(["--json", sink(run_payload, run_payload, run_payload, "{not json")],
+                     responses: responses)).to eq(2)
+
+      expect(document["lines"].map { |entry| entry["reasons"] }).to all(be_an(Array).and(all(be_a(String))))
+      expect(document["lines"].map { |entry| entry["status"] })
+        .to eq(%w[accepted refused undelivered unparseable])
+    end
+
+    # Whitespace inside a reason is left alone here, deliberately: collapsing it
+    # is `Transport::Result#one_line`'s job because a CI log has one line to
+    # spend, and a JSON string has no such budget. What must hold either way is
+    # that the document parses.
+    it "keeps a multi-line reason intact and still emits parseable JSON" do
+      body = JSON.generate("details" => ["specs[0] spec/u_spec.rb:1:\n  duration must be non-negative"])
+
+      expect(deliver(["--json", sink(run_payload)], status: 400, body: body)).to eq(1)
+      expect { document }.not_to raise_error
+      expect(document["lines"].first["reasons"].first).to include("\n")
+    end
+
+    # ⭐ Criterion 9. Two renderers of one result list that can disagree about how
+    # much of a file was delivered are worse than prose alone: the disagreement is
+    # unfalsifiable from outside the process. So the counts are computed once and
+    # handed to whichever renderer runs, and this is the example that would fail
+    # if either grew its own tally.
+    it "agrees with the text summary about every count, on one mixed file" do
+      responses = [{}, { status: 400, body: '{"message":"no"}' }, { status: 500, body: '{"message":"boom"}' }]
+      path = sink(run_payload, run_payload, run_payload, "{not json", "", run_payload)
+
+      expect(deliver(["--lines", "1-4", "--json", path], responses: responses)).to eq(2)
+      summary = document["summary"]
+
+      plain = StringIO.new
+      deliver(["--lines", "1-4", path], responses: responses, stdout: plain)
+
+      expect(plain.string).to include("specguard-ingest: delivered 1 of 4 runs from #{path}; 1 refused; " \
+                                      "1 could not be delivered; 1 could not be parsed; " \
+                                      "2 lines not selected by --lines")
+      expect(summary).to eq(
+        "lines" => 4, "attempted" => 3, "accepted" => 1, "refused" => 1, "undelivered" => 1,
+        "unparseable" => 1, "blank" => 0, "skipped" => 2, "selector" => "--lines"
+      )
+    end
+
+    it "names --from-line as the selector when that is the flag that held lines back" do
+      expect(deliver(["--json", "--from-line", "3", sink(run_payload, run_payload, run_payload)])).to eq(0)
+
+      expect(document["summary"]).to include("selector" => "--from-line", "skipped" => 2, "lines" => 1)
+      expect(document["lines"].first["number"]).to eq(3)
+    end
+
+    # `--from-line` defaults to 1 when it was not given at all, so a document that
+    # named it unconditionally would report a selector the user never typed.
+    it "names no selector when nothing held anything back" do
+      expect(deliver(["--json", sink(run_payload)])).to eq(0)
+
+      expect(document["summary"]["selector"]).to be_nil
+      expect(document["summary"]["skipped"]).to eq(0)
+    end
+
+    it "counts the blank lines it skipped rather than dropping them from the document" do
+      path = File.join(@dir, "gappy.jsonl")
+      File.write(path, "#{JSON.generate(run_payload)}\n\n\n#{JSON.generate(run_payload)}\n")
+
+      expect(deliver(["--json", path])).to eq(0)
+
+      expect(document["summary"]).to include("lines" => 2, "blank" => 2)
+      expect(document["lines"].map { |entry| entry["number"] }).to eq([1, 4])
+    end
+
+    # Folding, as data rather than as a sentence — one grouping rendered twice, so
+    # the observation cannot disagree with itself.
+    it "reports an observed folding as the lines, the run identity and the run id" do
+      path = sink(run_payload(ci_run_id: "17442"), run_payload(ci_run_id: "17442"), run_payload(ci_run_id: "x"))
+      expect(deliver(["--json", path])).to eq(0)
+
+      expect(document["foldings"]).to eq(
+        [{ "ci_run_id" => "17442", "test_run_id" => "tr_7", "lines" => [1, 2] }]
+      )
+    end
+
+    it "claims no folding where none was observed" do
+      expect(deliver(["--json", sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"))])).to eq(0)
+
+      expect(document["foldings"]).to eq([])
+    end
+
+    # The document does not claim lint's schema id or its `mode`. That document
+    # mirrors `validate-intent --json --source` key for key because the gem
+    # consumes it; this one is about deliveries, and naming a schema it has
+    # nothing to do with would assert a conformance it cannot have.
+    it "names the tool that wrote it rather than a schema it does not implement" do
+      expect(deliver(["--json", sink(run_payload)])).to eq(0)
+
+      expect(document).to include("tool" => "specguard-ingest", "mode" => "deliver")
+      expect(document).not_to have_key("schema")
+      expect(document.keys).to eq(%w[tool mode file summary lines foldings])
+    end
+
+    # The exit status is the one carrier of this command's verdict, and 0/1/2 do
+    # not collapse to a boolean: restating it in the document would be a second
+    # copy free to drift from the first.
+    it "carries no ok and no exit_code" do
+      expect(deliver(["--json", sink(run_payload)], status: 400)).to eq(1)
+
+      expect(document).not_to have_key("ok")
+      expect(document).not_to have_key("exit_code")
+    end
+
+    describe "under --list" do
+      # ⭐ Criterion 4. `#run` short-circuits to `#list` AHEAD of
+      # `build_transport`, and the file most worth previewing is the one the
+      # formatter wrote BECAUSE no API key was set. A renderer must not be able
+      # to reintroduce the credential requirement that ordering exists to avoid.
+      it "lists with neither SPECGUARD_ENDPOINT nor SPECGUARD_API_KEY set" do
+        path = sink(run_payload(ci_run_id: nil))
+        code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
+
+        expect(code).to eq(0)
+        expect(document["lines"].first).to include("branch" => "main", "ci_run_id" => nil)
+        expect(err).to be_empty
+      end
+
+      it "carries the envelope facts the row prints, as values rather than prose" do
+        path = sink(run_payload(ci_run_id: "17442"))
+        described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
+
+        expect(document["lines"]).to eq(
+          [{ "number" => 1, "status" => "listed", "reasons" => [], "branch" => "main",
+             "commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2", "ci_run_id" => "17442",
+             "examples" => 1, "duration_seconds" => 1.25 }]
+        )
+      end
+
+      # `no branch` and `no specs` become `null`, and for the reason the row says
+      # them at all: the envelope is free-form, and rendering `{"a"=>1}` as a
+      # branch would be this tool inventing structure the line does not have. `0
+      # examples` and "the line does not say" stay different facts — 0 against
+      # null, where the prose has `0 examples` against `no specs`.
+      it "reports a fact the line does not carry as null, and an empty one as itself" do
+        path = sink({ "branch" => { "a" => 1 }, "ci_run_id" => %w[x] }, { "specs" => [], "branch" => "main" })
+        described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
+
+        expect(document["lines"].first).to include(
+          "branch" => nil, "commit_sha" => nil, "ci_run_id" => nil, "examples" => nil,
+          "duration_seconds" => nil
+        )
+        expect(document["lines"].last).to include("examples" => 0, "branch" => "main")
+      end
+
+      # ⭐ Criterion 5. `--list` is the documented route to the numbers, so a
+      # preview that disagreed with the delivery would hand the user a set they
+      # did not send. Asserted as the two agreeing on the same file and the same
+      # spec rather than as two expectations that happen to match.
+      it "previews exactly the lines the same spec delivers, by the same numbers" do
+        path = sink(*%w[a b c d e f g].map { |id| run_payload(ci_run_id: id) })
+
+        code = described_class.new(stdout: stdout, stderr: stderr, env: {})
+                              .run(["--list", "--json", "--lines", "3,7", path])
+        listed = document["lines"].map { |entry| entry["number"] }
+
+        expect(code).to eq(0)
+        expect(listed).to eq([3, 7])
+        expect(document["summary"]).to include("lines" => 2, "skipped" => 5, "selector" => "--lines")
+
+        delivered = StringIO.new
+        expect(deliver(["--json", "--lines", "3,7", path], stdout: delivered)).to eq(0)
+        expect(JSON.parse(delivered.string)["lines"].map { |entry| entry["number"] }).to eq(listed)
+      end
+
+      # The other half of criterion 5: the listing's document has to SAY nothing
+      # was delivered, the way the text listing's summary says it in words. Every
+      # delivery status is 0 and `attempted` is 0 — which is a statement, not an
+      # absence.
+      it "says nothing was delivered, even with a live endpoint configured" do
+        StubIngestEndpoint.run do |server|
+          path = sink(run_payload, "{not json")
+          code = described_class.new(stdout: stdout, stderr: stderr,
+                                     env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                               .run(["--list", "--json", path])
+
+          expect(code).to eq(0)
+          expect(server.requests).to be_empty
+          expect(document["mode"]).to eq("list")
+          expect(document["summary"]).to eq(
+            "lines" => 2, "attempted" => 0, "accepted" => 0, "refused" => 0, "undelivered" => 0,
+            "unparseable" => 1, "blank" => 0, "skipped" => 0, "selector" => nil
+          )
+          expect(document["foldings"]).to eq([])
+        end
+      end
+
+      # Listing delivers nothing, so it can never carry a verdict about anybody's
+      # run — `EXIT_REFUSED` stays produced in exactly one place, which listing
+      # does not reach. Both files below are ones the delivery path exits non-zero
+      # on; listed under `--json`, both are 0.
+      it "never reaches exit 1, and exits 0 on a file delivery would exit 2 for" do
+        StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
+          configured = env.merge("SPECGUARD_ENDPOINT" => server.endpoint)
+          path = sink(run_payload)
+
+          listed = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: configured)
+                                 .run(["--list", "--json", path])
+          delivered = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: configured)
+                                    .run(["--json", path])
+
+          expect([listed, delivered]).to eq([0, 1])
+        end
+      end
+
+      it "lists an unparseable line as unparseable and keeps going" do
+        path = File.join(@dir, "binary.jsonl")
+        File.open(path, "wb") do |file|
+          file.write("#{JSON.generate(run_payload)}\n")
+          file.write([0xC3, 0x28, 0xFF, 0x0A].pack("C*"))
+          file.write("#{JSON.generate(run_payload(ci_run_id: 'last'))}\n")
+        end
+
+        expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])).to eq(0)
+
+        expect(document["lines"].map { |entry| entry["status"] }).to eq(%w[listed unparseable listed])
+        expect(document["lines"][1]["reasons"])
+          .to eq(["the line is not valid UTF-8, so it cannot be a run"])
+        expect(err).to be_empty
+      end
+    end
+
+    # ⭐ Criterion 6. A run that never got as far as reading <file> has nothing to
+    # be a document about, and `{"lines": []}` for one is exactly how a run that
+    # was never attempted gets mistaken for a file with nothing in it. So stdout
+    # stays EMPTY and the prose stays on stderr — which is also what keeps a
+    # `jq`-consuming CI step's failure legible as the misuse it is.
+    describe "a run that never got to the file" do
+      let(:endpoint) { "https://specguard.example.com" }
+
+      {
+        "no endpoint configured" => [%w[--json], {}],
+        "no API key configured" => [%w[--json], { "SPECGUARD_ENDPOINT" => "https://specguard.example.com" }],
+        "--from-line given with --lines" => [["--json", "--from-line", "2", "--lines", "3"], nil],
+        "--from-line given with --lines under --list" =>
+          [["--list", "--json", "--from-line", "2", "--lines", "3"], {}]
+      }.each do |name, (flags, environment)|
+        it "writes nothing on stdout and exits 2 on #{name}" do
+          path = sink(run_payload, run_payload, run_payload)
+          code = described_class.new(stdout: stdout, stderr: stderr, env: environment || env).run([*flags, path])
+
+          expect(code).to eq(2)
+          expect(out).to be_empty
+          expect(err).to start_with("specguard-ingest: error: ")
+        end
+      end
+
+      # Both modes, because they reach the same {#read_source} by different
+      # routes: delivery through `build_transport` first, listing deliberately
+      # ahead of it.
+      it "writes nothing on stdout and exits 2 on a file it cannot read" do
+        gone = File.join(@dir, "gone.jsonl")
+        listing = described_class.new(stdout: stdout, stderr: stderr, env: {})
+
+        expect(cli.run(["--json", gone])).to eq(2)
+        expect(listing.run(["--list", "--json", gone])).to eq(2)
+
+        expect(out).to be_empty
+        expect(err).to eq("specguard-ingest: error: no such file: #{gone}\n" * 2)
+      end
+
+      it "writes nothing on stdout and exits 2 on a bad flag alongside it" do
+        expect(cli.run(["--json", "--replaay", "f.jsonl"])).to eq(2)
+
+        expect(out).to be_empty
+        expect(err).to eq("specguard-ingest: error: invalid option: --replaay\n")
+      end
+
+      # The internal-error backstop is what makes `1` mean one thing, and the
+      # renderer must not stand between a bug in this tool and that 2.
+      it "reports an unexpected internal failure as a 2, printing no document" do
+        allow(SpecGuard::RSpec::Transport).to receive(:new).and_raise(NotImplementedError, "boom")
+
+        expect(cli.run(["--json", sink(run_payload)])).to eq(2)
+        expect(out).to be_empty
+        expect(err).to eq("specguard-ingest: internal error: NotImplementedError: boom\n")
+      end
+    end
+
+    # A file the tool DID read is a different case from one it never opened: the
+    # document is a true statement about an empty selection, and the warning that
+    # says WHY it was empty is a diagnostic about this tool, so it stays on stderr
+    # in both renderers.
+    describe "a file with nothing in it" do
+      it "still writes a document for a delivery, with the warning on stderr" do
+        path = File.join(@dir, "empty.jsonl")
+        File.write(path, "")
+
+        expect(deliver(["--json", path])).to eq(0)
+
+        expect(document["lines"]).to eq([])
+        expect(document["summary"]).to include("lines" => 0, "attempted" => 0, "accepted" => 0)
+        expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to deliver\n")
+      end
+
+      it "still writes a document for a listing, naming why it was empty on stderr" do
+        path = sink(run_payload, run_payload)
+        code = described_class.new(stdout: stdout, stderr: stderr, env: {})
+                              .run(["--list", "--json", "--lines", "9-11", path])
+
+        expect(code).to eq(0)
+        expect(document["lines"]).to eq([])
+        expect(document["summary"]).to include("lines" => 0, "skipped" => 2, "selector" => "--lines")
+        expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to list " \
+                          "(2 lines not selected by --lines)\n")
+      end
+    end
+
+    it "is documented in the help, alongside the flag that enables it" do
+      cli.run(["--help"])
+      screen = out.gsub(/\s+/, " ")
+
+      expect(screen).to include("Emit one JSON document on stdout instead of the human report")
+      expect(screen).to include("--json replaces the human report with one JSON document on stdout, in both modes")
+      expect(screen).to include("the FULL list of reasons a refusal named")
+      expect(screen).to include("a run that never got as far as reading <file> writes no document at all")
     end
   end
 
