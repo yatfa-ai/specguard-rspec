@@ -98,13 +98,37 @@ module SpecGuard
     # explicit and user-initiated instead, `--help` says so in as many words,
     # and no line is filtered.
     #
-    # `--from-line` is the one thing that narrows the set, and it narrows it by
-    # a number the user typed after reading the report — which is the opposite
-    # of a guess. It exists because {LineResult}'s numbering is only half of
-    # criterion 3: a report that says line 7 was refused is worth little if
-    # acting on it means re-sending lines 1 through 6, and re-sending a line
-    # that carries no `ci_run_id` is not free — `RunRecorder` has no identity to
-    # fold it onto, so it becomes a second row.
+    # `--from-line` and `--lines` are the two things that narrow the set, and
+    # both narrow it by numbers the user typed after reading the report — which
+    # is the opposite of a guess. They exist because {LineResult}'s numbering is
+    # only half of criterion 3: a report that says line 7 was refused is worth
+    # little if acting on it means re-sending lines 1 through 6, and re-sending
+    # a line that carries no `ci_run_id` is not free — `RunRecorder` has no
+    # identity to fold it onto, so it becomes a second row.
+    #
+    # == Why a suffix was not enough, and why `--lines` is not a heuristic
+    #
+    # `--from-line N` can express only a *suffix*, and the set a report points
+    # at is a suffix at most once. The sink is append-only and mixes both
+    # sources, so ordinary keyless laptop runs keep landing *after* the CI
+    # failures somebody wants to replay. Worse, {CONTENT_REFUSAL_CODES} is a
+    # content verdict — a 400 will be refused every time it is offered — so a
+    # 400 sitting at line 3 of a 40-line file is a line no suffix can step over,
+    # and the file can never be replayed to completion.
+    #
+    # `--lines 3,7,12-15` is the same category of thing as `--from-line`: a set
+    # the user typed, over the file's own numbering, after reading `--list`.
+    # Nothing about the line's *content* is consulted, which is the line the
+    # paragraph above draws and this flag stays on the explicit side of.
+    #
+    # The two are refused *together* — {UsageError}, a 2. They answer the same
+    # question, and an intersection would silently drop a number the user typed
+    # (`--from-line 5 --lines 3,7` delivers only 7, and the 3 vanishes without a
+    # word). Quietly narrowing what it was asked for is the failure this whole
+    # file is arranged against, so the combination is refused rather than
+    # resolved. Carving the file up with `sed` is not the alternative either: a
+    # carved temp file renumbers, and the whole value of resuming from a report
+    # is that line 12 is still line 12.
     #
     # == `--list`, which is what makes "check the file first" an instruction
     #
@@ -150,23 +174,25 @@ module SpecGuard
         log/test_results.jsonl written by the RSpec formatter — one whole run per
         line, byte-for-byte the body the endpoint was offered.
 
-        EVERY line in <file> is delivered — every line from --from-line onward,
-        if you give it. The formatter writes to this file both when a delivery
-        failed and when no API key was configured at all, and the two are
-        indistinguishable on the line, so a laptop's file is a file of ordinary
-        local runs and all of them will be sent. Nothing is filtered and nothing
-        is guessed at.
+        EVERY line in <file> is delivered — or, when you narrow it, every line
+        --from-line or --lines names. The formatter writes to this file both
+        when a delivery failed and when no API key was configured at all, and
+        the two are indistinguishable on the line, so a laptop's file is a file
+        of ordinary local runs and all of them will be sent. Nothing is
+        filtered and nothing is guessed at.
 
         So check the file first: --list prints one row per line — branch, commit,
         ci_run_id or its absence, how many examples, how long — and delivers
         nothing at all. It needs no SPECGUARD_ENDPOINT and no SPECGUARD_API_KEY,
         because the file most worth checking is the one written when no API key
-        was set. It composes with --from-line, so you can list the exact set you
-        are about to send.
+        was set. It composes with --from-line and --lines, so you can list the
+        exact set you are about to send.
 
         Each line is delivered once, with no retry, and reported by its line
         number in <file>. Use --from-line to resume a file that was only partly
-        accepted, instead of re-sending all of it.
+        accepted, or --lines to send an arbitrary set of them — 3,7,12-15 — over
+        that same numbering, instead of re-sending all of it. Both narrow the
+        same file, so give one or the other and never both.
 
         Reads SPECGUARD_ENDPOINT, SPECGUARD_API_KEY and SPECGUARD_TIMEOUT.
 
@@ -227,18 +253,35 @@ module SpecGuard
 
       # The file, as this tool reads it: the numbered lines that carry a
       # payload, a count of the blank ones that do not, and a count of the ones
-      # `--from-line` held back. The blanks and the skips are counted rather
-      # than dropped because a summary that quietly narrows what it is
-      # summarising is the failure this project keeps finding.
-      Source = Struct.new(:path, :lines, :blank, :skipped, keyword_init: true)
+      # the selector held back — with `selector` naming which flag did it, so
+      # the summary can say. The blanks and the skips are counted rather than
+      # dropped because a summary that quietly narrows what it is summarising is
+      # the failure this project keeps finding.
+      Source = Struct.new(:path, :lines, :blank, :skipped, :selector, keyword_init: true)
 
       # What the command line asked for. A struct rather than a bare path,
       # because `--from-line` is the second half of the same question — which
       # lines of which file — and threading it as an ivar would put a value
-      # {#run} depends on somewhere {#run} does not name. `list` is the third
-      # half of the same question: whether those lines are to be *shown* or
-      # *sent*.
-      Options = Struct.new(:path, :from_line, :list, keyword_init: true)
+      # {#run} depends on somewhere {#run} does not name. `line_set` is that
+      # same half asked the other way, as an explicit set rather than a
+      # starting point, and the two are mutually exclusive (see the class
+      # comment). `list` is the third half: whether those lines are to be
+      # *shown* or *sent*.
+      #
+      # `line_set` is an Array of Ranges rather than an expanded Array of
+      # Integers, so `--lines 1-90000000` costs nothing to hold. `nil` means the
+      # flag was not given and `from_line` is the selector.
+      Options = Struct.new(:path, :from_line, :list, :line_set, keyword_init: true)
+
+      # One entry of a `--lines` spec: `12` or `12-15`, and nothing else. No
+      # sign, no open end, no whitespace inside — {#parse_line_set} strips each
+      # entry before matching, so `3, 7` is fine, but `12-` and `5 - 7` are not
+      # near-misses to be repaired, they are typos to be reported. This is the
+      # `Integer`-coercion rationale on `--from-line` applied to a richer
+      # grammar: a spec that half-parses would silently deliver the wrong set,
+      # and delivering the wrong set is the one outcome a selector exists to
+      # prevent.
+      LINE_SPEC_ENTRY = /\A(\d+)(?:-(\d+))?\z/
 
       STATUS_LABELS = {
         accepted: "accepted",
@@ -275,7 +318,7 @@ module SpecGuard
         # about a path that was never the point.
         transport = build_transport
 
-        source = read_source(options.path, options.from_line)
+        source = read_source(options)
         results = source.lines.map { |number, text| deliver_line(number, text, transport) }
 
         report(source, results)
@@ -315,11 +358,12 @@ module SpecGuard
       # 0 (listed) and, via the {UsageError} {#read_source} raises, 2.
       #
       # It reuses {#read_source} rather than reading the file itself, which is
-      # what makes the numbers here the same numbers `--from-line` takes and
-      # what makes an invalid-UTF-8 line arrive as a line to be named rather
-      # than an exception.
+      # what makes the numbers here the same numbers `--from-line` and `--lines`
+      # take, what makes a listing under either flag preview exactly the set a
+      # delivery would send, and what makes an invalid-UTF-8 line arrive as a
+      # line to be named rather than an exception.
       def list(options)
-        source = read_source(options.path, options.from_line)
+        source = read_source(options)
 
         if source.lines.empty?
           @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to list#{empty_detail(source)}"
@@ -466,13 +510,15 @@ module SpecGuard
         raise UsageError, e.message
       end
 
-      # @param from_line [Integer] the first line to deliver. Everything before
-      #   it is counted and held back, never renumbered — the whole value of
-      #   resuming from a report is that line 12 is still line 12.
+      # @param options [Options] which lines of which file. Whichever selector
+      #   was given, everything it does not name is counted and held back, never
+      #   renumbered — the whole value of resuming from a report is that line 12
+      #   is still line 12.
       # @raise [UsageError] for every way a file can refuse to be read. All of
       #   them are exit 2 — the tool was pointed at something it cannot work
       #   from, which is not a verdict about anybody's run.
-      def read_source(path, from_line)
+      def read_source(options)
+        path = options.path
         raise UsageError, "no such file: #{path}" unless File.exist?(path)
         raise UsageError, "not a file: #{path}" unless File.file?(path)
 
@@ -483,6 +529,10 @@ module SpecGuard
         # Numbered from the file, not from the payloads: a blank line still
         # advances the count, so line 12 in this report is line 12 in an editor.
         #
+        # The selector is asked FIRST, in the one branch position the suffix
+        # test used to hold, so both narrowings inherit the numbering, the blank
+        # counting and the invalid-UTF-8 handling below unchanged.
+        #
         # `strip` RAISES on a line that is not valid UTF-8 — pointing this
         # command at a binary file by mistake is the obvious way to get one —
         # and such a line is not blank, it is a line that cannot be a run. It is
@@ -490,7 +540,7 @@ module SpecGuard
         # the file still delivers. Swallowing it here would lose a line silently
         # and letting it raise would report a bug in this tool.
         File.foreach(path).with_index(1) do |text, number|
-          if number < from_line
+          if held_back?(number, options)
             skipped += 1
           elsif text.valid_encoding? && text.strip.empty?
             blank += 1
@@ -499,9 +549,20 @@ module SpecGuard
           end
         end
 
-        Source.new(path: path, lines: lines, blank: blank, skipped: skipped)
+        Source.new(path: path, lines: lines, blank: blank, skipped: skipped,
+                   selector: options.line_set ? :line_set : :from_line)
       rescue SystemCallError, IOError => e
         raise UsageError, "could not read #{path}: #{e.message}"
+      end
+
+      # The whole of the selection, and the only place it is decided. `--lines`
+      # is an explicit set, so a line it does not name is held back wherever in
+      # the file it sits; `--from-line` is a suffix, so only the lines before it
+      # are. The two never both apply — {#parse_options} refuses the pair.
+      def held_back?(number, options)
+        return !options.line_set.any? { |range| range.cover?(number) } if options.line_set
+
+        number < options.from_line
       end
 
       # The per-line report on stdout — it is the product — with the diagnostics
@@ -519,9 +580,9 @@ module SpecGuard
       end
 
       # Why there was nothing to do, when there is a reason other than "the file
-      # is empty". A `--from-line` past the end of the file and a genuinely
-      # empty file are the same silence otherwise, and only one of them is the
-      # user's mistake.
+      # is empty". A `--from-line` past the end of the file, a `--lines` that
+      # names only lines the file does not have, and a genuinely empty file are
+      # the same silence otherwise, and only two of them are the user's mistake.
       def empty_detail(source)
         parts = []
         parts << "#{source.blank} blank line#{'s' unless source.blank == 1}" if source.blank.positive?
@@ -530,8 +591,16 @@ module SpecGuard
         parts.empty? ? "" : " (#{parts.join('; ')})"
       end
 
+      # Named for the flag that actually held them back, and worded for what
+      # that flag does. `--from-line` holds back a prefix, so those lines are
+      # "earlier"; `--lines` holds back whatever it did not name, which can sit
+      # anywhere in the file, so calling them earlier would be a lie in the
+      # common case.
       def skipped_clause(source)
-        "#{source.skipped} earlier line#{'s' unless source.skipped == 1} skipped by --from-line"
+        count = source.skipped
+        return "#{count} line#{'s' unless count == 1} not selected by --lines" if source.selector == :line_set
+
+        "#{count} earlier line#{'s' unless count == 1} skipped by --from-line"
       end
 
       def blank_clause(source)
@@ -601,7 +670,8 @@ module SpecGuard
       # @return [Options, nil] `nil` when `--help` or `--version` has already
       #   said everything the invocation was asking for.
       def parse_options(argv)
-        from_line = 1
+        from_line = nil
+        line_set = nil
         list = false
 
         parser = OptionParser.new do |o|
@@ -610,8 +680,8 @@ module SpecGuard
           o.separator DESCRIPTION
           o.separator ""
           o.separator "Options:"
-          # Deliberately alongside --from-line rather than instead of it: the
-          # two compose, so the set you list is the set you are about to send.
+          # Deliberately alongside the selectors rather than instead of them:
+          # they compose, so the set you list is the set you are about to send.
           o.on("--list", "List the runs in <file> without delivering any of them") do
             list = true
           end
@@ -624,6 +694,18 @@ module SpecGuard
             raise UsageError, "--from-line must be 1 or greater, got #{value}" if value < 1
 
             from_line = value
+          end
+          # No coercion to lean on for this one — and deliberately not
+          # OptionParser's `String`, whose acceptor rejects an empty argument
+          # with a message about the flag rather than about the spec. So the
+          # raw value comes through and {#parse_line_set} does the same job by
+          # hand and to the same standard: every way of mistyping a spec is a
+          # UsageError that names what was wrong with it, and none of them falls
+          # back to the whole file.
+          o.on("--lines SPEC",
+               "Deliver only the lines SPEC names — numbers and ranges over <file>'s",
+               "own numbering, e.g. 3,7,12-15. Not combinable with --from-line") do |value|
+            line_set = parse_line_set(value)
           end
           o.on("-v", "--version", "Print the version and exit") do
             @stdout.puts "specguard-rspec #{VERSION}"
@@ -639,12 +721,52 @@ module SpecGuard
         raise UsageError, "no file given — #{BANNER}" if files.empty?
         raise UsageError, "one file at a time, got #{files.length}: #{files.join(', ')}" if files.length > 1
 
-        Options.new(path: files.first, from_line: from_line, list: list)
+        # Refused rather than intersected. Both answer "which lines", and an
+        # intersection would drop a number the user typed without saying so —
+        # see the class comment.
+        if from_line && line_set
+          raise UsageError, "--from-line and --lines both choose which lines to send; give one or the other"
+        end
+
+        Options.new(path: files.first, from_line: from_line || 1, list: list, line_set: line_set)
       rescue OptionParser::ParseError => e
         # Uncaught, this is the likeliest way a user sees a false "the endpoint
         # refused your run": OptionParser raises and Ruby exits 1. Retyping it
         # is what makes a typo'd flag a 2.
         raise UsageError, e.message
+      end
+
+      # `3,7,12-15` → `[3..3, 7..7, 12..15]`, or {UsageError} — never a set that
+      # is "close to" what was typed. A selector that half-understood its
+      # argument would deliver the wrong runs, which is worse than not running
+      # at all, so every entry must match {LINE_SPEC_ENTRY} whole.
+      #
+      # Ranges are kept as Ranges rather than expanded: membership is
+      # `Range#cover?` over a handful of entries, so a fat-fingered
+      # `--lines 1-90000000` is refused by the file's length rather than by
+      # running the machine out of memory first.
+      #
+      # @return [Array<Range>] in the order typed, which does not matter —
+      #   delivery order is the file's, always.
+      def parse_line_set(spec)
+        entries = spec.split(",", -1).map(&:strip)
+        raise UsageError, "--lines needs at least one line number, got #{spec.inspect}" if entries.empty?
+
+        entries.map { |entry| parse_line_spec_entry(entry, spec) }
+      end
+
+      def parse_line_spec_entry(entry, spec)
+        raise UsageError, "--lines has an empty entry in #{spec.inspect}" if entry.empty?
+
+        match = LINE_SPEC_ENTRY.match(entry)
+        raise UsageError, "--lines: #{entry.inspect} is not a line number or a N-M range" if match.nil?
+
+        first = Integer(match[1], 10)
+        last = match[2] ? Integer(match[2], 10) : first
+        raise UsageError, "--lines: line numbers start at 1, got #{entry.inspect}" if first < 1
+        raise UsageError, "--lines: #{entry.inspect} ends before it starts" if last < first
+
+        first..last
       end
 
       def blank?(value)

@@ -639,12 +639,16 @@ at 20,000 examples that is megabytes of JSON on a single physical line.
 **It needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`** — deliberately.
 The file most worth checking is the one written *because* no API key was set, so
 requiring a key to look at it would withdraw the instrument in exactly the
-situation that produces the hazard. It composes with `--from-line` too, so you
-can list the exact set you are about to send:
+situation that produces the hazard. It composes with `--from-line` and `--lines`
+too, so you can list the exact set you are about to send:
 
 ```bash
 bundle exec specguard-ingest --list --from-line 7 log/test_results.jsonl
+bundle exec specguard-ingest --list --lines 3,7,12-15 log/test_results.jsonl
 ```
+
+A listing under either selector previews **exactly** the lines the same command
+without `--list` would deliver, by the same numbers.
 
 Listing sends nothing, so it can never be a verdict about a run: it exits `0`
 when it listed the file and `2` when it could not read it or the flags were
@@ -664,6 +668,70 @@ Re-sending a line that already landed is harmless *only* when it carries a
 **without** one has nothing to fold onto and becomes a second run, and a keyless
 local file is made entirely of those, so `--from-line` is worth the two seconds
 it takes to read the previous report.
+
+#### Sending a set rather than a suffix — `--lines`
+
+`--from-line` can only express a **suffix**, and the set a per-line report points
+at is a suffix at most once. `--lines` takes the set itself — comma-separated
+numbers and ranges, over the file's own numbering:
+
+```bash
+bundle exec specguard-ingest --lines 3,7,12-15 log/test_results.jsonl
+```
+
+```
+line 3: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 7: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 12: accepted — HTTP 202, test_run_id 5a3d0e91, ci_run_id 17443
+…
+specguard-ingest: delivered 6 of 6 runs from log/test_results.jsonl; 34 lines not selected by --lines
+```
+
+Two things want it. The first is an **interior line that will never be accepted**:
+an HTTP `400` is the one response SpecGuard forms an opinion about your payload
+in, so a line it refuses is refused every time it is offered. Sitting at line 3
+of a 40-line file, no `--from-line` can step over it — the file can never be
+replayed to completion, and the command can never exit `0` over it. Naming the
+set around it can:
+
+```bash
+bundle exec specguard-ingest --lines 1-2,4-40 log/test_results.jsonl
+```
+
+The second is that the sink is **append-only and mixes both sources**, so
+ordinary keyless laptop runs keep landing *after* the CI failures you want to
+replay. Every unwanted keyless line a too-early `--from-line` sweeps up is a
+spurious run on the platform, because a line with no `ci_run_id` has nothing to
+fold onto.
+
+Carving the file up first (`sed -n '21,24p' file > tmp.jsonl`) is not the
+alternative: a carved file **renumbers**, and the whole value of acting on a
+per-line report is that line 12 is still line 12.
+
+The held-back lines are **counted and reported**, exactly as `--from-line`'s and
+the blank ones are — a summary that quietly narrowed what it was summarising
+would be worse than no summary.
+
+A spec is read strictly, and a bad one is a `2` rather than a fallback to the
+whole file — which is the one outcome a selector exists to prevent. `--lines 0`,
+`--lines 5-2`, `--lines abc`, `--lines 12-`, an empty spec and an empty entry
+(`3,,5`) are all refused, naming what was wrong. Whitespace *between* entries is
+fine (`3, 7`); inside one it is a typo, not a range (`5 - 7` is refused).
+
+**`--lines` and `--from-line` do not combine** — giving both is a `2`:
+
+```
+specguard-ingest: error: --from-line and --lines both choose which lines to send; give one or the other
+```
+
+They answer the same question, and intersecting them would silently drop a
+number you typed: `--from-line 5 --lines 3,7` would send only line 7, and the 3
+would vanish without a word. Refusing the pair is the same discipline as the
+rest of this command — it will not quietly narrow what it was asked for.
+
+Nothing about a line's **content** is consulted by either flag. The numbers come
+from you, after reading `--list`; that is what keeps this an explicit selector
+rather than the heuristic this command refuses to grow.
 
 Each line is delivered **once** — the command runs out of band and costs your CI
 nothing, but a retry loop cannot see *why* an attempt failed and you can, so

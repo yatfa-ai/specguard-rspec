@@ -607,7 +607,291 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     end
   end
 
-  # The command's own README paragraph says a laptop's file is a file of
+  # `--lines`, the selector `--from-line` could not be. A suffix is the wrong
+  # shape for the set a per-line report points at: the sink is append-only and
+  # mixes CI failures with ordinary keyless laptop runs, so the wanted lines are
+  # a suffix at most once — and a 400 is a *content* verdict, refused every time
+  # it is offered, so a 400 at line 3 of a 40-line file is a line no `--from-line`
+  # can ever step over.
+  describe "--lines, sending an arbitrary set of them" do
+    # ⭐ The case the flag exists for, played out in full rather than asserted in
+    # the abstract: a file whose line 3 the endpoint will always refuse cannot
+    # be delivered to completion by any suffix, and IS delivered to completion —
+    # exit 0 — by naming the set around it. Both halves run against a real
+    # socket, so "the rest landed" is what arrived, not what was mocked.
+    it "delivers a file around a permanently-refused interior line, exiting 0" do
+      path = sink(*%w[a b c d e].map { |id| run_payload(ci_run_id: id) })
+      refusal = { status: 400, body: '{"message":"spec 1: outcome is required"}' }
+
+      whole = StubIngestEndpoint.run(responses: [{}, {}, refusal, {}, {}]) do |server|
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run([path])
+      end
+
+      expect(whole).to eq(1)
+      expect(out).to include("line 3: refused")
+
+      StubIngestEndpoint.run do |server|
+        code = described_class.new(stdout: StringIO.new, stderr: StringIO.new,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--lines", "1,2,4-5", path])
+
+        expect(code).to eq(0)
+        expect(server.requests.map { |request| request.json["ci_run_id"] }).to eq(%w[a b d e])
+      end
+    end
+
+    it "sends exactly the numbers and ranges the spec names, in the file's order" do
+      StubIngestEndpoint.run do |server|
+        path = sink(*%w[a b c d e f].map { |id| run_payload(ci_run_id: id) })
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--lines", "5-6,1", path])
+
+        expect(code).to eq(0)
+        expect(server.requests.map { |request| request.json["ci_run_id"] }).to eq(%w[a e f])
+      end
+    end
+
+    # Criterion 4 under the new selector. The numbers are the file's, and an
+    # interior selection is where a renumbering bug would actually show: line 4
+    # is the second line delivered and must still report as 4.
+    it "keeps the file's own numbering for an interior set" do
+      StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
+        path = sink(*%w[a b c d e].map { |id| run_payload(ci_run_id: id) })
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run(["--lines", "2,4", path])
+
+        expect(out).to eq(<<~OUT)
+          line 2: accepted — HTTP 202, test_run_id tr_7, ci_run_id b
+          line 4: accepted — HTTP 202, test_run_id tr_7, ci_run_id d
+          specguard-ingest: delivered 2 of 2 runs from #{path}; 3 lines not selected by --lines
+        OUT
+      end
+    end
+
+    # The `Source` struct's own rule: held-back lines are counted rather than
+    # dropped, because a summary that quietly narrows what it is summarising is
+    # the failure this project keeps finding. The wording has to be accurate
+    # too — the lines `--lines` holds back are not "earlier", they are wherever
+    # in the file they sit, and three summaries carry the clause.
+    it "counts the lines it held back, in the delivery summary" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload, run_payload, run_payload)
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run(["--lines", "2", path])
+
+        expect(out).to include("delivered 1 of 1 run from #{path}; 2 lines not selected by --lines")
+        expect(out).not_to include("--from-line")
+      end
+    end
+
+    it "counts the one line it held back in the singular" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload, run_payload)
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run(["--lines", "1", path])
+
+        expect(out).to include("1 line not selected by --lines")
+      end
+    end
+
+    # The empty-file detail, which is the summary that matters most here: a
+    # spec naming lines the file does not have delivers nothing, and a silent 0
+    # would read as "your whole file is delivered".
+    it "says on stderr when the spec named nothing the file has" do
+      StubIngestEndpoint.run do |server|
+        path = sink(run_payload, run_payload)
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--lines", "9-11", path])
+
+        expect(code).to eq(0)
+        expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to deliver " \
+                          "(2 lines not selected by --lines)\n")
+        expect(server.requests).to be_empty
+      end
+    end
+
+    # `--lines` sits in the same branch position the suffix test held, so the
+    # blank counting and the file's numbering are inherited rather than
+    # reimplemented: a blank line the spec names is still a blank line.
+    it "inherits the blank-line counting rather than re-deciding it" do
+      StubIngestEndpoint.run do |server|
+        path = File.join(@dir, "gappy.jsonl")
+        File.write(path, "#{JSON.generate(run_payload)}\n\n#{JSON.generate(run_payload)}\n")
+        code = described_class.new(stdout: stdout, stderr: stderr,
+                                   env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                             .run(["--lines", "2-3", path])
+
+        expect(code).to eq(0)
+        expect(out).to include("line 3: accepted")
+        expect(out).to include("delivered 1 of 1 run from #{path}; 1 blank line skipped; " \
+                               "1 line not selected by --lines")
+      end
+    end
+
+    it "delivers the whole file when the flag is absent" do
+      StubIngestEndpoint.run do |server|
+        described_class.new(stdout: stdout, stderr: stderr,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run([sink(run_payload, run_payload)])
+
+        expect(server.requests.length).to eq(2)
+        expect(out).not_to include("not selected")
+      end
+    end
+
+    # ⭐ Criterion 2. `--list` is the documented route to the numbers, so a
+    # preview that disagreed with the delivery would be worse than no preview:
+    # it would hand the user a set they did not send. Asserted as the two
+    # actually agreeing on the same file and the same spec, not as two
+    # independent expectations that happen to match.
+    it "previews under --list exactly the lines the same spec delivers" do
+      path = sink(*%w[a b c d e f].map { |id| run_payload(ci_run_id: id) })
+      spec = "2,4-5"
+
+      described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--lines", spec, path])
+      listed = out.scan(/^line (\d+):/).flatten
+
+      StubIngestEndpoint.run do |server|
+        delivered_stdout = StringIO.new
+        described_class.new(stdout: delivered_stdout, stderr: StringIO.new,
+                            env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                       .run(["--lines", spec, path])
+
+        expect(listed).to eq(%w[2 4 5])
+        expect(delivered_stdout.string.scan(/^line (\d+):/).flatten).to eq(listed)
+        expect(server.requests.map { |request| request.json["ci_run_id"] }).to eq(%w[b d e])
+      end
+    end
+
+    # Listing needs no credentials, and that must hold for the new selector too
+    # — the file most worth previewing a set out of is the keyless one.
+    it "lists a set with neither endpoint nor API key set, and delivers nothing" do
+      path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--lines", "3", path])
+
+      expect(code).to eq(0)
+      expect(out).to include("line 3: branch main")
+      expect(out).not_to include("line 1:")
+      expect(out).to include("listed 1 line from #{path}; 2 lines not selected by --lines; nothing was delivered")
+      expect(err).to be_empty
+    end
+
+    it "says on stderr when a listed spec named nothing the file has" do
+      path = sink(run_payload)
+      code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--lines", "4", path])
+
+      expect(code).to eq(0)
+      expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to list (1 line not selected by --lines)\n")
+      expect(out).to be_empty
+    end
+
+    # ⭐ The composition rule, decided rather than emergent. `--from-line` and
+    # `--lines` answer the same question, and intersecting them would drop a
+    # number the user typed without a word — `--from-line 5 --lines 3,7` would
+    # deliver only 7, and the 3 would vanish. Quietly narrowing what it was
+    # asked for is the failure the whole file is arranged against, so the pair
+    # is refused. It is a 2 for the same reason every other misuse is: nothing
+    # was offered to an endpoint, so no verdict about anyone's run exists.
+    describe "given together with --from-line" do
+      let(:endpoint) { "https://specguard.example.com" }
+
+      it "exits 2 rather than silently intersecting the two" do
+        path = sink(run_payload, run_payload, run_payload)
+
+        expect(cli.run(["--from-line", "2", "--lines", "3", path])).to eq(2)
+        expect(err).to eq("specguard-ingest: error: --from-line and --lines both choose which lines to send; " \
+                          "give one or the other\n")
+        expect(out).to be_empty
+      end
+
+      it "refuses the pair whichever order they are written in" do
+        path = sink(run_payload)
+        second = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: env)
+
+        expect(cli.run(["--lines", "1", "--from-line", "1", path])).to eq(2)
+        expect(second.run(["--from-line", "1", "--lines", "1", path])).to eq(2)
+      end
+
+      # The refusal is about the pair, not about either flag — each still works
+      # on its own, and `--list` is not a way around it.
+      it "still accepts either one alone, and refuses the pair under --list too" do
+        path = sink(run_payload, run_payload)
+        alone = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+        pair = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+
+        expect(alone.run(["--list", "--lines", "1", path])).to eq(0)
+        expect(pair.run(["--list", "--lines", "1", "--from-line", "1", path])).to eq(2)
+      end
+    end
+
+    # The `--from-line twelve` rationale, applied to a grammar with more ways to
+    # be wrong: a spec that half-parsed would deliver the wrong runs, which is
+    # worse than not running. Every one of these is a 2 that names what was
+    # wrong, and none of them falls back to the whole file.
+    context "when the spec itself is misused" do
+      let(:endpoint) { "https://specguard.example.com" }
+
+      {
+        "0" => 'specguard-ingest: error: --lines: line numbers start at 1, got "0"',
+        "3,0" => 'specguard-ingest: error: --lines: line numbers start at 1, got "0"',
+        "5-2" => 'specguard-ingest: error: --lines: "5-2" ends before it starts',
+        "abc" => 'specguard-ingest: error: --lines: "abc" is not a line number or a N-M range',
+        "3,abc" => 'specguard-ingest: error: --lines: "abc" is not a line number or a N-M range',
+        "12-" => 'specguard-ingest: error: --lines: "12-" is not a line number or a N-M range',
+        "1-2-3" => 'specguard-ingest: error: --lines: "1-2-3" is not a line number or a N-M range',
+        "3.5" => 'specguard-ingest: error: --lines: "3.5" is not a line number or a N-M range',
+        "" => 'specguard-ingest: error: --lines needs at least one line number, got ""',
+        "3,,5" => 'specguard-ingest: error: --lines has an empty entry in "3,,5"',
+        "3," => 'specguard-ingest: error: --lines has an empty entry in "3,"'
+      }.each do |spec, message|
+        it "exits 2 on --lines #{spec.inspect} rather than delivering anything" do
+          expect(cli.run(["--lines", spec, "file.jsonl"])).to eq(2)
+          expect(err).to eq("#{message}\n")
+          expect(out).to be_empty
+        end
+      end
+
+      # The failure mode that matters most: a rejected spec must never become
+      # "no selector", which is the whole file. Asserted against a real socket
+      # so "nothing was sent" is what arrived.
+      it "sends nothing at all for a spec it could not parse" do
+        StubIngestEndpoint.run do |server|
+          code = described_class.new(stdout: stdout, stderr: stderr,
+                                     env: env.merge("SPECGUARD_ENDPOINT" => server.endpoint))
+                               .run(["--lines", "abc", sink(run_payload, run_payload)])
+
+          expect(code).to eq(2)
+          expect(server.requests).to be_empty
+        end
+      end
+
+      # A spec is rejected before the file is even looked at, so the message is
+      # about the flag rather than about a path that was never the point.
+      it "names the bad spec rather than a file it never opened" do
+        expect(cli.run(["--lines", "abc", File.join(@dir, "gone.jsonl")])).to eq(2)
+        expect(err).not_to include("no such file")
+      end
+
+      # Whitespace around an entry is a typing convenience, not a grammar: it is
+      # stripped between entries and rejected inside one, so `3, 7` works and
+      # `5 - 7` is the typo it looks like rather than a silently repaired range.
+      it "allows whitespace between entries and refuses it inside one" do
+        path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
+        spaced = described_class.new(stdout: stdout, stderr: stderr, env: {})
+
+        expect(spaced.run(["--list", "--lines", " 1 , 3 ", path])).to eq(0)
+        expect(out.scan(/^line (\d+):/).flatten).to eq(%w[1 3])
+        expect(cli.run(["--lines", "1 - 3", "file.jsonl"])).to eq(2)
+      end
+    end
+  end
+
   # ordinary local runs, that all of them will be sent, and to "check the file
   # before you replay one you did not write" — and until `--list` there was no
   # way to check it. `--from-line` does not close the loop: the report that
@@ -869,6 +1153,26 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     it "prints the gem version" do
       expect(cli.run(["--version"])).to eq(0)
       expect(out).to eq("specguard-rspec #{SpecGuard::RSpec::VERSION}\n")
+    end
+
+    # Two selectors that cannot be given together is exactly the kind of rule a
+    # user meets as an error message and never as documentation, unless the
+    # help says it. Asserted alongside the behaviour that enforces it, for the
+    # reason the exit-code table is: this fails if the help stops saying it, and
+    # equally if the pair ever stops being refused.
+    it "documents --lines and the rule that it does not combine with --from-line" do
+      cli.run(["--help"])
+      screen = out.gsub(/\s+/, " ")
+
+      expect(screen).to include("--lines to send an arbitrary set of them — 3,7,12-15")
+      expect(screen).to include("Both narrow the same file, so give one or the other and never both")
+      expect(screen).to include("Deliver only the lines SPEC names")
+      expect(screen).to include("Not combinable with --from-line")
+
+      paired = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
+                              .run(["--lines", "1", "--from-line", "1", sink(run_payload)])
+
+      expect(paired).to eq(2)
     end
   end
 
