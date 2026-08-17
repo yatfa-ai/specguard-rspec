@@ -205,6 +205,24 @@ module SpecGuard
     # looking for a bug that is not there.
     DRY_RUN_WARNING_PREFIX = "SpecGuard: skipped test telemetry for a dry run"
 
+    # The refusal in full, as its own constant rather than a string built at the
+    # call site, because {#skip_dry_run} now needs it in two places: appended to
+    # with the coverage figures on the happy path, and emitted bare as the
+    # fallback if building those figures raises. The fallback is therefore
+    # *exactly* the line this formatter has always printed, which is what makes
+    # "the report failed" degrade to "the old behaviour" rather than to silence.
+    DRY_RUN_REFUSAL =
+      "#{DRY_RUN_WARNING_PREFIX} (rspec --dry-run executes no example bodies, so " \
+      "this run's durations and outcomes would not be measurements). " \
+      "Nothing was sent or written; the test run is unaffected."
+
+    # The report's indentation. Deliberately *not* `SpecGuard:`-prefixed: a run
+    # emits exactly one line carrying that prefix, so a reader scanning a CI log
+    # for "did SpecGuard have anything to say" gets one hit per run and not one
+    # hit per unannotated example. `formatter_run_spec.rb` pins that contract.
+    REPORT_INDENT = "  "
+    WORKLIST_INDENT = "    "
+
     # `Ingest::Payload::STATUSES`, restated. The platform validates every spec
     # against this pair, so they are the contract and not a local naming choice.
     STATUS_ANNOTATED = "annotated"
@@ -764,14 +782,158 @@ module SpecGuard
       configuration.dry_run?
     end
 
-    # Said rather than done silently, and through the same one-shot budget as
-    # every other warning so a dry run still emits at most one line. Nothing is
-    # appended: this is the one path where the absence of a file is the
-    # feature.
+    # A dry run's one useful product, said out loud instead of thrown away.
+    #
+    # == Why there is anything to say at all
+    #
+    # {#capture} builds three fields side by side, and only two of them are
+    # fabricated by a dry run. `duration` and `outcome` come from
+    # `example.execution_result`, which under `--dry-run` describes a body that
+    # never ran — that is the whole reason delivery is refused. But `status`
+    # comes from {AnnotationLookup#intent_for}, which reads the *spec file* and
+    # scans its text; it is a fact about source, identical whether or not
+    # anything executed. A dry run builds every example, so it holds the exact
+    # numerator and denominator of the product's headline adoption metric, and
+    # until now discarded both.
+    #
+    # This adds a third destination the refusal never contemplated: the
+    # operator's own terminal. Nothing is published — the POST and the
+    # `log/test_results.jsonl` append stay refused, exactly as before.
+    #
+    # == "This working tree", never "your repository"
+    #
+    # The wording matters and is not decoration. The repository's headline
+    # figure is derived from the last *delivered* run; this one is derived from
+    # the files on disk right now. They legitimately differ the moment somebody
+    # edits a spec — which is precisely the gap this exists to close — so the
+    # line must not be confusable with the dashboard's number.
+    #
+    # == Why this does not go through {#emit_warning}
+    #
+    # The one-shot budget exists to stop a per-example failure printing
+    # thousands of identical lines. Neither half of it fits here:
+    #
+    # * *Reading* it would let an earlier warning swallow the report. That is
+    #   worst in the case where the report matters most: if the annotation
+    #   scanner blew up, every example is classified `unannotated` and the
+    #   coverage figure reads 0%. An operator must see the warning *and* the
+    #   figure to know the figure is explained by the failure rather than by
+    #   their specs.
+    # * *Spending* it would silence a genuine later warning to buy a line that
+    #   was never a warning in the first place. Nothing went wrong here.
+    #
+    # It cannot flood, either — it is emitted once, from {#deliver}, at `close`.
+    #
+    # Building the report is wrapped so that a failure degrades to the bare
+    # refusal this formatter has always printed, and the write is wrapped so a
+    # dead stream is still not worth failing a run over ({#emit_warning} makes
+    # the same trade). The never-block-CI contract is not suspended by a
+    # reporting feature.
+    #
+    # Both rescues are *behaviour*, not decoration, so both are pinned by an
+    # example that fails if they are removed or emptied:
+    #
+    # * the inner one degrades to the refusal rather than to silence — which is
+    #   the whole reason {DRY_RUN_REFUSAL} is a constant — and "reports the
+    #   refusal, and only the refusal, when the report cannot be built" asserts
+    #   the emitted text *equals* it, so both emptying the fallback and
+    #   swallowing it fail.
+    # * the outer one keeps a dead stream from spending the run's one warning
+    #   through `close`'s {#never_fail_the_run}. Without it, a stream that
+    #   failed here would consume the budget a *genuine* later failure needs,
+    #   trading a line nobody could read for one somebody needed; "does not
+    #   spend the run's one warning when the error stream is dead" pins it.
     def skip_dry_run
-      emit_warning("#{DRY_RUN_WARNING_PREFIX} (rspec --dry-run executes no example bodies, so " \
-                   "this run's durations and outcomes would not be measurements). " \
-                   "Nothing was sent or written; the test run is unaffected.")
+      lines =
+        begin
+          [dry_run_summary, *unannotated_worklist]
+        rescue ScriptError, StandardError
+          [DRY_RUN_REFUSAL]
+        end
+
+      lines.each { |line| @error_stream.puts(line) }
+    rescue ScriptError, StandardError
+      nil
+    end
+
+    # The single `SpecGuard:`-prefixed line of a dry run: the refusal, then the
+    # coverage it was able to compute anyway.
+    def dry_run_summary
+      total = @specs.length
+      unannotated = unannotated_specs.length
+      annotated = total - unannotated
+
+      "#{DRY_RUN_REFUSAL} #{coverage_sentence(total, annotated, unannotated)}"
+    end
+
+    def coverage_sentence(total, annotated, unannotated)
+      if total.zero?
+        return "No examples were built, so there is no annotation coverage " \
+               "to report for this working tree."
+      end
+
+      "Annotation coverage is a fact about source, not about execution, so it " \
+        "survives the refusal — this working tree: #{total} #{pluralize(total, 'example')}, " \
+        "#{annotated} annotated, #{unannotated} unannotated " \
+        "(#{annotated_percentage(annotated, total)}% annotated)."
+    end
+
+    # The same predicate the platform applies, spelled the same way round.
+    #
+    # `Ingest::Payload#annotated_specs` *rejects* `status == "unannotated"`
+    # rather than selecting `"annotated"`, and `Ingest::ObservationRecorder`
+    # writes that same string verbatim. Selecting on `STATUS_UNANNOTATED` here —
+    # rather than on `STATUS_ANNOTATED`, which would read more naturally — is
+    # what makes "local figure equals `total_specs - annotated_specs` for the
+    # same tree" true *by construction* instead of true until one side drifts.
+    def unannotated_specs
+      @specs.select { |spec| spec["status"] == STATUS_UNANNOTATED }
+    end
+
+    # The worklist: the same four fields `latest_run.unannotated_examples`
+    # serves server-side, so a local list and the dashboard's have one shape.
+    #
+    # Sorted by definition site rather than left in capture order, which under
+    # `--order random` is a different sequence every run. A worklist you can
+    # diff between two runs is worth more than one that mirrors execution.
+    def unannotated_worklist
+      specs = unannotated_specs
+      return [] if specs.empty?
+
+      sites = specs.map { |spec| ["#{spec['spec_file_path']}:#{spec['line_number']}", spec] }
+                   .sort_by { |_site, spec| [spec["spec_file_path"].to_s, spec["line_number"].to_i] }
+      width = sites.map { |site, _| site.length }.max
+
+      heading = "#{REPORT_INDENT}the #{specs.length} unannotated " \
+                "#{pluralize(specs.length, 'example')}, by definition site:"
+
+      [heading] + sites.map do |site, spec|
+        "#{WORKLIST_INDENT}#{site.ljust(width)}  #{spec['name']}"
+      end
+    end
+
+    # Rounded, but never rounded *across* either boundary: 999 of 1000 must not
+    # read `100% annotated`, and 1 of 1000 must not read `0%`. Both would say
+    # the suite had reached — or had never left — a state it had not, which is
+    # the one way a coverage figure actively misleads rather than merely
+    # approximates.
+    #
+    # There is deliberately no `total.zero?` guard here. {#coverage_sentence}
+    # already returns before reaching this, so a guard would be a branch no
+    # input could reach — and an unreachable branch is one nothing can falsify,
+    # which is exactly what the two clamps below are not. One zero-denominator
+    # answer, in one place, pinned by "says there is nothing to measure rather
+    # than dividing by zero".
+    def annotated_percentage(annotated, total)
+      percentage = (annotated * 100.0 / total).round
+      return 99 if percentage >= 100 && annotated < total
+      return 1 if percentage <= 0 && annotated.positive?
+
+      percentage
+    end
+
+    def pluralize(count, noun)
+      count == 1 ? noun : "#{noun}s"
     end
 
     def fall_back(data, reason)

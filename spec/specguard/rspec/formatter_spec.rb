@@ -1061,12 +1061,43 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # SPGD-639 edited this example's *measurement*, not its claim, and this
+      # is the note the ticket asked for rather than a quiet edit.
+      #
+      # The claim was always "one announcement per run, not one per example" —
+      # which is why the body runs three examples through and why the title
+      # says "exactly once". `lines.length == 1` was the mechanical form of
+      # that claim back when the announcement was the only thing on stderr and
+      # happened to be a single line. The dry-run report is deliberately
+      # multi-line (one `SpecGuard:` header, then an unindented worklist), so
+      # the old form now measures "the report is one line", which was never the
+      # contract and is not a property anyone wants pinned.
+      #
+      # Restated as the number of `SpecGuard:`-prefixed lines, which is the same
+      # contract `formatter_run_spec.rb` pins at the process level and the one
+      # the budget-bypass in `#skip_dry_run` has to keep true. Note it is *not*
+      # weakened to `>= 1`: three examples through a formatter that announced
+      # per-example would read 3 here and still fail, so the regression the
+      # original was built to catch is still caught.
       it "says so on stderr, exactly once" do
         3.times { finish(build_example) }
         formatter.close(nil)
 
         expect(errors.string).to include(described_class::DRY_RUN_WARNING_PREFIX)
-        expect(errors.string.lines.length).to eq(1)
+        expect(errors.string.scan(/SpecGuard:/).length).to eq(1)
+      end
+
+      # The other half of the line above, and the reason it can no longer be a
+      # line count: the report enumerates *examples*, so three unannotated ones
+      # get three worklist entries under the single header.
+      it "lists every unannotated example under that one header" do
+        3.times { finish(build_example) }
+        formatter.close(nil)
+
+        worklist = errors.string.lines.grep(%r{spec/orders_spec\.rb:4})
+
+        expect(worklist.length).to eq(3)
+        expect(errors.string).to include("3 examples, 0 annotated, 3 unannotated (0% annotated)")
       end
 
       # Only the *delivery* decision changes. Capture is left exactly as it
@@ -1083,6 +1114,173 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       it "does not raise out of close" do
         expect { formatter.close(nil) }.not_to raise_error
+      end
+
+      # SPGD-639. SPGD-154's own scope said capture stays inspectable "so a
+      # caller — or a future replay path — can still inspect what the run
+      # looked like". This is the first thing built to inspect it, and these
+      # examples pin the decisions the ticket asked to be made deliberately
+      # rather than fallen into.
+      describe "the local annotation-coverage report" do
+        # Not a restatement of the two examples above. Those measure the
+        # *shape* of the announcement; these measure the numbers in it against
+        # a suite whose annotated/unannotated split is known and mixed, which
+        # the shared `annotations` double (nil for everything) cannot produce.
+        def mixed_suite!
+          allow(annotations).to receive(:intent_for).and_return(intent, nil, intent, nil)
+        end
+
+        it "reports the split, and names each unannotated example with its site" do
+          mixed_suite!
+          finish(build_example(name: "alpha", line_number: 1))
+          finish(build_example(name: "beta", line_number: 2))
+          finish(build_example(name: "gamma", line_number: 3))
+          finish(build_example(name: "delta", line_number: 4))
+          formatter.close(nil)
+
+          expect(errors.string).to include("4 examples, 2 annotated, 2 unannotated (50% annotated)")
+          # Site *and* name matched on one line, rather than as two `include`s
+          # over the whole stream. Names were `"a"`/`"b"` and so on until the
+          # SPGD-639 review pointed out that single characters are already
+          # substrings of the boilerplate refusal ("bodies", "dry"), so the
+          # name half of this example's claim could not fail — an
+          # implementation that emitted sites and dropped names entirely passed
+          # it. Distinctive names anchored to their own line make the assertion
+          # mean what the title says.
+          expect(errors.string).to match(%r{^\s+spec/orders_spec\.rb:2\s+beta$})
+          expect(errors.string).to match(%r{^\s+spec/orders_spec\.rb:4\s+delta$})
+          expect(errors.string).not_to include("spec/orders_spec.rb:1", "alpha")
+          expect(errors.string).not_to include("spec/orders_spec.rb:3", "gamma")
+        end
+
+        # Criterion 5: the state the metric exists to reach is not an error,
+        # and gets no worklist rather than an empty heading over nothing.
+        it "treats a fully-annotated suite as the goal, not a problem" do
+          allow(annotations).to receive(:intent_for).and_return(intent)
+          2.times { finish(build_example) }
+          formatter.close(nil)
+
+          expect(errors.string).to include("2 examples, 2 annotated, 0 unannotated (100% annotated)")
+          expect(errors.string).not_to include("by definition site")
+          expect(errors.string.scan(/SpecGuard:/).length).to eq(1)
+        end
+
+        # The degenerate denominator. `close` runs even when nothing was
+        # captured, so this path is reachable by anyone who dry-runs a filter
+        # that matches nothing — and it must not divide by zero.
+        it "says there is nothing to measure rather than dividing by zero" do
+          expect { formatter.close(nil) }.not_to raise_error
+
+          expect(errors.string).to include("No examples were built")
+          expect(errors.string).not_to include("%")
+        end
+
+        # The `@warned` decision, pinned in both directions.
+        #
+        # A spent budget must not swallow the report. This is the case where
+        # the report matters *most*: the scanner failing classifies every
+        # example `unannotated`, so a reader who saw only "0% annotated"
+        # without the warning would blame their specs for SpecGuard's fault.
+        it "is not swallowed by a warning budget an earlier failure already spent" do
+          allow(annotations).to receive(:intent_for).and_raise(IOError, "spec file vanished")
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "IOError")
+          expect(errors.string).to include("1 example, 0 annotated, 1 unannotated")
+        end
+
+        # ...and the converse: nothing went wrong here, so the report must not
+        # spend the budget a genuine later warning still needs.
+        it "leaves the warning budget unspent for a real warning that follows" do
+          finish(build_example)
+          formatter.close(nil)
+          formatter.send(:warn_once, IOError.new("the sink went away"))
+
+          expect(errors.string).to include("1 example, 0 annotated, 1 unannotated")
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "the sink went away")
+        end
+
+        # Rounding must not claim a boundary the suite has not reached. 199 of
+        # 200 rounds to 100%, and a report that printed it would say a suite
+        # with an unannotated spec in it was fully annotated — while its own
+        # worklist, one line below, showed otherwise.
+        it "never rounds up to 100% while an example is still unannotated" do
+          expect(formatter.send(:annotated_percentage, 199, 200)).to eq(99)
+          expect(formatter.send(:annotated_percentage, 200, 200)).to eq(100)
+        end
+
+        it "never rounds down to 0% once an example is annotated" do
+          expect(formatter.send(:annotated_percentage, 1, 500)).to eq(1)
+          expect(formatter.send(:annotated_percentage, 0, 500)).to eq(0)
+        end
+
+        # Criterion 4's second half, and the branch the SPGD-639 review
+        # rejected the first attempt for leaving unfalsified.
+        #
+        # "A failure while building the report must not fail the run" has two
+        # halves. The no-raise half was already covered by "does not raise out
+        # of close". The *what-is-said-instead* half was not covered by
+        # anything: mutating the fallback from `[DRY_RUN_REFUSAL]` to `[]` —
+        # turning "degrade to the old behaviour" into precisely the silence the
+        # branch exists to prevent — failed 0 of 1034 examples.
+        #
+        # `eq` rather than `include`, deliberately, and it is what makes this
+        # example bite in both directions: an emptied fallback fails it (the
+        # stream is bare), and so does one that emits the refusal *plus* a
+        # half-built report, which would be worse than either — figures nobody
+        # should trust, printed by the path that exists because they could not
+        # be computed.
+        it "reports the refusal, and only the refusal, when the report cannot be built" do
+          allow(formatter).to receive(:unannotated_worklist).and_raise(IOError, "scanner died mid-report")
+          finish(build_example)
+          formatter.close(nil)
+
+          expect(errors.string.strip).to eq(described_class::DRY_RUN_REFUSAL)
+          expect(errors.string).not_to include("Annotation coverage", "by definition site")
+        end
+
+        # The outer rescue's companion, which is a different claim from the one
+        # above: not "what is said when the report cannot be built" but "what is
+        # *kept* when it cannot be written".
+        #
+        # A dead stream here is unreportable by definition — there is nowhere to
+        # say so. What must survive is the run's one warning, which a genuine
+        # later failure still needs. Without the local rescue the exception
+        # reaches `close`'s `never_fail_the_run`, which spends the budget on a
+        # warning that goes to the same dead stream: a line nobody can read,
+        # traded for one somebody needed.
+        it "does not spend the run's one warning when the error stream is dead" do
+          dead = instance_double(StringIO)
+          allow(dead).to receive(:puts).and_raise(IOError, "stderr closed")
+          formatter.instance_variable_set(:@error_stream, dead)
+          finish(build_example)
+
+          expect { formatter.close(nil) }.not_to raise_error
+
+          formatter.instance_variable_set(:@error_stream, errors)
+          formatter.send(:warn_once, IOError.new("the sink went away"))
+
+          expect(errors.string).to include(described_class::WARNING_PREFIX, "the sink went away")
+        end
+
+        # The report is the *only* thing added. Both sinks stay refused.
+        it "publishes nothing, to either sink" do
+          StubIngestEndpoint.run do |server|
+            SpecGuard::RSpec.configure do |config|
+              config.endpoint = server.endpoint
+              config.api_key = "sgk_abc123"
+              config.timeout = 5
+            end
+
+            finish(build_example)
+            formatter.close(nil)
+
+            expect(server.requests).to be_empty
+            expect(sink_lines).to be_empty
+            expect(errors.string).to include("1 unannotated")
+          end
+        end
       end
     end
 
