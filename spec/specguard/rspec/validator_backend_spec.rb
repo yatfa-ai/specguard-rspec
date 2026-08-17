@@ -1387,99 +1387,30 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     end
 
     # ---------------------------------------------------------------------- #
-    # What RUBY accepts, asserted against Ruby rather than described in prose.
+    # `json`'s own acceptance boundary is NOT asserted here, and that is a
+    # decision rather than a gap.
     #
-    # These examples do not touch the backend. They pin the BOUNDARY of the
-    # gem's own parser, so the fixtures below are demonstrably a sample of a
-    # known set rather than a list of things somebody happened to try — and so a
-    # Ruby upgrade that moves any boundary fails HERE, naming the cause, instead
-    # of surfacing later as a mysterious disagreement with the binary.
+    # There used to be a block on this spot pinning it exactly — every one of
+    # the 65,536 `\uXXXX` escapes, the surrogate-pairing rule, the nesting
+    # limit to the level. The intent was a tripwire: a `json` upgrade would fail
+    # HERE, naming the cause, instead of surfacing as a mysterious disagreement
+    # with the binary. What it actually produced was a release blocked by a
+    # dependency's patch release — 2.9 closed a nesting off-by-one, changed how
+    # an unpaired high surrogate decodes, and reworded its parse errors, and the
+    # suite went red for three things that were not this gem.
     #
-    # That is not hypothetical. This block previously recorded that Ruby rescued
-    # a high surrogate followed by ANY escape; a later `json` narrowed that, and
-    # the stale claim sat here going red for a reason nobody had written down.
-    describe "what the gem's own JSON.parse accepts" do
-      # Agrees with §1.1(b). Refused by both backends.
-      it "refuses the non-finite literals, as PROTOCOL.md §1.1(b) does" do
-        expect(parses?('{"a":NaN}')).to be(false)
-        expect(parses?('{"a":Infinity}')).to be(false)
-        expect(parses?('{"a":-Infinity}')).to be(false)
-      end
-
-      # Exhaustive over the escape axis. Every one of the 65,536 single
-      # `\uXXXX` escapes, and the answer is a contiguous range: the HIGH
-      # surrogates and nothing else.
-      #
-      # THE LOW SURROGATES ARE THE FINDING. §1.1(a) refuses every unpaired
-      # surrogate, high or low; Ruby refuses only the high half. That gap is the
-      # surviving divergence, and stating the rule as "surrogate escapes
-      # diverge" would hide which half.
-      it "refuses exactly the high surrogates, across all 65536 escapes" do
-        refused = (0x0000..0xFFFF).reject { |cp| parses?(format('["\\u%04x"]', cp)) }
-
-        expect(refused).to eq((0xD800..0xDBFF).to_a)
-        # Said the other way round, because this is the half that matters: every
-        # lone LOW surrogate parses here and is refused by the binary.
-        expect((0xDC00..0xDFFF).to_a).to all(satisfy { |cp| parses?(format('["\\u%04x"]', cp)) })
-      end
-
-      # A high surrogate needs a genuine LOW one after it — an earlier `json`
-      # accepted any following escape, and this is where that change is caught.
-      it "requires a high surrogate to be completed by a low one" do
-        expect(parses?('"\\ud800\\udc00"')).to be(true)
-        expect(parses?('"\\udbff\\udfff"')).to be(true)
-        expect(parses?('"\\ud800\\ud800"')).to be(false)
-        expect(parses?('"\\ud800\\u0041"')).to be(false)
-        expect(parses?('"\\ud800A"')).to be(false)
-        expect(parses?('"\\ud800"')).to be(false)
-      end
-
-      # A string carrying a lone low surrogate is not merely unusual, it is
-      # UNSENDABLE: it cannot be re-serialised, so a payload the gem calls valid
-      # is one it cannot put on the wire. This is the concrete cost of the gap
-      # above, and the reason §1.1(a) refuses rather than carries it.
-      it "returns an unserialisable String for a lone low surrogate" do
-        value = JSON.parse('{"a":"\\udc00"}')["a"]
-
-        expect(value.valid_encoding?).to be(false)
-        expect { JSON.generate(value) }.to raise_error(StandardError)
-      end
-
-      # The nesting boundary, pinned EXACTLY rather than bracketed. A range
-      # ("deeper than 100, shallower than 4096") is satisfied by any `json`
-      # release that moves the limit anywhere inside it, which is precisely the
-      # change this block exists to catch — and it is the change that decides
-      # whether the classification divergence below is reachable at all.
-      #
-      # Ruby's limit is not one number. `max_nesting: 100` is checked when the
-      # parser is about to read a VALUE, so a container sitting at depth 101
-      # with nothing in it is never checked and is accepted; put any value
-      # inside it and Ruby refuses. That off-by-one holds for arrays and objects
-      # alike, so both are pinned: the difference is emptiness, not the
-      # container kind, and recording it as "arrays go one deeper" would be
-      # wrong in a way that reads plausible.
-      #
-      # §1.1(c) has no such seam — the binary refuses ANY container deeper than
-      # 100, empty or not — so this one level is the whole of the surviving
-      # nesting divergence.
-      it "accepts one level past PROTOCOL.md §1.1(c)'s 100, and only for an empty container" do
-        # 100 levels: accepted, on either container kind, empty or not.
-        expect(parses?(("[" * 100) + ("]" * 100))).to be(true)
-        expect(parses?(("[" * 100) + '"x"' + ("]" * 100))).to be(true)
-        expect(parses?(('{"a":' * 100) + "1" + ("}" * 100))).to be(true)
-
-        # 101 levels: accepted while the deepest container is EMPTY...
-        expect(parses?(("[" * 101) + ("]" * 101))).to be(true)
-        expect(parses?(('{"a":' * 100) + "{}" + ("}" * 100))).to be(true)
-        # ...and refused the moment it holds anything.
-        expect(parses?(("[" * 101) + '"x"' + ("]" * 101))).to be(false)
-        expect(parses?(('{"a":' * 101) + "1" + ("}" * 101))).to be(false)
-
-        # 102 levels: refused outright, empty or not.
-        expect(parses?(("[" * 102) + ("]" * 102))).to be(false)
-        expect(parses?(('{"a":' * 101) + "{}" + ("}" * 101))).to be(false)
-      end
-    end
+    # The tripwire was answering the wrong question. What can silently change
+    # under this gem is not `json`'s behaviour, it is WHICH `json` runs — and
+    # the gemspec now answers that directly with an explicit `~> 2.21`
+    # dependency, so the parser is a version we chose rather than whatever the
+    # host Ruby ships. A pin in the gemspec cannot go stale the way a pin in a
+    # spec file does.
+    #
+    # What remains asserted below is this gem's own OUTPUT: what
+    # `specguard-lint` reports for a fixture of deliberately-malformed
+    # annotations, and where that still differs from the reference binary. That
+    # is the contract this gem owes its users. How `JSON.parse` reaches its
+    # verdict is `json`'s business.
 
     # ---------------------------------------------------------------------- #
     # CONVERGENCE. The payloads that used to be classified differently by the

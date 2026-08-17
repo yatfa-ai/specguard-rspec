@@ -47,6 +47,15 @@ Gem::Specification.new do |spec|
   # is still 2.x API surface, so a major bump wants a look.
   spec.add_dependency "json_schemer", "~> 2.5"
 
+  # `json` is a default gem, so without this line the parser follows whatever
+  # the host Ruby happens to ship — and it is not a stable target. 2.9 alone
+  # closed a nesting off-by-one, changed how an unpaired high surrogate is
+  # decoded, and reworded its parse errors. The linter classifies a malformed
+  # annotation by asking this parser, so a silent swap underneath changes what
+  # `specguard-lint` REPORTS, on a machine nobody upgraded on purpose.
+  # Depending on it explicitly makes the parser a version we chose.
+  spec.add_dependency "json", "~> 2.21"
+
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
 end
