@@ -235,11 +235,18 @@ end
 RSpec.describe "the specguard-ingest default output path, byte for byte" do
   # Four short reasons, so `Transport::Result#reason`'s `take(3)` shows three and
   # counts one — the cap SPGD-669 did NOT touch, pinned on the line it exists for.
-  DETAILS = Array.new(4) { |i| "specs[#{i}] spec/u_spec.rb:#{i}: duration must be non-negative" }.freeze
-  REFUSAL = { status: 400, body: JSON.generate("message" => DETAILS.first, "details" => DETAILS) }.freeze
-  BOOM = { status: 500, body: '{"message":"upstream boom"}' }.freeze
-  ACCEPTED = { status: 202 }.freeze
-  KEY = { "SPECGUARD_API_KEY" => "sgk_abc123", "SPECGUARD_TIMEOUT" => "5" }.freeze
+  #
+  # These are `let`s rather than constants because a constant assigned in a block
+  # body lands on `Object`, not on the example group: `ACCEPTED` and `KEY` are
+  # names another spec file would plausibly want, and a redefinition costs only a
+  # warning while silently replacing the value. A byte lock whose fixture can be
+  # swapped from outside itself still passes — against the wrong bytes — which is
+  # exactly the drift this group exists to catch.
+  let(:details) { Array.new(4) { |i| "specs[#{i}] spec/u_spec.rb:#{i}: duration must be non-negative" }.freeze }
+  let(:refusal) { { status: 400, body: JSON.generate("message" => details.first, "details" => details) } }
+  let(:boom) { { status: 500, body: '{"message":"upstream boom"}' } }
+  let(:accepted) { { status: 202 } }
+  let(:key_env) { { "SPECGUARD_API_KEY" => "sgk_abc123", "SPECGUARD_TIMEOUT" => "5" } }
 
   around do |example|
     Dir.mktmpdir do |dir|
@@ -272,32 +279,32 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
   def run(argv, responses: nil)
     stdout = StringIO.new
     stderr = StringIO.new
-    env = responses ? KEY.dup : {}
+    env = responses ? key_env.dup : {}
 
     code =
       if responses
         StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}', responses: responses) do |server|
-          described.call(stdout, stderr, env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run(argv)
+          build_cli(stdout, stderr, env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run(argv)
         end
       else
-        described.call(stdout, stderr, env).run(argv)
+        build_cli(stdout, stderr, env).run(argv)
       end
 
     [stdout.string, stderr.string, code]
   end
 
-  def described
-    ->(stdout, stderr, env) { SpecGuard::RSpec::IngestCLI.new(stdout: stdout, stderr: stderr, env: env) }
+  def build_cli(stdout, stderr, env)
+    SpecGuard::RSpec::IngestCLI.new(stdout: stdout, stderr: stderr, env: env)
   end
 
   it "prints exactly this for a delivery of every status at once" do
-    stdout, stderr, code = run([sink], responses: [ACCEPTED, ACCEPTED, REFUSAL, BOOM])
+    stdout, stderr, code = run([sink], responses: [accepted, accepted, refusal, boom])
 
     expect(stdout).to eq(<<~OUT)
       line 1: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
       line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
       line 4: unparseable — the line is NilClass JSON, and a run is an object
-      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{DETAILS.take(3).join('; ')} and 1 more
+      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{details.take(3).join('; ')} and 1 more
       line 6: not delivered — HTTP 500 — upstream boom
       specguard-ingest: delivered 2 of 5 runs from #{sink}; 1 refused; 1 could not be delivered; 1 could not be parsed; 1 blank line skipped
       specguard-ingest: lines 1, 3 carried ci_run_id 17442 and each came back with test_run_id tr_7 — the endpoint folded them onto one run
@@ -322,12 +329,12 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
   end
 
   it "prints exactly this for --from-line" do
-    stdout, stderr, code = run(["--from-line", "3", sink], responses: [ACCEPTED, REFUSAL, BOOM])
+    stdout, stderr, code = run(["--from-line", "3", sink], responses: [accepted, refusal, boom])
 
     expect(stdout).to eq(<<~OUT)
       line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
       line 4: unparseable — the line is NilClass JSON, and a run is an object
-      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{DETAILS.take(3).join('; ')} and 1 more
+      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{details.take(3).join('; ')} and 1 more
       line 6: not delivered — HTTP 500 — upstream boom
       specguard-ingest: delivered 1 of 4 runs from #{sink}; 1 refused; 1 could not be delivered; 1 could not be parsed; 2 earlier lines skipped by --from-line
     OUT
@@ -336,7 +343,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
   end
 
   it "prints exactly this for --lines" do
-    stdout, stderr, code = run(["--lines", "1,3", sink], responses: [ACCEPTED, ACCEPTED])
+    stdout, stderr, code = run(["--lines", "1,3", sink], responses: [accepted, accepted])
 
     expect(stdout).to eq(<<~OUT)
       line 1: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
@@ -381,7 +388,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
   it "prints exactly this for a delivery of an empty file" do
     path = File.join(@dir, "empty.jsonl")
     File.write(path, "")
-    stdout, stderr, code = run([path], responses: [ACCEPTED])
+    stdout, stderr, code = run([path], responses: [accepted])
 
     expect(stdout).to be_empty
     expect(stderr).to eq("specguard-ingest: warning: #{path} holds no runs to deliver\n")

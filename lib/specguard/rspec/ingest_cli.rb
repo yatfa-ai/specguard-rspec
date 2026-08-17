@@ -457,7 +457,7 @@ module SpecGuard
         end
 
         if options.json
-          @stdout.puts IngestReporter.render_listing(source: source, lines: lines)
+          @stdout.puts IngestReporter.render_listing(source: source, lines: lines, counts: listed_counts(lines))
           return EXIT_OK
         end
 
@@ -709,6 +709,16 @@ module SpecGuard
 
       def status_counts(results)
         results.group_by(&:status).transform_values(&:length)
+      end
+
+      # The listing's counterpart to {#status_counts}. A preview delivers
+      # nothing, so `unparseable` is the only status a listed line can hold —
+      # but it is counted *here*, next to the delivery path's counts, rather
+      # than inside the renderer: {IngestReporter} states that its counts are
+      # handed in, and a count computed in the one place that promises not to
+      # compute them is the invariant holding by luck instead of by structure.
+      def listed_counts(lines)
+        { unparseable: lines.count(&:problem) }
       end
 
       # Why there was nothing to do, when there is a reason other than "the file

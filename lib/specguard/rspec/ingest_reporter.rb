@@ -82,8 +82,12 @@ module SpecGuard
     # whichever renderer runs, for {JSONReporter}'s reason: two renderers of one
     # result list that can disagree about how much of a file was delivered are
     # worse than prose alone, because the disagreement is unfalsifiable from
-    # outside the process. The folding observations are the same shape of thing
-    # — one grouping, rendered here as data and there as a sentence.
+    # outside the process. That holds on the listing path too, where the only
+    # count that can be positive is `unparseable` and the text summary states no
+    # counterpart to disagree with — it is handed in anyway, so the discipline
+    # is structural at both entry points rather than true of one by luck. The
+    # folding observations are the same shape of thing — one grouping, rendered
+    # here as data and there as a sentence.
     module IngestReporter
       # What wrote the document. Not a schema id: see the class comment.
       TOOL = "specguard-ingest"
@@ -122,8 +126,11 @@ module SpecGuard
       # @param source [IngestCLI::Source]
       # @param lines [Array<IngestCLI::ListedLine>] the envelope facts the text
       #   listing prints, extracted once for both renderers
+      # @param counts [Hash{Symbol=>Integer}] status counts, computed once by
+      #   {IngestCLI} for both renderers — `unparseable` is the only one a
+      #   listing can carry
       # @return [String] one JSON document, without a trailing newline
-      def self.render_listing(source:, lines:)
+      def self.render_listing(source:, lines:, counts:)
         # Every delivery status is 0 and `attempted` is 0, which is this
         # document's way of saying what the text listing says in words:
         # nothing was delivered. `unparseable` is the one that can be positive,
@@ -134,8 +141,7 @@ module SpecGuard
           mode: MODE_LIST,
           source: source,
           lines: lines.map { |line| listed(line) },
-          summary: summary(source, lines: lines.length, attempted: 0,
-                           counts: { unparseable: lines.count { |line| line.problem } }),
+          summary: summary(source, lines: lines.length, attempted: 0, counts: counts),
           foldings: []
         )
       end
