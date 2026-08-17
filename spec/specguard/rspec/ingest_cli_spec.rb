@@ -830,6 +830,50 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # The other half of the composition question, pinned so that last-wins is a
+    # decision rather than an OptionParser default nobody looked at. The pair
+    # above is refused because two *different* flags answering one question
+    # would yield a set smaller than either names; a repeat is one flag
+    # answering twice, where the later value *replaces* the earlier rather than
+    # intersecting it. Nothing is quietly narrowed — the delivered set is
+    # exactly the last one typed — and it is what lets a wrapper script's baked
+    # in selector be corrected by appending a new one.
+    describe "given more than once" do
+      it "delivers the last set typed, not the intersection and not the union" do
+        path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"),
+                    run_payload(ci_run_id: "c"), run_payload(ci_run_id: "d"))
+
+        expect(cli.run(["--list", "--lines", "1,2", "--lines", "4", path])).to eq(0)
+        expect(out.scan(/^line (\d+):/).flatten).to eq(%w[4])
+      end
+
+      # The repeat overrides rather than accumulating, so a later spec widens
+      # just as readily as it narrows — the earlier one is gone either way.
+      it "lets a later spec widen what an earlier one narrowed" do
+        path = sink(run_payload, run_payload, run_payload)
+
+        expect(cli.run(["--list", "--lines", "2", "--lines", "1-3", path])).to eq(0)
+        expect(out.scan(/^line (\d+):/).flatten).to eq(%w[1 2 3])
+      end
+
+      # Same convention on the flag that already had it before this one
+      # existed, asserted here so the two selectors are pinned as a pair.
+      it "applies the same last-wins rule to a repeated --from-line" do
+        path = sink(run_payload, run_payload, run_payload)
+
+        expect(cli.run(["--list", "--from-line", "2", "--from-line", "3", path])).to eq(0)
+        expect(out.scan(/^line (\d+):/).flatten).to eq(%w[3])
+      end
+
+      # A repeat is still not a way around the cross-flag refusal: the last
+      # `--lines` is a `--lines`, and `--from-line` is still there beside it.
+      it "still refuses the pair when the repeat is the one that lands" do
+        path = sink(run_payload, run_payload)
+
+        expect(cli.run(["--from-line", "1", "--lines", "1", "--lines", "2", path])).to eq(2)
+      end
+    end
+
     # The `--from-line twelve` rationale, applied to a grammar with more ways to
     # be wrong: a spec that half-parsed would deliver the wrong runs, which is
     # worse than not running. Every one of these is a 2 that names what was
@@ -892,6 +936,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     end
   end
 
+  # The command's own README paragraph says a laptop's file is a file of
   # ordinary local runs, that all of them will be sent, and to "check the file
   # before you replay one you did not write" — and until `--list` there was no
   # way to check it. `--from-line` does not close the loop: the report that

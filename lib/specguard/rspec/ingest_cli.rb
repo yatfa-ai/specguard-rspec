@@ -130,6 +130,23 @@ module SpecGuard
     # carved temp file renumbers, and the whole value of resuming from a report
     # is that line 12 is still line 12.
     #
+    # A *repeated* selector is the other half of that question and gets the
+    # opposite answer deliberately, not by omission: `--lines 1,2 --lines 4`
+    # delivers line 4, and `--from-line 2 --from-line 5` starts at 5, both by
+    # last-wins. The reason the cross-flag case is refused does not reach this
+    # one. Refusing `--from-line` with `--lines` is about two *different* flags
+    # answering one question, where combining them yields a set smaller than
+    # either one names and the user cannot see which of their numbers went. A
+    # repeat is one flag answering its own question twice, and the later answer
+    # *replaces* the earlier rather than intersecting it — the delivered set is
+    # exactly the last one typed, which is the one thing on the command line
+    # that is unambiguously current. It is also what makes a selector
+    # overridable at all: a wrapper script or shell alias that bakes in
+    # `--lines` is corrected by appending a new one, and refusing the repeat
+    # would take that away for no gain in clarity. Last-wins is `OptionParser`'s
+    # convention and the shell's; this file adopts it on purpose and pins it in
+    # the spec, so it is a decision rather than a default nobody looked at.
+    #
     # == `--list`, which is what makes "check the file first" an instruction
     #
     # Having refused to guess *for* the user, this command owes them what they

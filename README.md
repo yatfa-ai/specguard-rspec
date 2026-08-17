@@ -729,6 +729,14 @@ number you typed: `--from-line 5 --lines 3,7` would send only line 7, and the 3
 would vanish without a word. Refusing the pair is the same discipline as the
 rest of this command — it will not quietly narrow what it was asked for.
 
+Repeating **one** selector is a different case and is allowed: the last one
+wins. `--lines 1,2 --lines 4` sends line 4, and `--from-line 2 --from-line 5`
+starts at 5. A repeat replaces rather than intersects, so the set delivered is
+exactly the last one you typed — nothing is combined into something smaller than
+you asked for, which is the objection to the pair above. It is also what lets
+you override a selector baked into a wrapper script or shell alias by appending
+a new one.
+
 Nothing about a line's **content** is consulted by either flag. The numbers come
 from you, after reading `--list`; that is what keeps this an explicit selector
 rather than the heuristic this command refuses to grow.
