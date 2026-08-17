@@ -1475,6 +1475,14 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         expect(err).to be_empty
       end
 
+      # == Co-maintained with README's listed-line table
+      #
+      # This `eq` is over the whole hash, so it is the executable enumeration of
+      # the listed row's key set — and the README's "Every listed line has the
+      # same eight keys" table is the prose half of the same claim, with nothing
+      # in the suite reading it. The paragraph it replaced named 6 of these 8
+      # (`reasons` and `number` were missing) and shipped green. A key added or
+      # removed here fails this example: update that table in the same commit.
       it "carries the envelope facts the row prints, as values rather than prose" do
         path = sink(run_payload(ci_run_id: "17442"))
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])

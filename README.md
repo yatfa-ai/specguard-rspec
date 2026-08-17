@@ -862,12 +862,24 @@ Every delivered line has the same six keys:
 | `test_run_id` | the run the line landed on, as the endpoint reported it; `null` where that cannot be said honestly |
 | `ci_run_id` | the run identity the line carried, or `null` — the field to read for, because a line without one has nothing for SpecGuard to fold a redelivery onto |
 
-A `--list` row carries the envelope facts the text row prints instead — `branch`,
-`commit_sha`, `ci_run_id`, `examples`, `duration_seconds` — with **`null`** where
-the row says `no branch` or `no specs`, and `"status": "listed"` or
-`"unparseable"`. `--list --json` needs no `SPECGUARD_ENDPOINT` and no
-`SPECGUARD_API_KEY`, exactly as `--list` does, and it previews the same set by
-the same numbers a delivery would send.
+Every listed line has the same eight keys — `number`, `status` and `reasons`, as
+on a delivered line, and then the five envelope facts the text row prints
+instead of a delivery's outcome:
+
+| field | meaning |
+| --- | --- |
+| `number` | its 1-based line number in the file **as given**, blank lines counted — the same number as on a delivered line, and the one `--from-line` and `--lines` take |
+| `status` | `listed`, or `unparseable` where the line could not be parsed as a run — the two outcomes a preview has, since nothing was sent |
+| `reasons` | the parse problem on an `unparseable` row, and `[]` on a `listed` one — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type. It is the only field that says *why* a previewed line is unusable |
+| `branch` | the branch the line carried, or **`null`** where the row says `no branch` |
+| `commit_sha` | the commit the line carried, or **`null`** |
+| `ci_run_id` | the run identity the line carried, or **`null`** where the row says `no ci_run_id` — the field to read for here too |
+| `examples` | how many examples the line carried, or **`null`** where the row says `no specs`. `0` and `null` stay different facts, exactly as `0 examples` and `no specs` do |
+| `duration_seconds` | the run's duration, or **`null`** where the row says `no duration_seconds` |
+
+`--list --json` needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`,
+exactly as `--list` does, and it previews the same set by the same numbers a
+delivery would send.
 
 Four things worth knowing:
 
