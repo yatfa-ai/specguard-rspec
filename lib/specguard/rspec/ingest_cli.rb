@@ -4,6 +4,7 @@ require "json"
 require "optparse"
 
 require_relative "../rspec"
+require_relative "ingest_reporter"
 require_relative "transport"
 
 # `specguard-ingest`'s command line — the other end of `log/test_results.jsonl`.
@@ -178,7 +179,27 @@ module SpecGuard
     # can see — the `test_run_id` that came back, and whether the line carried a
     # `ci_run_id` at all — and states folding only where two lines *observed*
     # it: same `ci_run_id` in, same `test_run_id` out is one row, not an
-    # inference about one. See {#folding_observations}.
+    # inference about one. See {#folded_runs}.
+    #
+    # == `--json`, and the one thing the human report cannot say
+    #
+    # A 400 is the only *permanent* verdict here ({CONTENT_REFUSAL_CODES}), so
+    # the only way to land a refused line is to learn which specs the platform
+    # objected to and fix the payload. It names every one of them — one error per
+    # bad spec — and {Transport::Result#reason} renders three, truncated to 300
+    # characters, because it exists for the one stderr line an in-run CI warning
+    # is allowed. On a systemic client bug over a 20,000-example suite, the
+    # command whose entire job is to fix and re-send a refused run was showing
+    # three of twenty thousand reasons.
+    #
+    # `--json` is the second channel that cap's own grounds hand over, and it is
+    # a RENDERER: stdout carries one document instead of the human report, in
+    # both modes, over the same {LineResult}s, the same counts, the same
+    # groupings and the same {#exit_code}. Nothing about what this command
+    # *decides* moves — the cap, `#reason` and the formatter's warning are
+    # untouched, and the default output is byte-identical (pinned in
+    # `spec/specguard/rspec/regression_targets_spec.rb`). See {IngestReporter}
+    # for the document, and for which runs emit one.
     class IngestCLI
       BANNER = "Usage: specguard-ingest [options] <file>"
 
@@ -212,6 +233,13 @@ module SpecGuard
         same file, so give one or the other and never both.
 
         Reads SPECGUARD_ENDPOINT, SPECGUARD_API_KEY and SPECGUARD_TIMEOUT.
+
+        --json replaces the human report with one JSON document on stdout, in
+        both modes. It carries every line's status, the endpoint's HTTP code and
+        the FULL list of reasons a refusal named — the human line has room for
+        three of them — plus the same summary counts and folding observations.
+        Warnings stay on stderr, and a run that never got as far as reading
+        <file> writes no document at all.
 
         Exit codes:
           0  every line was accepted — or, with --list, the file was listed
@@ -266,7 +294,40 @@ module SpecGuard
       # in the file *as given*, counting the blank lines that were skipped, so
       # the report addresses the same lines an editor does and a partially
       # accepted file can be resumed from rather than blindly re-sent.
-      LineResult = Struct.new(:number, :status, :detail, :test_run_id, :ci_run_id, keyword_init: true)
+      #
+      # `detail` is the flattened one-line rendering the text report prints, and
+      # `code` and `reasons` are the two structured facts flattening it destroys
+      # — the numeric HTTP status, and the **whole** array off
+      # {Transport::Result} rather than the three {Transport::Result#reason} has
+      # room for. They are carried rather than derived because a document cannot
+      # be reconstructed from prose: `and 19997 more` is not the 19,997.
+      #
+      # `reasons` is whatever there is to say about why this line did not land,
+      # as it arrived: the platform's own strings on a refusal (verbatim,
+      # including a `nil` where the body said nothing readable), the parse
+      # problem where the line was never a run, the exception's rendering where
+      # nothing reached the endpoint, and `[]` on an acceptance. Normalising it
+      # to a list of strings is {IngestReporter}'s job, because that guarantee
+      # is the document's rather than this struct's.
+      LineResult = Struct.new(:number, :status, :detail, :code, :reasons, :test_run_id, :ci_run_id,
+                              keyword_init: true)
+
+      # The envelope facts a *listing* states about one line — the same five
+      # {#list_row} prints, extracted once so both renderers read one set of
+      # facts rather than each deciding for itself what a non-scalar `branch` or
+      # a non-Array `specs` means. `problem` names why the line is not a run,
+      # and is `nil` for every line that is one.
+      #
+      # Every other member is `nil` exactly where the row says `no branch`,
+      # `no specs` or `no duration_seconds`: the line does not carry that fact.
+      ListedLine = Struct.new(:number, :problem, :branch, :commit_sha, :ci_run_id, :examples,
+                              :duration_seconds, keyword_init: true)
+
+      # Two or more accepted lines that went out with one `ci_run_id` and came
+      # back with one `test_run_id` — folding, observed rather than inferred.
+      # Grouped once ({#folded_runs}) and rendered twice, as a sentence by
+      # {#folding_observation} and as data by {IngestReporter}.
+      Folding = Struct.new(:ci_run_id, :test_run_id, :numbers, keyword_init: true)
 
       # The file, as this tool reads it: the numbered lines that carry a
       # payload, a count of the blank ones that do not, and a count of the ones
@@ -283,12 +344,13 @@ module SpecGuard
       # same half asked the other way, as an explicit set rather than a
       # starting point, and the two are mutually exclusive (see the class
       # comment). `list` is the third half: whether those lines are to be
-      # *shown* or *sent*.
+      # *shown* or *sent*. `json` is orthogonal to all three — it chooses the
+      # renderer, never the set and never the verdict.
       #
       # `line_set` is an Array of Ranges rather than an expanded Array of
       # Integers, so `--lines 1-90000000` costs nothing to hold. `nil` means the
       # flag was not given and `from_line` is the selector.
-      Options = Struct.new(:path, :from_line, :list, :line_set, keyword_init: true)
+      Options = Struct.new(:path, :from_line, :list, :line_set, :json, keyword_init: true)
 
       # One entry of a `--lines` spec: `12` or `12-15`, and nothing else. No
       # sign, no open end, no whitespace inside — {#parse_line_set} strips each
@@ -338,7 +400,7 @@ module SpecGuard
         source = read_source(options)
         results = source.lines.map { |number, text| deliver_line(number, text, transport) }
 
-        report(source, results)
+        report(source, results, json: options.json)
         exit_code(results)
       rescue UsageError => e
         @stderr.puts "specguard-ingest: error: #{e.message}"
@@ -379,15 +441,27 @@ module SpecGuard
       # take, what makes a listing under either flag preview exactly the set a
       # delivery would send, and what makes an invalid-UTF-8 line arrive as a
       # line to be named rather than an exception.
+      #
+      # Under `--json` the rows become one document and the warning stays where
+      # it is. An empty listing still writes the document — the file was read,
+      # and `"lines": []` over a summary of zeroes is a true statement about it —
+      # whereas a file that could not be read raises out of {#read_source}
+      # before there is anything to be a document about.
       def list(options)
         source = read_source(options)
+        lines = source.lines.map { |number, text| listed_line(number, text) }
 
-        if source.lines.empty?
+        if lines.empty?
           @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to list#{empty_detail(source)}"
+          return EXIT_OK unless options.json
+        end
+
+        if options.json
+          @stdout.puts IngestReporter.render_listing(source: source, lines: lines, counts: listed_counts(lines))
           return EXIT_OK
         end
 
-        source.lines.each { |number, text| @stdout.puts list_row(number, text) }
+        lines.each { |line| @stdout.puts list_row(line) }
         @stdout.puts list_summary(source)
         EXIT_OK
       end
@@ -397,44 +471,51 @@ module SpecGuard
       # {#deliver_line} applies, for the same reason: a line silently dropped
       # from a preview is a preview that under-reports what the delivery would
       # do.
-      def list_row(number, text)
+      #
+      # The envelope is free-form, so every field goes through {#scalar} for the
+      # reason {#deliver_line} reports `ci_run_id` that way: rendering
+      # `{"a"=>1}` as a branch would be this tool inventing structure the line
+      # does not have. `0 examples` and `no specs` are likewise different facts —
+      # an empty list is a run that carried none, a missing or non-Array `specs`
+      # is a line that does not say — so the count is `nil` rather than 0 for the
+      # second, and both renderers inherit that distinction rather than each
+      # making it.
+      def listed_line(number, text)
         payload, problem = parse_payload(text)
-        return "line #{number}: #{STATUS_LABELS.fetch(:unparseable)} — #{problem}" if payload.nil?
+        return ListedLine.new(number: number, problem: problem) if payload.nil?
 
-        "line #{number}: #{listed_fields(payload).join(', ')}"
+        specs = payload["specs"]
+        duration = payload["duration_seconds"]
+
+        ListedLine.new(number: number,
+                       branch: scalar(payload["branch"]),
+                       commit_sha: scalar(payload["commit_sha"]),
+                       ci_run_id: scalar(payload["ci_run_id"]),
+                       examples: specs.is_a?(Array) ? specs.length : nil,
+                       duration_seconds: duration.is_a?(Numeric) ? duration : nil)
       end
 
-      # The envelope is free-form, so every field is reported through {#scalar}
-      # for the reason {#deliver_line} reports `ci_run_id` that way: rendering
-      # `{"a"=>1}` as a branch would be this tool inventing structure the line
-      # does not have. `ci_run_id` is the decision-relevant one — a line without
-      # it has nothing for `RunRecorder` to fold onto and becomes a second run —
-      # so its absence is stated rather than left as a gap in the row.
-      def listed_fields(payload)
-        [named("branch", scalar(payload["branch"])),
-         named("commit_sha", scalar(payload["commit_sha"])),
-         named("ci_run_id", scalar(payload["ci_run_id"])),
-         example_count(payload),
-         listed_duration(payload)]
+      # The row, off the facts above and nothing else — which is what makes the
+      # document and the listing two renderings of one reading of the line.
+      def list_row(line)
+        return "line #{line.number}: #{STATUS_LABELS.fetch(:unparseable)} — #{line.problem}" if line.problem
+
+        "line #{line.number}: #{listed_fields(line).join(', ')}"
+      end
+
+      # `ci_run_id` is the decision-relevant one — a line without it has nothing
+      # for `RunRecorder` to fold onto and becomes a second run — so its absence
+      # is stated rather than left as a gap in the row.
+      def listed_fields(line)
+        [named("branch", line.branch),
+         named("commit_sha", line.commit_sha),
+         named("ci_run_id", line.ci_run_id),
+         line.examples ? "#{line.examples} example#{'s' unless line.examples == 1}" : "no specs",
+         line.duration_seconds ? "#{line.duration_seconds}s" : "no duration_seconds"]
       end
 
       def named(name, value)
         value ? "#{name} #{value}" : "no #{name}"
-      end
-
-      # `0 examples` and `no specs` are different facts: an empty list is a run
-      # that carried none, a missing or non-Array `specs` is a line that does
-      # not say.
-      def example_count(payload)
-        specs = payload["specs"]
-        return "no specs" unless specs.is_a?(Array)
-
-        "#{specs.length} example#{'s' unless specs.length == 1}"
-      end
-
-      def listed_duration(payload)
-        value = payload["duration_seconds"]
-        value.is_a?(Numeric) ? "#{value}s" : "no duration_seconds"
       end
 
       # Says what was listed and, last and unconditionally, that nothing left
@@ -460,23 +541,32 @@ module SpecGuard
       # than by a loop that cannot.
       def deliver_line(number, text, transport)
         payload, problem = parse_payload(text)
-        return LineResult.new(number: number, status: :unparseable, detail: problem) if payload.nil?
+        if payload.nil?
+          return LineResult.new(number: number, status: :unparseable, detail: problem, reasons: [problem])
+        end
 
         ci_run_id = scalar(payload["ci_run_id"])
         result = transport.deliver(payload)
 
         case result.outcome
         when :success
-          LineResult.new(number: number, status: :accepted, detail: "HTTP #{result.code}",
-                         test_run_id: result.test_run_id, ci_run_id: ci_run_id)
+          LineResult.new(number: number, status: :accepted, detail: "HTTP #{result.code}", code: result.code,
+                         reasons: [], test_run_id: result.test_run_id, ci_run_id: ci_run_id)
         when :rejected
           # A non-2xx is not automatically a verdict. {CONTENT_REFUSAL_CODES}
           # names the ones the platform actually forms an opinion in; the rest
           # arrived, stored nothing, and said nothing about this run.
           status = CONTENT_REFUSAL_CODES.include?(result.code) ? :refused : :undelivered
-          LineResult.new(number: number, status: status, detail: result.reason, ci_run_id: ci_run_id)
+          # `result.reasons` verbatim — the whole array, not the three
+          # `result.reason` flattens it to. A body that said nothing readable
+          # leaves it nil, which {IngestReporter} renders as `[]`.
+          LineResult.new(number: number, status: status, detail: result.reason, code: result.code,
+                         reasons: result.reasons, ci_run_id: ci_run_id)
         else
-          LineResult.new(number: number, status: :undelivered, detail: result.reason, ci_run_id: ci_run_id)
+          # No code, because no answer: the exception's rendering is the whole of
+          # what there is to say, and it is the only thing `reasons` can carry.
+          LineResult.new(number: number, status: :undelivered, detail: result.reason,
+                         reasons: [result.reason], ci_run_id: ci_run_id)
         end
       end
 
@@ -584,16 +674,51 @@ module SpecGuard
 
       # The per-line report on stdout — it is the product — with the diagnostics
       # about this tool's own situation on stderr, which is the split
-      # `specguard-lint` already makes.
-      def report(source, results)
+      # `specguard-lint` already makes. `--json` moves the product and leaves the
+      # diagnostics: a run that delivered nothing is still loud on stderr, in
+      # both renderers, because the warning is a statement about this tool's
+      # situation and not a result.
+      #
+      # == Two renderers, one set of facts
+      #
+      # The counts and the folding groups are computed ONCE here and handed to
+      # whichever renderer runs. Both the text summary line and the document's
+      # `summary` are statements about the same numbers, and a command whose two
+      # renderers can disagree about how much of a file it delivered is worse
+      # than one that only prints prose: the disagreement is unfalsifiable from
+      # outside the process.
+      def report(source, results, json:)
         if results.empty?
           @stderr.puts "specguard-ingest: warning: #{source.path} holds no runs to deliver#{empty_detail(source)}"
+          return unless json
+        end
+
+        counts = status_counts(results)
+        foldings = folded_runs(results)
+
+        if json
+          @stdout.puts IngestReporter.render_delivery(source: source, results: results, counts: counts,
+                                                      foldings: foldings)
           return
         end
 
         results.each { |result| @stdout.puts line_report(result) }
-        @stdout.puts summary_line(source, results)
-        folding_observations(results).each { |observation| @stdout.puts observation }
+        @stdout.puts summary_line(source, results, counts)
+        foldings.each { |folding| @stdout.puts folding_observation(folding) }
+      end
+
+      def status_counts(results)
+        results.group_by(&:status).transform_values(&:length)
+      end
+
+      # The listing's counterpart to {#status_counts}. A preview delivers
+      # nothing, so `unparseable` is the only status a listed line can hold —
+      # but it is counted *here*, next to the delivery path's counts, rather
+      # than inside the renderer: {IngestReporter} states that its counts are
+      # handed in, and a count computed in the one place that promises not to
+      # compute them is the invariant holding by luck instead of by structure.
+      def listed_counts(lines)
+        { unparseable: lines.count(&:problem) }
       end
 
       # Why there was nothing to do, when there is a reason other than "the file
@@ -649,8 +774,7 @@ module SpecGuard
       # accepted count is over the total rather than on its own, and every other
       # outcome gets a clause of its own instead of being folded into a
       # remainder the reader has to compute.
-      def summary_line(source, results)
-        counts = results.group_by(&:status).transform_values(&:length)
+      def summary_line(source, results, counts)
         parts = ["specguard-ingest: delivered #{counts.fetch(:accepted, 0)} of " \
                  "#{results.length} run#{'s' unless results.length == 1} from #{source.path}"]
 
@@ -671,17 +795,27 @@ module SpecGuard
       # that went out with the same `ci_run_id` and came back with the same
       # `test_run_id` are two deliveries onto one row — which is not an
       # inference about folding, it is folding, observed. Anything short of two
-      # such lines gets no sentence at all rather than a hedged one.
-      def folding_observations(results)
+      # such lines gets no {Folding} at all rather than a hedged one.
+      #
+      # Grouped here and rendered by {#folding_observation} or by
+      # {IngestReporter}, rather than grouped by each of them: one observation
+      # rendered twice cannot disagree with itself.
+      #
+      # @return [Array<Folding>]
+      def folded_runs(results)
         results
           .select { |result| result.status == :accepted && result.ci_run_id && result.test_run_id }
           .group_by { |result| [result.ci_run_id, result.test_run_id] }
           .filter_map do |(ci_run_id, test_run_id), group|
             next if group.length < 2
 
-            "specguard-ingest: lines #{group.map(&:number).join(', ')} carried ci_run_id #{ci_run_id} and each " \
-              "came back with test_run_id #{test_run_id} — the endpoint folded them onto one run"
+            Folding.new(ci_run_id: ci_run_id, test_run_id: test_run_id, numbers: group.map(&:number))
           end
+      end
+
+      def folding_observation(folding)
+        "specguard-ingest: lines #{folding.numbers.join(', ')} carried ci_run_id #{folding.ci_run_id} and each " \
+          "came back with test_run_id #{folding.test_run_id} — the endpoint folded them onto one run"
       end
 
       # @return [Options, nil] `nil` when `--help` or `--version` has already
@@ -690,6 +824,7 @@ module SpecGuard
         from_line = nil
         line_set = nil
         list = false
+        json = false
 
         parser = OptionParser.new do |o|
           o.banner = BANNER
@@ -724,6 +859,11 @@ module SpecGuard
                "own numbering, e.g. 3,7,12-15. Not combinable with --from-line") do |value|
             line_set = parse_line_set(value)
           end
+          # Composes with everything above it: it chooses the renderer, never
+          # the set that is listed or sent and never the code that is returned.
+          o.on("--json", "Emit one JSON document on stdout instead of the human report") do
+            json = true
+          end
           o.on("-v", "--version", "Print the version and exit") do
             @stdout.puts "specguard-rspec #{VERSION}"
             return nil
@@ -745,7 +885,7 @@ module SpecGuard
           raise UsageError, "--from-line and --lines both choose which lines to send; give one or the other"
         end
 
-        Options.new(path: files.first, from_line: from_line || 1, list: list, line_set: line_set)
+        Options.new(path: files.first, from_line: from_line || 1, list: list, line_set: line_set, json: json)
       rescue OptionParser::ParseError => e
         # Uncaught, this is the likeliest way a user sees a false "the endpoint
         # refused your run": OptionParser raises and Ruby exits 1. Retyping it

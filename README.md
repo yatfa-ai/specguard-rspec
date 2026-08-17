@@ -792,6 +792,100 @@ were ingested, so a replayed run becomes the repository's latest. For the case
 this exists to serve — replay the run that just failed, right after fixing the
 credential — that is correct.
 
+#### Machine-readable output — `--json`
+
+An HTTP `400` is the one **permanent** verdict in the table above: a refused line
+is refused every time it is offered, so the only way to land the run is to learn
+which specs SpecGuard objected to and fix the payload. It names **every** one of
+them — one error per offending spec, by index, file and line — and the human
+report has room for three:
+
+```
+line 3: refused — HTTP 400 — the endpoint rejected the payload — specs[417] spec/models/user_spec.rb:88: duration must be a non-negative number when present; specs[418] …; specs[419] … and 19997 more
+```
+
+That cap is right where it is: it exists for the **one stderr line** an in-run CI
+warning is allowed, and the formatter still has to fit inside it. It is a cap on
+a *line*, though, and `--json` is the other channel — stdout carries one JSON
+document instead of the human report, with the whole list in it:
+
+```bash
+bundle exec specguard-ingest --json log/test_results.jsonl
+```
+```json
+{
+  "tool": "specguard-ingest",
+  "mode": "deliver",
+  "file": "log/test_results.jsonl",
+  "summary": { "lines": 3, "attempted": 3, "accepted": 2, "refused": 1,
+               "undelivered": 0, "unparseable": 0, "blank": 0, "skipped": 0,
+               "selector": null },
+  "lines": [
+    { "number": 1, "status": "accepted", "code": 202, "reasons": [],
+      "test_run_id": "41f2c9b8", "ci_run_id": "17442" },
+    { "number": 2, "status": "accepted", "code": 202, "reasons": [],
+      "test_run_id": "41f2c9b8", "ci_run_id": "17442" },
+    { "number": 3, "status": "refused", "code": 400, "test_run_id": null,
+      "ci_run_id": "17443",
+      "reasons": [
+        "specs[417] spec/models/user_spec.rb:88: duration must be a non-negative number when present",
+        "specs[418] spec/models/user_spec.rb:96: duration must be a non-negative number when present"
+      ] }
+  ],
+  "foldings": [
+    { "ci_run_id": "17442", "test_run_id": "41f2c9b8", "lines": [1, 2] }
+  ]
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `tool` | always `"specguard-ingest"`. Deliberately **not** a schema id: this document is about deliveries, and `specguard-lint --json` is the one that mirrors `validate-intent`'s |
+| `mode` | `"deliver"` or `"list"` — whether the lines were sent or only shown |
+| `file` | the path you gave it, echoed back |
+| `summary.lines` | rows in `lines`: the lines that carried a payload and were not held back by a selector |
+| `summary.attempted` | how many of those were offered to the endpoint — always `0` under `--list`, and `lines` minus the unparseable ones otherwise |
+| `summary.accepted` / `refused` / `undelivered` / `unparseable` | the same four counts the text summary line states, computed once for both renderers so they cannot disagree |
+| `summary.blank` / `skipped` | the two ways a line of the file is not a row here, counted rather than dropped |
+| `summary.selector` | `"--lines"`, `"--from-line"`, or `null` when nothing was held back |
+| `lines[]` | one entry per row, in the file's order |
+| `foldings[]` | folding, **observed**: the lines that went out with one `ci_run_id` and came back with one `test_run_id`. The same statement the text report makes as a sentence |
+
+Every delivered line has the same six keys:
+
+| field | meaning |
+| --- | --- |
+| `number` | its 1-based line number in the file **as given**, blank lines counted — so it is the number `--from-line` and `--lines` take |
+| `status` | `accepted`, `refused`, `undelivered` or `unparseable`. The tool's own vocabulary, not the report's wording (`undelivered`, where the row prints `not delivered`) |
+| `code` | the HTTP status, or **`null`** where there is not one: a line that was never a run, and a delivery that got no answer at all (connection refused, DNS, TLS, a timeout) |
+| `reasons` | why the line did not land — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type. SpecGuard's own per-spec errors on a refusal (all of them, in its order), the parse problem where the line was not a run, the error where nothing reached the endpoint, and `[]` where it landed or where the refusal's body said nothing readable |
+| `test_run_id` | the run the line landed on, as the endpoint reported it; `null` where that cannot be said honestly |
+| `ci_run_id` | the run identity the line carried, or `null` — the field to read for, because a line without one has nothing for SpecGuard to fold a redelivery onto |
+
+A `--list` row carries the envelope facts the text row prints instead — `branch`,
+`commit_sha`, `ci_run_id`, `examples`, `duration_seconds` — with **`null`** where
+the row says `no branch` or `no specs`, and `"status": "listed"` or
+`"unparseable"`. `--list --json` needs no `SPECGUARD_ENDPOINT` and no
+`SPECGUARD_API_KEY`, exactly as `--list` does, and it previews the same set by
+the same numbers a delivery would send.
+
+Four things worth knowing:
+
+- **The exit code is identical with and without the flag**, and the default
+  output is unchanged. `--json` is a second renderer over the same lines, the
+  same statuses and the same counts — pinned that way, byte for byte, in
+  `spec/specguard/rspec/regression_targets_spec.rb`.
+- **`--json` does not lift the cap on the human line.** The two channels render
+  the same refusal at different lengths on purpose; nothing about the formatter's
+  in-run warning moves.
+- **A run that never got as far as reading the file emits no document.** A bad
+  flag, `--from-line` with `--lines`, no endpoint or API key, a file that cannot
+  be read — all still exit `2` with prose on stderr and **nothing** on stdout,
+  because there is nothing yet to be a document about. A file the command *did*
+  read always gets one, whatever the exit code, including an empty one.
+- **Warnings stay on stderr**, in both renderers. A run that delivered nothing is
+  still loud there; stdout is the document and nothing else.
+
 ### If you shard your suite
 
 `parallel_tests`, Knapsack and a CI matrix all run the suite as several

@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+require "json"
+require "stringio"
+require "tmpdir"
+
+require "specguard/rspec/ingest_cli"
+
+require_relative "../../support/stub_ingest_endpoint"
+
 # The four edge-case lines in the valid fixture, plus the bare-word rule.
 #
 # These are the cases a `gsub`-then-`JSON.parse` normalizer gets WRONG. They are
@@ -182,5 +190,208 @@ RSpec.describe "the default output path, byte for byte" do
     OUT
     expect(stderr).to eq(PROVENANCE)
     expect(code).to eq(1)
+  end
+end
+
+# SPGD-669's HARD CONSTRAINT, pinned rather than trusted: without `--json`,
+# `specguard-ingest`'s stdout, stderr and exit code are byte-identical to what
+# `b7d25cb` — the commit before this command had a second renderer — produced.
+#
+# Why a byte lock and not "the flag defaults to false, so it is inert"
+# ===================================================================
+# This is SPGD-305's argument, and it applies harder here because the renderer
+# was retrofitted onto more of the default path than lint's was:
+#
+#   * `#report` and `#list` each grew a branch, and each moved its
+#     nothing-to-do early return to make room for it.
+#   * `#summary_line` stopped computing its own status counts and now takes them
+#     as an argument, so that the document and the prose cannot disagree about
+#     one file (criterion 9). The arithmetic moved.
+#   * `#list_row` reads a `ListedLine` struct where it used to read a parsed
+#     payload, and `#example_count`/`#listed_duration` folded into
+#     `#listed_line`. `0 examples` versus `no specs`, and `1.25s` versus
+#     `no duration_seconds`, are now decided one step further away from the
+#     string that prints them.
+#   * `#folding_observations` became `#folded_runs` plus
+#     `#folding_observation`, so the grouping is shared and only the sentence is
+#     local.
+#
+# Every one of those is on the path a run with no flags takes, and every one is
+# the kind that drifts by a space, a semicolon or a pluralisation without any
+# example noticing: `ingest_cli_spec.rb` asserts the whole of stdout in several
+# places but with `include` in many more, and `include` is blind to a line's
+# position, to a line appearing twice, and to anything gained around it.
+#
+# The five runs below cover every shape the default renderer can print: all four
+# per-line statuses, the identity clause, the summary with all four of its
+# outcome clauses AND both of its held-back clauses, a folding observation, the
+# listing's rows and its own summary, and the two stderr warnings. `--from-line`
+# and `--lines` each get a run because they print a *different* skipped clause
+# and criterion 2 names them separately.
+#
+# The sink's path is interpolated rather than fixed: it is a temp file by
+# necessity (the command reads a real file), and the path is the one part of
+# these strings that is not this command's own format.
+RSpec.describe "the specguard-ingest default output path, byte for byte" do
+  # Four short reasons, so `Transport::Result#reason`'s `take(3)` shows three and
+  # counts one — the cap SPGD-669 did NOT touch, pinned on the line it exists for.
+  #
+  # These are `let`s rather than constants because a constant assigned in a block
+  # body lands on `Object`, not on the example group: `ACCEPTED` and `KEY` are
+  # names another spec file would plausibly want, and a redefinition costs only a
+  # warning while silently replacing the value. A byte lock whose fixture can be
+  # swapped from outside itself still passes — against the wrong bytes — which is
+  # exactly the drift this group exists to catch.
+  let(:details) { Array.new(4) { |i| "specs[#{i}] spec/u_spec.rb:#{i}: duration must be non-negative" }.freeze }
+  let(:refusal) { { status: 400, body: JSON.generate("message" => details.first, "details" => details) } }
+  let(:boom) { { status: 500, body: '{"message":"upstream boom"}' } }
+  let(:accepted) { { status: 202 } }
+  let(:key_env) { { "SPECGUARD_API_KEY" => "sgk_abc123", "SPECGUARD_TIMEOUT" => "5" } }
+
+  around do |example|
+    Dir.mktmpdir do |dir|
+      @dir = dir
+      example.run
+    end
+  end
+
+  # One file with every shape in it: two lines that fold onto one run, a blank
+  # line that still advances the numbering, a line that parses to something that
+  # is not a run, one the endpoint refuses and one it never stores.
+  def sink
+    @sink ||= begin
+      path = File.join(@dir, "test_results.jsonl")
+      File.write(path, "#{[JSON.generate(payload), '', JSON.generate(payload), 'null',
+                           JSON.generate(payload(ci_run_id: 'zz')),
+                           JSON.generate(payload(ci_run_id: 'yy'))].join("\n")}\n")
+      path
+    end
+  end
+
+  def payload(ci_run_id: "17442")
+    { "commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2", "branch" => "main",
+      "ci_run_id" => ci_run_id, "shard_id" => "1", "duration_seconds" => 1.25,
+      "specs" => [{ "id" => "./spec/orders_spec.rb[1:1]", "spec_file_path" => "spec/orders_spec.rb" }] }
+  end
+
+  # `responses` nil means no server is started at all, which is what a `--list`
+  # run must be able to do: it needs no endpoint and no API key.
+  def run(argv, responses: nil)
+    stdout = StringIO.new
+    stderr = StringIO.new
+    env = responses ? key_env.dup : {}
+
+    code =
+      if responses
+        StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}', responses: responses) do |server|
+          build_cli(stdout, stderr, env.merge("SPECGUARD_ENDPOINT" => server.endpoint)).run(argv)
+        end
+      else
+        build_cli(stdout, stderr, env).run(argv)
+      end
+
+    [stdout.string, stderr.string, code]
+  end
+
+  def build_cli(stdout, stderr, env)
+    SpecGuard::RSpec::IngestCLI.new(stdout: stdout, stderr: stderr, env: env)
+  end
+
+  it "prints exactly this for a delivery of every status at once" do
+    stdout, stderr, code = run([sink], responses: [accepted, accepted, refusal, boom])
+
+    expect(stdout).to eq(<<~OUT)
+      line 1: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
+      line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
+      line 4: unparseable — the line is NilClass JSON, and a run is an object
+      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{details.take(3).join('; ')} and 1 more
+      line 6: not delivered — HTTP 500 — upstream boom
+      specguard-ingest: delivered 2 of 5 runs from #{sink}; 1 refused; 1 could not be delivered; 1 could not be parsed; 1 blank line skipped
+      specguard-ingest: lines 1, 3 carried ci_run_id 17442 and each came back with test_run_id tr_7 — the endpoint folded them onto one run
+    OUT
+    expect(stderr).to be_empty
+    expect(code).to eq(2)
+  end
+
+  it "prints exactly this for a listing" do
+    stdout, stderr, code = run(["--list", sink])
+
+    expect(stdout).to eq(<<~OUT)
+      line 1: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 1 example, 1.25s
+      line 3: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 1 example, 1.25s
+      line 4: unparseable — the line is NilClass JSON, and a run is an object
+      line 5: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id zz, 1 example, 1.25s
+      line 6: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id yy, 1 example, 1.25s
+      specguard-ingest: listed 5 lines from #{sink}; 1 blank line skipped; nothing was delivered
+    OUT
+    expect(stderr).to be_empty
+    expect(code).to eq(0)
+  end
+
+  it "prints exactly this for --from-line" do
+    stdout, stderr, code = run(["--from-line", "3", sink], responses: [accepted, refusal, boom])
+
+    expect(stdout).to eq(<<~OUT)
+      line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
+      line 4: unparseable — the line is NilClass JSON, and a run is an object
+      line 5: refused — HTTP 400 — the endpoint rejected the payload — #{details.take(3).join('; ')} and 1 more
+      line 6: not delivered — HTTP 500 — upstream boom
+      specguard-ingest: delivered 1 of 4 runs from #{sink}; 1 refused; 1 could not be delivered; 1 could not be parsed; 2 earlier lines skipped by --from-line
+    OUT
+    expect(stderr).to be_empty
+    expect(code).to eq(2)
+  end
+
+  it "prints exactly this for --lines" do
+    stdout, stderr, code = run(["--lines", "1,3", sink], responses: [accepted, accepted])
+
+    expect(stdout).to eq(<<~OUT)
+      line 1: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
+      line 3: accepted — HTTP 202, test_run_id tr_7, ci_run_id 17442
+      specguard-ingest: delivered 2 of 2 runs from #{sink}; 4 lines not selected by --lines
+      specguard-ingest: lines 1, 3 carried ci_run_id 17442 and each came back with test_run_id tr_7 — the endpoint folded them onto one run
+    OUT
+    expect(stderr).to be_empty
+    expect(code).to eq(0)
+  end
+
+  it "prints exactly this for --list with a selector" do
+    stdout, stderr, code = run(["--list", "--lines", "3,5", sink])
+
+    expect(stdout).to eq(<<~OUT)
+      line 3: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 1 example, 1.25s
+      line 5: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id zz, 1 example, 1.25s
+      specguard-ingest: listed 2 lines from #{sink}; 4 lines not selected by --lines; nothing was delivered
+    OUT
+    expect(stderr).to be_empty
+    expect(code).to eq(0)
+  end
+
+  # Both nothing-to-do warnings, whose early returns are the two lines `--json`
+  # had to move to make room for a document. Stdout stays EMPTY on the default
+  # path: the warning is a diagnostic about this tool, and there is no report.
+  #
+  # Note the count — SIX, not "1 blank line; 5 not selected". The selector is
+  # asked first in `#read_source`, so a blank line the spec does not name is held
+  # back rather than counted as blank. That is the existing branch order, pinned
+  # here because both clauses are built from the same `Source` the document now
+  # also reads.
+  it "prints exactly this when a selector named nothing the file has" do
+    stdout, stderr, code = run(["--list", "--lines", "99", sink])
+
+    expect(stdout).to be_empty
+    expect(stderr).to eq("specguard-ingest: warning: #{sink} holds no runs to list " \
+                         "(6 lines not selected by --lines)\n")
+    expect(code).to eq(0)
+  end
+
+  it "prints exactly this for a delivery of an empty file" do
+    path = File.join(@dir, "empty.jsonl")
+    File.write(path, "")
+    stdout, stderr, code = run([path], responses: [accepted])
+
+    expect(stdout).to be_empty
+    expect(stderr).to eq("specguard-ingest: warning: #{path} holds no runs to deliver\n")
+    expect(code).to eq(0)
   end
 end
