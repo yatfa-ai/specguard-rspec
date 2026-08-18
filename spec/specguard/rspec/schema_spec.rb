@@ -8,7 +8,7 @@ RSpec.describe SpecGuard::RSpec::Schema do
       schema = described_class.load
 
       expect(schema.document["$id"])
-        .to eq("https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1/schemas/open-test-intent.v1.json")
+        .to eq("https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json")
     end
 
     # Every way loading can fail must arrive as ONE exception type, because the

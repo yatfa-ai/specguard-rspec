@@ -2,7 +2,7 @@
   "what_this_is": "Real `validate-intent --version` and `--schema-source` output, captured byte for byte from binaries built for the purpose. Nothing here is hand-written: the parse this gem performs on the --schema-source surface degrades silently by design (any output it cannot read is indistinguishable from a binary too old to have the flag), so a fixture written to fit the pattern would go green on both sides of a parse bug.",
   "recorded_from": {
     "repository": "open-test-intent",
-    "commit": "347f0dd74f5b81e1591edd3d14ed7f01f94484a4",
+    "commit": "5cd26a9704905976f79a14a81a8d52190628078e",
     "older_commit": "cd8753b263974ab345978f7578d851b91a42ac0c",
     "toolchain": "go1.24.5 linux/amd64",
     "how": [
@@ -10,8 +10,8 @@
       "SchemaPath() is <dir of exe>/../schemas/open-test-intent.v1.json, so each case is a tree: <case>/bin/validate-intent, optionally <case>/schemas/open-test-intent.v1.json.",
       "embedded:      no schemas/ beside the binary.",
       "on_disk:       schemas/open-test-intent.v1.json = a copy of this gem's vendored schema, under a directory whose name contains a space.",
-      "disk_wins:     schemas/open-test-intent.v1.json = the vendored schema with its `title` altered, so it loads and digests differently. The alteration is DIFFERENT from embed_differs' on purpose: the two cases must not share a digest, or a reader cannot tell which one a failure is about.",
-      "embed_differs: built with open-test-intent's own schemas/open-test-intent.v1.json altered (its own distinct `title`, restored immediately after), with the vendored schema on disk beside it.",
+      "disk_wins:     schemas/open-test-intent.v1.json = the vendored schema with its `title` set to \"OpenTestIntent v1 (altered on disk)\", so it loads and digests differently. The alteration is DIFFERENT from embed_differs' on purpose: the two cases must not share a digest, or a reader cannot tell which one a failure is about. Both are spelled out here so a re-recording reproduces these exact digests rather than merely similar ones.",
+      "embed_differs: built with open-test-intent's own schemas/open-test-intent.v1.json altered to `title` \"OpenTestIntent v1 (altered embed)\" (restored immediately after, which is why the identity carries -dirty), with the vendored schema on disk beside it.",
       "unsupported:   built from an archive of cd8753b, the commit before --schema-source landed, with this gem's vendored schema swapped in before building. The swap is load-bearing: the case asserts contract :matched, which requires the CARRIED digest to be the gem's, and cd8753b predates the current schema. Built without VCS metadata, hence the `unknown` identity.",
       "unloadable:    schemas/open-test-intent.v1.json = the ten bytes `{ not json`."
     ]
@@ -20,12 +20,12 @@
     "embedded": {
       "what": "No schema file beside the binary, so the loader falls back to the compiled-in copy. Origin is the literal <embedded schema>; carried and enforced digests agree.",
       "version": {
-        "stdout": "validate-intent 347f0dd74f5b81e1591edd3d14ed7f01f94484a4 (go1.24.5 linux/amd64) schema sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "validate-intent 5cd26a9704905976f79a14a81a8d52190628078e (go1.24.5 linux/amd64) schema sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       },
       "schema_source": {
-        "stdout": "schema <embedded schema> sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "schema <embedded schema> sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       }
@@ -33,12 +33,12 @@
     "on_disk": {
       "what": "A schema file beside the binary, at a path containing a SPACE, holding the same bytes the gem vendors. Proves the origin is not a single token.",
       "version": {
-        "stdout": "validate-intent 347f0dd74f5b81e1591edd3d14ed7f01f94484a4 (go1.24.5 linux/amd64) schema sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "validate-intent 5cd26a9704905976f79a14a81a8d52190628078e (go1.24.5 linux/amd64) schema sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       },
       "schema_source": {
-        "stdout": "schema /tmp/rec/with space/schemas/open-test-intent.v1.json sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "schema /tmp/rec/with space/schemas/open-test-intent.v1.json sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       }
@@ -46,12 +46,12 @@
     "disk_wins": {
       "what": "THE CASE THIS TICKET EXISTS FOR. The compiled-in schema is the one the gem vendors -- --version's digest MATCHES -- while a different schema beside the binary is what a run would load. The carried digest says everything is fine; the enforced digest is not ours.",
       "version": {
-        "stdout": "validate-intent 347f0dd74f5b81e1591edd3d14ed7f01f94484a4 (go1.24.5 linux/amd64) schema sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "validate-intent 5cd26a9704905976f79a14a81a8d52190628078e (go1.24.5 linux/amd64) schema sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       },
       "schema_source": {
-        "stdout": "schema /tmp/rec/diverged/schemas/open-test-intent.v1.json sha256:0ca51b2bf9618c782194342d8aec34ef2ce1cdb5e4811449582b584a929a540c\n",
+        "stdout": "schema /tmp/rec/diverged/schemas/open-test-intent.v1.json sha256:b530243b7f82cc2e818c1a49d110cf6f8cc446b0207d83f3be8bee53f8681cd4\n",
         "stderr": "",
         "exit": 0
       }
@@ -59,12 +59,12 @@
     "embed_differs": {
       "what": "THE MIRROR. Built from a modified schema, so --version carries a digest the gem does not vendor, while the schema beside it IS the gem's. Comparing the carried digest refuses a run that is correct.",
       "version": {
-        "stdout": "validate-intent 347f0dd74f5b81e1591edd3d14ed7f01f94484a4-dirty (go1.24.5 linux/amd64) schema sha256:6722aba394578fd136befd7b1568b3f15d613da9b85776ac6bf8f257e3080fd9\n",
+        "stdout": "validate-intent 5cd26a9704905976f79a14a81a8d52190628078e-dirty (go1.24.5 linux/amd64) schema sha256:dccb4df4f25264214b0f7cdc00a86d9f6d2c954a172fd7b6cd02e634b662df2c\n",
         "stderr": "",
         "exit": 0
       },
       "schema_source": {
-        "stdout": "schema /tmp/rec/foreign-embed/schemas/open-test-intent.v1.json sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "schema /tmp/rec/foreign-embed/schemas/open-test-intent.v1.json sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       }
@@ -72,7 +72,7 @@
     "unsupported": {
       "what": "A binary predating open-test-intent slice 19 (built at cd8753b, one commit before --schema-source landed). It reads the flag as a filename.",
       "version": {
-        "stdout": "validate-intent unknown (go1.24.5 linux/amd64) schema sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "validate-intent unknown (go1.24.5 linux/amd64) schema sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       },
@@ -85,7 +85,7 @@
     "unloadable": {
       "what": "A schema that exists beside the binary and is not JSON. --schema-source runs the real loader, so it fails exactly as a verdict run would: exit 2 with the could-not-load diagnostic.",
       "version": {
-        "stdout": "validate-intent 347f0dd74f5b81e1591edd3d14ed7f01f94484a4 (go1.24.5 linux/amd64) schema sha256:861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6\n",
+        "stdout": "validate-intent 5cd26a9704905976f79a14a81a8d52190628078e (go1.24.5 linux/amd64) schema sha256:3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee\n",
         "stderr": "",
         "exit": 0
       },

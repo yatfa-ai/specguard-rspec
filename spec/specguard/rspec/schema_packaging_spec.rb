@@ -26,20 +26,27 @@ RSpec.describe "the vendored OpenTestIntent schema" do
   end
 
   # The digest of open-test-intent's schemas/open-test-intent.v1.json at the
-  # immutable `schema-v1` tag, the copy this file was vendored from — and the
+  # `schema-v1.0` tag, the copy this file was vendored from — and the
   # same pin open-test-intent's own schema_test.go holds as CanonicalV1SHA256.
   # A byte count would not say this: any same-length edit — swapping an enum
   # member, moving a digit of `minLength` — passes a size check while changing
   # what the linter enforces.
-  CANONICAL_V1_SHA256 = "861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6"
+  CANONICAL_V1_SHA256 = "3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee"
 
   # `$id` is pinned as a literal, not derived from anything, precisely because
   # the last one was wrong for the whole life of the project: it named a host
   # that never existed, and an assertion that read the value out of the file it
   # was checking would have agreed with it every single day. It now names the
-  # protocol repository at a tag that is cut once and never moved, so this
-  # string is both the identifier and a fetchable address for these bytes.
-  CANONICAL_V1_ID = "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1/schemas/open-test-intent.v1.json"
+  # protocol repository at a real, fetchable address for exactly these bytes.
+  #
+  # The tag is `schema-v1.0`, scoped to a DOCUMENT REVISION rather than to the
+  # major version, and that distinction is load bearing here. PROTOCOL.md §5
+  # lets v1 gain an optional field without becoming v2, so a `schema-v1` tag
+  # would eventually have to either move — handing everyone who pinned it a
+  # document they never pinned — or stop matching the file that names it. A
+  # revision-scoped tag never faces that: an additive change cuts schema-v1.1
+  # and this constant moves with it, in the same change as the digest above.
+  CANONICAL_V1_ID = "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json"
 
   it "is the canonical v1 schema, byte-for-byte" do
     expect(Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest).to eq(CANONICAL_V1_SHA256)

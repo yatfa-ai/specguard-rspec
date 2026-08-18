@@ -171,7 +171,7 @@ Because the two backends produce the same report, the report alone cannot tell y
 So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
 
 ```
-specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:861c82e5… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, loaded from /usr/local/schemas/open-test-intent.v1.json
+specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:3760d8f7… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, loaded from /usr/local/schemas/open-test-intent.v1.json
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
@@ -234,7 +234,7 @@ specguard-lint: validated by validate-intent 1.4.0 (…) at /path/to/validate-in
 **It enforces a different one.** Exit `2`, before any file is selected or checked:
 
 ```
-specguard-lint: error: the validator backend at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) reports enforcing schema sha256:9c1e…, loaded from /usr/local/schemas/open-test-intent.v1.json, but this gem vendors sha256:861c… — the two halves would enforce different contracts, so this run would produce a verdict this gem cannot stand behind; the binary identifies itself as validate-intent 1.5.0 (go1.22.12 linux/arm64) schema sha256:861c…
+specguard-lint: error: the validator backend at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) reports enforcing schema sha256:9c1e…, loaded from /usr/local/schemas/open-test-intent.v1.json, but this gem vendors sha256:3760… — the two halves would enforce different contracts, so this run would produce a verdict this gem cannot stand behind; the binary identifies itself as validate-intent 1.5.0 (go1.22.12 linux/arm64) schema sha256:3760…
 ```
 
 Both digests are printed in full (elided above only to fit), because one of them lives inside a
