@@ -240,12 +240,13 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   #
   # `run_cli` — the plumbing that reads argv from `paths` — WAS lifted, and
   # sits below. That answers the question this comment used to leave open.
-  # Eleven copies stood in the blocks below, differing only in whether `.run`
-  # was handed `paths` or an `argv` parameter; the defaulted signature below
-  # subsumes all three of them, at both arities. Lifting it is not the case
-  # refused above: a default is evaluated in the calling example, so `paths`
-  # still resolves to the innermost block's own `let`, and no block inherits a
-  # corpus it did not pick. The helper is shared; the corpus stays local.
+  # Eleven copies stood in the blocks below, in three signatures: seven took
+  # `env` alone and ran `paths`, three defaulted `argv` to `paths`, and one
+  # required `argv` outright. The defaulted signature below subsumes all
+  # three, at both arities. Lifting it is not the case refused above: a
+  # default is evaluated in the calling example, so `paths` still resolves to
+  # the innermost block's own `let`, and no block inherits a corpus it did not
+  # pick. The helper is shared; the corpus stays local.
   def clean_stub(**stub)
     stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
   end
