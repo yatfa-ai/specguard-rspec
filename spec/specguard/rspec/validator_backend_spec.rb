@@ -226,30 +226,40 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # means a fixture change has to land in every copy, or the blocks quietly
   # stop describing the same binary.
   #
-  # `paths` and `run_cli` are deliberately NOT lifted with it, for what the
-  # names are for rather than for how many of each there are. Sharing this
-  # stub takes away a choice nobody wanted to make twice. `paths` is the
-  # opposite: it is where a block picks the corpus it runs against, so it is
-  # declared wherever that pick is made — `describe "the JSON acceptance
-  # set"` picks a different one per nested describe and declares them there,
-  # not at the top of the block — and `run_cli` sits beside it to read argv
-  # from it. A block can also drive the CLI with no `paths` at all:
-  # `describe "the exit contract, through the CLI"` hands its own runner a
-  # literal argv default, because what it is about is exit codes and not a
-  # corpus. Lifting the pair would give the file a default corpus, which
-  # every block that picks its own would then shadow.
+  # `paths` is deliberately NOT lifted with it, for what the name is for
+  # rather than for how many there are. Sharing this stub takes away a choice
+  # nobody wanted to make twice. `paths` is the opposite: it is where a block
+  # picks the corpus it runs against, so it is declared wherever that pick is
+  # made — `describe "the JSON acceptance set"` picks a different one per
+  # nested describe and declares them there, not at the top of the block. A
+  # block can also drive the CLI with no `paths` at all: `describe "the exit
+  # contract, through the CLI"` hands its own runner a literal argv default,
+  # because what it is about is exit codes and not a corpus. Lifting `paths`
+  # would give the file a default corpus, which every block that picks its
+  # own would then shadow.
   #
-  # None of this claims the blocks below all differ. Some declare the same
-  # fixture list, and their `run_cli` bodies vary only in whether argv is a
-  # parameter. Whether that repetition is worth consolidating is a separate
-  # question, owed its own evidence and its own ticket; it is not settled
-  # here. This one is a fixture; those are local plumbing.
+  # `run_cli` — the plumbing that reads argv from `paths` — WAS lifted, and
+  # sits below. That answers the question this comment used to leave open.
+  # Eleven copies stood in the blocks below, in three signatures: seven took
+  # `env` alone and ran `paths`, three defaulted `argv` to `paths`, and one
+  # required `argv` outright. The defaulted signature below subsumes all
+  # three, at both arities. Lifting it is not the case refused above: a
+  # default is evaluated in the calling example, so `paths` still resolves to
+  # the innermost block's own `let`, and no block inherits a corpus it did not
+  # pick. The helper is shared; the corpus stays local.
   def clean_stub(**stub)
     stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
   end
 
   def run_backend(paths, **stub)
     described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**stub) }).check(paths)
+  end
+
+  def run_cli(env, argv = paths)
+    stdout = StringIO.new
+    stderr = StringIO.new
+    code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
+    [stdout.string, stderr.string, code]
   end
 
   # ------------------------------------------------------------------------ #
@@ -807,13 +817,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     let(:paths) { %w[spec/fixtures/order_spec.rb spec/fixtures/broken_intent_spec.rb] }
     let(:recorded) { File.read("spec/fixtures/validator/source-corpus.json") }
 
-    def run_cli(env)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-      [stdout.string, stderr.string, code]
-    end
-
     # If this fails, the suite is not running from the gem root and every
     # comparison below would be comparing two piles of read failures.
     it "is running where the recorded paths resolve" do
@@ -944,13 +947,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   describe "the parse-failure text is the port's, not Ruby's" do
     let(:paths) { %w[spec/fixtures/parse_divergence_spec.rb] }
     let(:recorded) { File.read("spec/fixtures/validator/parse-divergence.json") }
-
-    def run_cli(env)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-      [stdout.string, stderr.string, code]
-    end
 
     def both_ways
       ruby = run_cli({})
@@ -1102,13 +1098,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     let(:paths) { %w[spec/fixtures/invalid_utf8_spec.rb spec/fixtures/order_spec.rb] }
     let(:recorded) { File.read("spec/fixtures/validator/utf8-divergence.json") }
 
-    def run_cli(env)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-      [stdout.string, stderr.string, code]
-    end
-
     def both_ways
       ruby = run_cli({})
       go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
@@ -1243,13 +1232,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   describe "a path that is not a regular file" do
     let(:paths) { %w[spec/fixtures/payloads spec/fixtures/order_spec.rb] }
     let(:recorded) { File.read("spec/fixtures/validator/not-a-regular-file.json") }
-
-    def run_cli(env)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-      [stdout.string, stderr.string, code]
-    end
 
     def both_ways
       ruby = run_cli({})
@@ -1442,13 +1424,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       let(:paths) { %w[spec/fixtures/acceptance_set_kind_spec.rb] }
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-kind.json") }
 
-      def run_cli(env)
-        stdout = StringIO.new
-        stderr = StringIO.new
-        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-        [stdout.string, stderr.string, code]
-      end
-
       def both_ways
         [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
       end
@@ -1551,13 +1526,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       let(:paths) { %w[spec/fixtures/acceptance_set_verdict_spec.rb] }
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-verdict.json") }
 
-      def run_cli(env)
-        stdout = StringIO.new
-        stderr = StringIO.new
-        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-        [stdout.string, stderr.string, code]
-      end
-
       def both_ways
         [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
       end
@@ -1630,13 +1598,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     describe "nesting at depth 101 — the gem says schema, the binary says parse" do
       let(:paths) { %w[spec/fixtures/acceptance_set_classification_spec.rb] }
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-classification.json") }
-
-      def run_cli(env)
-        stdout = StringIO.new
-        stderr = StringIO.new
-        code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(paths)
-        [stdout.string, stderr.string, code]
-      end
 
       def both_ways
         [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
@@ -1825,13 +1786,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   #     looked at.
   describe "naming the validator that produced the verdicts" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def run_cli(env, argv = paths)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
-      [stdout.string, stderr.string, code]
-    end
 
     def provenance_of(env, argv = paths)
       _, stderr, = run_cli(env, argv)
@@ -2132,13 +2086,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # not ask" never is.
   describe "the schema contract across the seam" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def run_cli(env, argv = paths)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
-      [stdout.string, stderr.string, code]
-    end
 
     def provenance_of(env, argv = paths)
       _, stderr, = run_cli(env, argv)
@@ -2485,13 +2432,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # on both sides of that bug; a recording cannot be.
   describe "the schema a run enforces" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def run_cli(env, argv = paths)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
-      [stdout.string, stderr.string, code]
-    end
 
     def provenance_of(env, argv = paths)
       _, stderr, = run_cli(env, argv)
@@ -3097,13 +3037,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # A gate whose failure states are indistinguishable — for the third time.
   describe "--require-validator" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def run_cli(env, argv)
-      stdout = StringIO.new
-      stderr = StringIO.new
-      code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
-      [stdout.string, stderr.string, code]
-    end
 
     def error_lines(stderr)
       stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
