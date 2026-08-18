@@ -65,11 +65,13 @@ module SpecGuard
   # == What it captures, and for whom
   #
   # Every example, annotated or not — but not because an unannotated test is
-  # anonymous. The row below carries `full_description`, both paths, the
-  # duration and the outcome, so a test nobody annotated still arrives named,
-  # located and measured. The protocol says the same thing in its preamble:
-  # annotated and unannotated tests are alike ingested — see `PROTOCOL.md`
-  # in open-test-intent, above "1. Annotation syntax".
+  # anonymous. The row below carries `full_description` and both paths
+  # unconditionally, so a test nobody annotated still arrives named and
+  # located; its duration and its outcome ride along whenever the runner
+  # reported them, which is why both are written safe-navigated below. The
+  # protocol says the same thing in its preamble: annotated and unannotated
+  # tests are alike ingested — see `PROTOCOL.md` in open-test-intent, above
+  # "1. Annotation syntax".
   #
   # What an `@intent` adds is a *structured, authored* statement of what the
   # test is for — fields a machine can group and compare, and a layer and
