@@ -222,9 +222,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # the fixture the CLI-level describes below most often drive the binary
   # with. It lives here at file level, beside {stub_validator} and
   # {document}, rather than inside any of the describes that call it,
-  # because copies of it had already gone byte-identical: a duplicated
-  # fixture builder means a fixture change has to land in every copy, or the
-  # blocks quietly stop describing the same binary.
+  # because several of them need the same clean report: a copy per describe
+  # means a fixture change has to land in every copy, or the blocks quietly
+  # stop describing the same binary.
   #
   # `paths` and `run_cli` are deliberately NOT lifted with it, for what the
   # names are for rather than for how many of each there are. Sharing this
