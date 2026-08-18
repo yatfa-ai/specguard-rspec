@@ -7,7 +7,8 @@ RSpec.describe SpecGuard::RSpec::Schema do
     it "loads the vendored canonical schema" do
       schema = described_class.load
 
-      expect(schema.document["$id"]).to eq("https://specguard.dev/schemas/open-test-intent.v1.json")
+      expect(schema.document["$id"])
+        .to eq("https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json")
     end
 
     # Every way loading can fail must arrive as ONE exception type, because the
