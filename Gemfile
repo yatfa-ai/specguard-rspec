@@ -15,9 +15,10 @@ gem "irb"
 # bracketing them, because a `json` release that moves one is the change that
 # block exists to catch. `json` is a default gem, so with no constraint its
 # version follows the RUBY the suite happens to run on — and those two moved
-# apart: Ruby 3.2.11 (what release.yml installs) ships json 2.9.1, five minors
-# behind the parser the expectations were last measured against. The suite was
-# green on a 4.x dev box and red on CI for that reason alone, with seven
+# apart: Ruby 3.2.11 (what release.yml installs) ships json 2.9.1, twelve
+# released minors behind the parser the expectations were last measured
+# against — a gap that contains BOTH boundary moves recorded below. The suite
+# was green on a 4.x dev box and red on CI for that reason alone, with seven
 # failures that named the payloads and not the cause.
 #
 # EXACT, not `~> 2.14`, and the exactness is the point. `Gemfile.lock` is

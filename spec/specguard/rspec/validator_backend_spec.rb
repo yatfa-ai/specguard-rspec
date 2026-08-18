@@ -1410,9 +1410,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # `json` narrowed that, and the stale claim sat here going red for a reason
     # nobody had written down. Before the pin the version was whatever the
     # running Ruby shipped as a default gem, so this block asserted one parser's
-    # boundaries on a 4.x dev box and a five-minors-older parser's on CI's 3.2 —
-    # green in one place and red in the other, with no example naming the
-    # difference.
+    # boundaries on a 4.x dev box (json 2.21.2) and, on CI's 3.2, those of a
+    # parser twelve released minors older (2.9.1) — green in one place and red
+    # in the other, with no example naming the difference.
     #
     # A RUBY UPGRADE NO LONGER SURFACES HERE. That is the trade the pin makes,
     # deliberately, and it is not free: because these boundaries are now fixed to
