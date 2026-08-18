@@ -220,25 +220,30 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
   # A stub whose report is a clean run over `spec/fixtures/order_spec.rb` —
   # the fixture the CLI-level describes below most often drive the binary
-  # with. It lives here beside {stub_validator} and {document} rather than
-  # inside any one of them because copies of it had already gone
-  # byte-identical: a duplicated fixture builder means a fixture change has
-  # to land in every copy, or the blocks quietly stop describing the same
-  # binary.
+  # with. It lives here at file level, beside {stub_validator} and
+  # {document}, rather than inside any of the describes that call it,
+  # because copies of it had already gone byte-identical: a duplicated
+  # fixture builder means a fixture change has to land in every copy, or the
+  # blocks quietly stop describing the same binary.
   #
-  # `paths` and `run_cli` are deliberately NOT lifted with it, for a
-  # structural reason rather than a numeric one. Every block that drives the
-  # CLI declares a `paths` naming the fixture list that block is about, and
-  # takes its argv from that local `paths`. There is no file-level `paths`
-  # here for a lifted `run_cli` to close over, so hoisting the pair would
-  # mean hoisting a fixture list as well — and that list would be overridden
-  # by nearly every block that inherited it.
+  # `paths` and `run_cli` are deliberately NOT lifted with it, for what the
+  # names are for rather than for how many of each there are. Sharing this
+  # stub takes away a choice nobody wanted to make twice. `paths` is the
+  # opposite: it is where a block picks the corpus it runs against, so it is
+  # declared wherever that pick is made — `describe "the JSON acceptance
+  # set"` picks a different one per nested describe and declares them there,
+  # not at the top of the block — and `run_cli` sits beside it to read argv
+  # from it. A block can also drive the CLI with no `paths` at all:
+  # `describe "the exit contract, through the CLI"` hands its own runner a
+  # literal argv default, because what it is about is exit codes and not a
+  # corpus. Lifting the pair would give the file a default corpus, which
+  # every block that picks its own would then shadow.
   #
-  # This is not a claim that those blocks all differ. Several declare the
-  # same fixture list, and their `run_cli` bodies vary only in whether argv
-  # is a parameter. Whether that repetition is worth consolidating is a
-  # separate question, owed its own evidence and its own ticket; it is not
-  # settled here. This one is a fixture; those are local plumbing.
+  # None of this claims the blocks below all differ. Some declare the same
+  # fixture list, and their `run_cli` bodies vary only in whether argv is a
+  # parameter. Whether that repetition is worth consolidating is a separate
+  # question, owed its own evidence and its own ticket; it is not settled
+  # here. This one is a fixture; those are local plumbing.
   def clean_stub(**stub)
     stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
   end
