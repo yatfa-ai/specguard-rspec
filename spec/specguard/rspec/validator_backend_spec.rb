@@ -219,18 +219,26 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # A stub whose report is a clean run over `spec/fixtures/order_spec.rb` —
-  # the fixture both CLI-level describes below drive the binary with. It lives
-  # here beside {stub_validator} and {document} rather than in either of them
-  # because it was byte-identical in both: two copies of one fixture builder
-  # means a fixture change has to land twice, or the two blocks quietly stop
-  # describing the same binary.
+  # the fixture the CLI-level describes below most often drive the binary
+  # with. It lives here beside {stub_validator} and {document} rather than
+  # inside any one of them because copies of it had already gone
+  # byte-identical: a duplicated fixture builder means a fixture change has
+  # to land in every copy, or the blocks quietly stop describing the same
+  # binary.
   #
-  # `paths` and `run_cli` are deliberately NOT lifted with it. Every describe
-  # in this file declares its own — seven of them, each with a different
-  # fixture list and a different argv shape — so a single inherited pair would
-  # be shadowed almost everywhere it appeared and would make the file less
-  # readable, not less repetitive. This one is a fixture; those are local
-  # plumbing.
+  # `paths` and `run_cli` are deliberately NOT lifted with it, for a
+  # structural reason rather than a numeric one. Every block that drives the
+  # CLI declares a `paths` naming the fixture list that block is about, and
+  # takes its argv from that local `paths`. There is no file-level `paths`
+  # here for a lifted `run_cli` to close over, so hoisting the pair would
+  # mean hoisting a fixture list as well — and that list would be overridden
+  # by nearly every block that inherited it.
+  #
+  # This is not a claim that those blocks all differ. Several declare the
+  # same fixture list, and their `run_cli` bodies vary only in whether argv
+  # is a parameter. Whether that repetition is worth consolidating is a
+  # separate question, owed its own evidence and its own ticket; it is not
+  # settled here. This one is a fixture; those are local plumbing.
   def clean_stub(**stub)
     stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
   end
