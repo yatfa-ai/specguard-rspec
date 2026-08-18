@@ -64,10 +64,25 @@ module SpecGuard
   #
   # == What it captures, and for whom
   #
-  # Every example, annotated or not. That is the whole point: SpecGuard's
-  # premise is that an unannotated test is an anonymous coordinate, and you
-  # cannot report on a gap you never recorded. Filtering to the annotated
-  # minority here would make the very first run of a new adopter look empty.
+  # Every example, annotated or not — but not because an unannotated test is
+  # anonymous. The row below carries `full_description` and both paths
+  # unconditionally, so a test nobody annotated still arrives named and
+  # located; its duration and its outcome ride along whenever the runner
+  # reported them, which is why both are written safe-navigated below. The
+  # protocol says the same thing in its preamble: annotated and unannotated
+  # tests are alike ingested — see `PROTOCOL.md` in open-test-intent, above
+  # "1. Annotation syntax".
+  #
+  # What an `@intent` adds is a *structured, authored* statement of what the
+  # test is for — fields a machine can group and compare, and a layer and
+  # preconditions that a description does not state — written deliberately
+  # rather than read off prose composed for a test runner's output. So the
+  # gap an annotation closes is one of structure, not of sight.
+  #
+  # That gap is still one you cannot report on over rows you never recorded,
+  # which is why this formatter captures the whole run: filtering to the
+  # annotated minority here would make the very first run of a new adopter
+  # look empty.
   #
   #   id              example.id — this example's identity within the run
   #   spec_file_path  the spec file that *ran* the example, relative to the root
