@@ -339,9 +339,58 @@ module SpecGuard
 
       # The ecosystem's shared vocabulary for interpolating a VALUE into a
       # violation message. `validate-intent` renders the same values the same
-      # way (its `RenderValue`), and message_parity_spec.rb pins the two
-      # against each other — getting this wrong is not cosmetic, because
-      # `value 'e2e' is not one of [...]` is a line CI logs get diffed on.
+      # way (its `RenderValue`) BY CONVENTION — neither program is generated
+      # from the other — but EDITING THIS METHOD IS PINNED, so expect red.
+      # validator_backend_spec.rb asserts this path's rendered stdout, byte for
+      # byte, against reports RECORDED from the binary and committed as
+      # spec/fixtures/validator/source-corpus.json, which carries the binary's
+      # own text; message_parity_spec.rb asserts four payloads through
+      # `Schema#violations` against strings hand-copied from the binary (its
+      # header refuses to be read as a proof about two programs, and is right —
+      # four hand-copied strings are not a second process). Change the String
+      # arm and BOTH SNAPSHOTS fail, quoting the binary's spelling back at you:
+      # message_parity_spec.rb, and validator_backend_spec.rb on both stdout
+      # and `--json`. (This gem's own unit and regression specs go red as well,
+      # but those are the gem checking itself, not the binary.) That is the
+      # coupling working, not unrelated breakage.
+      #
+      # The pin runs ONE WAY. Both are snapshots taken from the binary, and no
+      # SPEC in this gem executes it — validator_backend_spec.rb replays the
+      # recorded stdout through a shell stub it writes to a tmpdir. The gem
+      # itself does execute the binary, but only on the `ValidatorBackend` arm
+      # that `SPECGUARD_VALIDATE_INTENT` selects INSTEAD of this renderer: `CLI`
+      # loads the `Schema` only when that backend is absent, and returns the
+      # backend's results before it would ever build a `Linter`, so a LINT run
+      # on that arm does not reach this method. That arm reports the binary's
+      # own rendered strings, so it substitutes Go's spelling for this method's
+      # rather than checking one against the other. Note the env var takes this
+      # method out of the LINTER only, not out of service: `AnnotationLookup`
+      # reaches it through the same `Schema#violations` on the formatter's
+      # annotation path, which does not consult the backend at all.
+      #
+      # So a change on THIS side is caught immediately, while a change on the Go
+      # side is caught only once someone re-records the corpus. Getting it wrong
+      # is not cosmetic either way, because `value 'e2e' is not one of [...]` is
+      # a line CI logs get diffed on.
+      #
+      # Only the String and Array arms are reachable from `Schema#violations`:
+      # the schema types every property `string` or array-of-`string`, carries
+      # no numeric bounds (`minimum`/`maximum`/`multipleOf` are all absent;
+      # `minLength` is present, but its message reports a character count, not
+      # the value), and sets `additionalProperties: false`, so a non-string
+      # value produces a type-mismatch line and the one message that would
+      # interpolate the instance value (`enum_entry`) is dropped by
+      # `drop_shadowed_by_type_mismatch`. Neither snapshot above can reach the
+      # remaining arms, so nothing pins THOSE against the binary — but they are
+      # not all unheld. violation_renderer_spec.rb drives some of them from this
+      # side, with expectations phrased the validator's way: a bare `enum`
+      # property with no `type` (so there is no type-mismatch line to shadow the
+      # enum message) asserts `None` and `True`, and a hypothetical grown schema
+      # carrying `minimum`/`maximum` asserts `value 3 is below minimum 5`. Edit
+      # the nil, `true` or Integer arm and that file goes red — this gem holding
+      # itself to Go's spelling, with the binary not consulted at all. The
+      # `false` arm and the `inspect` fallback have no such example: blanking
+      # both leaves the suite green.
       def render_value(value)
         case value
         when String then render_quoted(value)
