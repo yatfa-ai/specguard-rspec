@@ -247,6 +247,28 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # default is evaluated in the calling example, so `paths` still resolves to
   # the innermost block's own `let`, and no block inherits a corpus it did not
   # pick. The helper is shared; the corpus stays local.
+  #
+  # Three more were lifted on that same rule, and sit below `run_cli`:
+  # `fail_lines` (four copies), `error_lines` (three) and `provenance_of`
+  # (three), each byte-identical across its copies. `fail_lines` and
+  # `error_lines` close over nothing but their parameter, and `error_lines`
+  # only rejoins a family this file already keeps here: {provenance_lines}
+  # and {stderr_beyond_provenance} sit above, selecting stderr by the same
+  # kind of prefix. `provenance_of` has the defaulted signature `run_cli`
+  # has, and closes over `paths` in exactly the ratified way — plus `run_cli`
+  # and `provenance_lines`, which have one definition each.
+  #
+  # `both_ways` (six copies) was NOT lifted, and the reason is arity, not
+  # taste. It closes over a zero-arg `recorded`, while `describe "the schema
+  # a run enforces"` defines `recorded(name)` at arity 1. A lifted
+  # `both_ways` would be green only by accident of geography — no call site
+  # sits inside that describe today — and the next example added there would
+  # get `ArgumentError: wrong number of arguments (given 0, expected 1)`.
+  # Leaving the six in place keeps each bound to the `recorded` its own block
+  # means. (They also stand in two different shapes, so merging them would be
+  # a pick rather than a collapse.) `read_prefix` (two copies) is held on the
+  # `paths` grounds above: it is the message vocabulary a block picks, not
+  # plumbing it shares.
   def clean_stub(**stub)
     stub_validator(stdout: document([ok_finding(file: "spec/fixtures/order_spec.rb")]), **stub)
   end
@@ -260,6 +282,19 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     stderr = StringIO.new
     code = SpecGuard::RSpec::CLI.new(stdout: stdout, stderr: stderr, env: env).run(argv)
     [stdout.string, stderr.string, code]
+  end
+
+  def fail_lines(stdout)
+    stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
+  end
+
+  def error_lines(stderr)
+    stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
+  end
+
+  def provenance_of(env, argv = paths)
+    _, stderr, = run_cli(env, argv)
+    provenance_lines(stderr).first
   end
 
   # ------------------------------------------------------------------------ #
@@ -954,10 +989,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       [ruby, go]
     end
 
-    def fail_lines(stdout)
-      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
-    end
-
     def parse_prefix
       "could not parse annotation: "
     end
@@ -1104,10 +1135,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       [ruby, go]
     end
 
-    def fail_lines(stdout)
-      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
-    end
-
     def read_prefix
       "could not read file: "
     end
@@ -1237,10 +1264,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       ruby = run_cli({})
       go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
       [ruby, go]
-    end
-
-    def fail_lines(stdout)
-      stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
     end
 
     def read_prefix
@@ -1426,10 +1449,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       def both_ways
         [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
-      end
-
-      def fail_lines(stdout)
-        stdout.lines.map(&:chomp).select { |line| line.start_with?("FAIL  ") }
       end
 
       it "is running where the recorded path resolves" do
@@ -1787,11 +1806,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   describe "naming the validator that produced the verdicts" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
 
-    def provenance_of(env, argv = paths)
-      _, stderr, = run_cli(env, argv)
-      provenance_lines(stderr).first
-    end
-
     # ---------------------------------------------------------------------- #
     # THE PROBE. Once, before selection, and incapable of failing the run.
     describe "the identity probe" do
@@ -2086,15 +2100,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # not ask" never is.
   describe "the schema contract across the seam" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def provenance_of(env, argv = paths)
-      _, stderr, = run_cli(env, argv)
-      provenance_lines(stderr).first
-    end
-
-    def error_lines(stderr)
-      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
-    end
 
     def resolve(**stub)
       described_class.resolve(env: { described_class::ENV_VAR => stub_validator(**stub) })
@@ -2432,15 +2437,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # on both sides of that bug; a recording cannot be.
   describe "the schema a run enforces" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def provenance_of(env, argv = paths)
-      _, stderr, = run_cli(env, argv)
-      provenance_lines(stderr).first
-    end
-
-    def error_lines(stderr)
-      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
-    end
 
     def recorded_probes
       @recorded_probes ||= JSON.parse(File.read("spec/fixtures/validator/schema-source-probes.json"))
@@ -3037,10 +3033,6 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   # A gate whose failure states are indistinguishable — for the third time.
   describe "--require-validator" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
-
-    def error_lines(stderr)
-      stderr.lines.map(&:chomp).select { |line| line.start_with?("specguard-lint: error: ") }
-    end
 
     # ---------------------------------------------------------------------- #
     # THE CASE THAT DID NOT EXIST BEFORE. Exit 2, not 1: "the linter could not
