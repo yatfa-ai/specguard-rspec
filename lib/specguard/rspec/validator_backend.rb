@@ -374,28 +374,41 @@ module SpecGuard
 
         # The report used to be all ASCII: paths, a fixed kind vocabulary, and
         # error prose the tool wrote itself. Since SPGD-340 it also carries
-        # `intent` — WHAT THE PAYLOAD PARSED TO — which means the DOCUMENT now
-        # inherits the PAYLOAD's parser-compatibility domain. The port decodes
-        # with CPython's semantics and re-emits with `json.dumps`, and CPython
-        # accepts three things Ruby's parser refuses by default:
+        # `intent` — WHAT THE PAYLOAD PARSED TO — so the DOCUMENT now inherits
+        # the PAYLOAD's parser-compatibility domain, and a payload the port
+        # accepts can be one Ruby's default reader will not read.
         #
-        #   non-finite literals  `NaN` / `Infinity` / `-Infinity`, which a
-        #                        payload reaches without writing them: CPython's
-        #                        float() SATURATES, so `1e400` decodes to inf and
-        #                        dumps as `Infinity`.
-        #   deep nesting         Ruby stops at 100 levels; CPython does not stop
-        #                        anywhere this side of its recursion limit.
+        # ONE OF THE TWO OPTIONS IS LOAD-BEARING; THE OTHER IS BELT AND BRACES.
+        # Measured against the binary this gem is shipped alongside:
         #
-        # Both are enabled here rather than left to raise, because the
-        # alternative is a batch-wide exit 2 over one annotation's payload —
-        # and it would be an exit 2 for a payload the schema was going to REJECT
-        # anyway (a non-finite is a number and a deep nest is a container;
-        # neither can occupy a schema-legal slot, all of which are strings).
-        # Parsing them permissively changes no verdict. Refusing to parse them
-        # changes every verdict in the batch.
+        #   max_nesting: false  LOAD-BEARING. PROTOCOL.md §1.1(c) admits a
+        #                       payload nested to depth 100, and a finding WRAPS
+        #                       it, so the report nests two deeper than the
+        #                       payload while `JSON.parse` defaults to 100.
+        #                       Measured: payload depth 98 -> report nests 100,
+        #                       parses; depth 99 -> nests 101, raises
+        #                       JSON::NestingError. So depths 99-100 are
+        #                       PROTOCOL-LEGAL payloads whose report a default
+        #                       reader cannot parse at all.
         #
-        # The THIRD class — a lone surrogate — has no option here and is handled
-        # in {#result_for}, because Ruby cannot represent the value at all.
+        #   allow_nan: true     NOT reachable from a current binary, and kept
+        #                       deliberately. An earlier revision of this
+        #                       comment said `1e400` decodes to inf and is
+        #                       re-emitted as `Infinity`; that was true of the
+        #                       CPython reference and is FALSE of the port,
+        #                       which now echoes a number from its own literal
+        #                       (`1e400` stays `1e400`) precisely because
+        #                       `Infinity` is not JSON and §1.1(b) refuses it.
+        #                       Measured: no probe payload produces a bare
+        #                       NaN/Infinity token anywhere in a report.
+        #
+        # Both are enabled rather than left to raise, because the alternative is
+        # a batch-wide exit 2 over one annotation's payload — and it would be an
+        # exit 2 for a payload the schema was going to REJECT anyway (a
+        # non-finite is a number and a deep nest is a container; neither can
+        # occupy a schema-legal slot, all of which are strings). Parsing them
+        # permissively changes no verdict. Refusing to parse them changes every
+        # verdict in the batch.
         PARSE_OPTIONS = { allow_nan: true, max_nesting: false }.freeze
 
         # A full audit passes every spec file in the repository — thousands of
@@ -979,10 +992,24 @@ module SpecGuard
         end
 
         # An unpaired HIGH surrogate escape in the report text, e.g. `\ud800`
-        # not followed by a low surrogate. Ruby's parser refuses it outright;
-        # CPython decodes it and keeps it, so the port emits it and this is the
-        # one payload class that reaches Ruby as an unparseable DOCUMENT rather
-        # than an unrepresentable value.
+        # not followed by a low surrogate. Ruby's parser refuses it outright.
+        #
+        # NO CURRENT BINARY CAN EMIT ONE, and this is kept anyway. An earlier
+        # revision of this comment said "CPython decodes it and keeps it, so the
+        # port emits it" — that was true of the deleted Python reference and is
+        # FALSE of the port since SPGD-403, which refuses an unpaired surrogate
+        # escape at PARSE time under PROTOCOL.md §1.1(a) and reports the finding
+        # with `intent: null`. Measured against the shipped binary: a payload
+        # carrying `\ud800` yields `"kind": "parse"`, `"intent": null`, and a
+        # report that parses with a plain `JSON.parse` and no options at all.
+        #
+        # It stays because the gem does not choose which binary it is pointed
+        # at. `SPECGUARD_VALIDATE_INTENT` names an arbitrary path, and a report
+        # from an OLDER build — or from a third-party implementation of the
+        # protocol, which the vendor-neutral wording invites — is exactly the
+        # input this class must not turn into a batch-wide exit 2. The recovery
+        # is unreachable from the binary in this repository and cheap to keep;
+        # deleting it would be trading a real safety net for tidiness.
         UNPAIRED_HIGH_SURROGATE = /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/
         private_constant :UNPAIRED_HIGH_SURROGATE
 
