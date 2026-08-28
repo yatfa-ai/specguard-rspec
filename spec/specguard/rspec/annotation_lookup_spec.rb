@@ -439,17 +439,55 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       expect(described_class.new(env: {}).intent_for(file: path, line: 2)).to eq(valid_intent)
     end
 
-    # Resolution verifies the binary and RAISES when it is unusable. That raise
-    # must reach the formatter's envelope (which warns once) rather than being
-    # swallowed here — and the second example must not re-raise, or "warns once"
-    # would still mean "re-probes the binary once per example".
-    it "raises once when the configured binary is unusable" do
+    # THE NON-NEGOTIABLE (ticket step 3): a backend that cannot answer falls
+    # back to the RUBY PATH, and never to nil.
+    #
+    # This example previously asserted the opposite — that the raise escapes to
+    # {Formatter}'s `never_fail_the_run` envelope. That envelope keeps the RUN
+    # alive, which is why it exists, but it does so by abandoning the example's
+    # annotation. So a single mistyped path in `SPECGUARD_VALIDATE_INTENT` shipped
+    # an ENTIRE SUITE as `unannotated` while every one of those annotations was
+    # valid and locally checkable — losing the whole run's telemetry to a
+    # misconfiguration, which is strictly worse than the state before the backend
+    # existed. An unusable binary means the backend cannot say what an annotation
+    # is; it does not mean the annotation is bad.
+    #
+    # Asserted with a REAL intent rather than `not_to raise_error`, because the
+    # latter passes just as happily if the fallback returns nil for everything —
+    # which is the failure this is about.
+    it "falls back to the Ruby path when the configured binary is unusable" do
       allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
         .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
       path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\n# @intent: #{valid_annotation}\nit 'b' do\n")
 
-      expect { lookup.intent_for(file: path, line: 2) }.to raise_error(SpecGuard::RSpec::ValidatorError)
-      expect(lookup.intent_for(file: path, line: 4)).to be_nil
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 4)).to eq(valid_intent)
+    end
+
+    # ...and it probes ONCE. The resolve is a subprocess, so re-probing per
+    # example is the O(examples) cost this class exists to refuse — reappearing
+    # on exactly the unhappy path where somebody's CI is already having a bad
+    # day. Memoized on failure, which is what makes that true.
+    it "probes the unusable binary only once" do
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
+      path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\n# @intent: #{valid_annotation}\nit 'b' do\n")
+
+      [2, 4].each { |line| lookup.intent_for(file: path, line: line) }
+
+      expect(SpecGuard::RSpec::ValidatorBackend).to have_received(:resolve).once
+    end
+
+    # The same rule one layer in: a backend that resolved and then died MID-RUN
+    # has still told us nothing about the annotation, so the file falls back
+    # rather than costing every annotation in it its payload.
+    it "falls back to the Ruby path when the backend dies mid-run" do
+      runner = instance_double(SpecGuard::RSpec::ValidatorBackend::Runner)
+      allow(runner).to receive(:check).and_raise(SpecGuard::RSpec::ValidatorError, "died")
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_return(runner)
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
     end
 
     # An unreadable file is answered without starting a subprocess: the read

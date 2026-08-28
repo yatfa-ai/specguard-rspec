@@ -200,13 +200,38 @@ module SpecGuard
       # and `resolve` verifies the binary (two probes, and a raise when it is
       # unusable). Doing that during construction would move a failure out of
       # the formatter's `never_fail_the_run` envelope and into the point where
-      # RSpec is still wiring itself up. Cached-on-failure for the reason
-      # {#schema} is: one warning, not one per example.
+      # RSpec is still wiring itself up.
+      #
+      # A {ValidatorError} HERE IS NOT FATAL AND IS NOT nil-THE-ANNOTATION. An
+      # unusable binary means this class cannot ask the backend what an
+      # annotation says; it does NOT mean the annotation is bad. The Ruby chain
+      # below is still perfectly capable of answering, and it is the answer
+      # every user without the variable set already gets — so a broken backend
+      # degrades to the PREVIOUS behaviour rather than to no telemetry at all.
+      #
+      # The alternative was letting it reach {Formatter}'s `never_fail_the_run`
+      # envelope. That envelope keeps the RUN alive, which is why it exists, but
+      # it does so by abandoning the example's annotation — so a mistyped path
+      # in `SPECGUARD_VALIDATE_INTENT` would ship an entire suite as
+      # `unannotated` while every one of those annotations was valid and locally
+      # checkable. Losing the whole run's telemetry to a misconfiguration is
+      # strictly worse than the state before the backend existed. The envelope
+      # stays as the last resort; it is not the first.
+      #
+      # Cached, including on failure, for the reason {#schema} is: the probe is
+      # a subprocess, and re-running it per example is the O(examples) cost this
+      # class exists to refuse — on exactly the unhappy path where somebody's CI
+      # is already having a bad day.
       def backend
         return @backend if defined?(@backend)
 
         @backend = nil
         @backend = ValidatorBackend.resolve(env: @env)
+      rescue ValidatorError
+        # Deliberately swallowed rather than re-raised: @backend is already nil,
+        # which is the same state an unset variable produces, so #verdicts_for
+        # takes the Ruby arm and the memo keeps this from being re-probed.
+        @backend = nil
       end
 
       # @return [Index]
@@ -244,9 +269,17 @@ module SpecGuard
       #
       # The two arms answer the same question against the same protocol, and the
       # whole point of the backend arm is that its answer is the one CI reached.
+      #
+      # A {ValidatorError} RAISED MID-RUN FALLS BACK TO THE RUBY ARM, for the
+      # reason {#backend} gives about an unusable binary: a validator that dies
+      # partway through a suite has told us nothing about the annotation, so the
+      # right answer is the one the gem would have given without it — not "this
+      # example is unannotated". The fallback is per FILE, which is the unit
+      # `check` is called on, so one bad file does not cost the rest of the run
+      # its backend.
       def verdicts_for(file, text)
         resolved = backend
-        return backend_verdicts(file, resolved) if resolved
+        return backend_verdicts(file, resolved, text) if resolved
 
         ruby_verdicts(file, text)
       end
@@ -276,10 +309,16 @@ module SpecGuard
       # nothing — the same rule the Ruby arm applies from the other side. Read
       # failures and no-matches arrive line-scoped to 0 and are filtered by
       # {#index_from}.
-      def backend_verdicts(file, resolved)
+      def backend_verdicts(file, resolved, text)
         resolved.check([file]).map do |result|
           [result.line, result.ok? ? result.representable_intent : nil]
         end
+      rescue ValidatorError
+        # See #verdicts_for. The backend could not answer, so the gem answers
+        # the way it does with no backend at all — which is a real verdict,
+        # rather than the "unannotated" a re-raise would turn every annotation
+        # in this file into.
+        ruby_verdicts(file, text)
       end
 
       # @return [Index]
