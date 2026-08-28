@@ -1,30 +1,33 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
+require "net/http"
 require "open3"
 
 module SpecGuard
   module RSpec
-    # The opt-in Go validator backend: `validate-intent --source --json`.
+    # The Go validator backend: `validate-intent --source --json`, and since
+    # SPGD-867 the ONLY validator `specguard-lint` has.
     #
-    # == What this is, and what it deliberately is not
+    # == What this is
     #
     # SPGD-96's Definition of Done ends "…and the Ruby gem invoking it for
     # linting … with the Ruby hand-rolled validation logic removed". This file
-    # is the first half of that sentence. The second half is **not** done here,
-    # and the reason is distribution rather than confidence:
-    # `bin/validate-intent-go` is a build artifact in open-test-intent
-    # (`.gitignore`), `/dist/` is ignored there with the comment "this repo
-    # does not publish them", and this gem's whole premise is that it has *no
-    # cross-repo runtime dependency* ({SCHEMA_PATH}). There is no release to
-    # depend on. A default-on shell-out would therefore turn every existing
-    # user's working linter into `specguard-lint: error: … No such file`.
+    # IS that sentence: {resolve} is default-on, obtaining a prebuilt
+    # `validate-intent` binary on first run ({Installer}) when
+    # `SPECGUARD_VALIDATE_INTENT` does not name one, and every run validates
+    # through the binary it resolved. There is no Ruby fallback — when no
+    # binary can be resolved the run exits 2 naming both remediations (see
+    # {Installer::REMEDIATIONS}).
     #
-    # So the backend is **opt-in and off by default**. With
-    # `SPECGUARD_VALIDATE_INTENT` unset, {resolve} returns nil and {CLI} runs
-    # exactly the code it ran before this file existed — not "a code path that
-    # should be equivalent", the same objects.
+    # The reason the cutover waited was distribution, and that blocker is
+    # discharged: open-test-intent publishes prebuilt static binaries
+    # (`validate-intent-{linux,darwin}-{amd64,arm64}`, CGO_ENABLED=0, schema
+    # compiled in) plus a `SHA256SUMS` manifest on its GitHub releases,
+    # consumable via `scripts/install.sh` — so the gem can resolve or fetch a
+    # binary instead of failing every existing user's working linter.
     #
     # == Why a dedicated seam rather than {Configuration}
     #
@@ -297,18 +300,18 @@ module SpecGuard
     # keeps the promise it always had.
     #
     # That third shape is the one judgment call here, so it is recorded rather
-    # than left to be re-derived. {Schema.load}'s precedent is that an
-    # unreadable {SCHEMA_PATH} is exit 2 — but that is a schema the run is about
-    # to ENFORCE, and this one is not: `CLI#run` skips the load on this path
+    # than left to be re-derived. The precedent was that an unreadable
+    # {SCHEMA_PATH} is exit 2 — but that was a schema the run was about to
+    # ENFORCE, and this one is not: `CLI#run` skips the load on this path
     # precisely so an unrelated packaging accident cannot fail a run that never
     # reads it, and making the digest fatal here would re-introduce exactly the
     # dependency that comment removed. An unreadable vendored copy is also not
     # what the exit-2 arm is for — divergence is a POSITIVE finding, two digests
     # that differ, and a missing operand is not a difference. So it lands in the
     # third band and is said out loud. (Hence {Digest::SHA256.file} rather than
-    # {Schema.load}: this needs bytes, not a parsed and validated document, so
-    # only an unreadable file can fail it and a schema this run does not use
-    # cannot fail it twice.)
+    # a digest needs bytes, not a parsed and validated document, so only an
+    # unreadable file can fail it and a schema this run does not use cannot
+    # fail it twice.)
     #
     # The digest is computed from {SCHEMA_PATH} at runtime and never written
     # down here. A constant would be a fourth copy of a hex string that already
@@ -316,20 +319,21 @@ module SpecGuard
     # describe — which is the precise failure this whole check was added to
     # detect, re-created inside the detector.
     module ValidatorBackend
-      # Set it to a `validate-intent` binary to route linting through the Go
-      # port. Blank or unset means the Ruby path, which is the default and the
-      # only behaviour any existing user has.
+      # Names a `validate-intent` binary to validate through, overriding the
+      # default first-run auto-install. Blank or unset means the default:
+      # resolve a cached or freshly downloaded prebuilt binary ({Installer}).
       ENV_VAR = "SPECGUARD_VALIDATE_INTENT"
 
       # @param env [Hash, ENV]
-      # @return [Runner, nil] nil when the backend is not requested
-      # @raise [ValidatorError] when it is requested and unusable
+      # @return [Runner] always a runner — there is no Ruby fallback, so a
+      #   binary that cannot be resolved raises rather than degrades
+      # @raise [ValidatorError] when no usable binary can be resolved
       def self.resolve(env: ENV)
         # Blank means unset, following `Configuration`'s `blank_to_nil` idiom:
         # `SPECGUARD_VALIDATE_INTENT=` in a CI environment file is somebody
-        # turning the backend *off*, not asking for a binary named "".
+        # asking for the default resolution, not for a binary named "".
         path = env[ENV_VAR].to_s.strip
-        return nil if path.empty?
+        path = Installer.obtain(env: env) if path.empty?
 
         Runner.new(path).tap(&:verify!)
       end
@@ -343,6 +347,198 @@ module SpecGuard
       # @return [String] a glob pattern matching exactly `path`
       def self.escape_glob(path)
         path.gsub(/([*?\[])/, '[\1]')
+      end
+
+      # Obtains a `validate-intent` binary for the DEFAULT-ON path: the
+      # platform-matched prebuilt asset from open-test-intent's GitHub release,
+      # verified against the release's `SHA256SUMS` manifest, cached under the
+      # user's cache dir so the network is touched once per machine.
+      #
+      # == Why the download is verified the way `Runner#verify!` verifies
+      #
+      # The posture is inherited from the schema-contract check: a downloaded
+      # blob is not a binary because we asked for one. The release publishes a
+      # `SHA256SUMS` manifest beside its assets, and the gem checks the ONE row
+      # that names this platform's asset — the same choice
+      # open-test-intent's own `scripts/install.sh` makes, for the reason its
+      # header gives (`sha256sum -c` would report the three rows this host did
+      # not stage as missing files). Only a row that matches BOTH the digest
+      # and the asset name counts, so a manifest that does not describe the
+      # fetched bytes is a refusal and not a pass.
+      #
+      # == Why a failed fetch is an exit 2 naming two remediations
+      #
+      # There is no Ruby fallback any more, so "no binary" must be loud: the
+      # message names the env var (point at a binary you already have) and the
+      # `install.sh` curl|sh path (the CI-pinned alternative). A first run with
+      # no network is the expected shape of this failure and the message is
+      # written for it.
+      module Installer
+        # The release the gem resolves against. Pinned by tag, not "latest":
+        # which validator validated a CI job must not change because somebody
+        # published a new release, and {Runner#verify_schema_contract!} pins
+        # the fetched binary to this gem's vendored schema anyway.
+        RELEASE_TAG = "v0.1.3"
+        REPOSITORY = "yatfa-ai/open-test-intent"
+        DOWNLOAD_BASE = "https://github.com/#{REPOSITORY}/releases/download/#{RELEASE_TAG}"
+
+        # The CI-pinned alternative to the auto-install: install the same
+        # verified release artifact onto PATH and point the env var at it.
+        INSTALL_SH = "curl -fsSL " \
+                     "https://raw.githubusercontent.com/#{REPOSITORY}/#{RELEASE_TAG}/scripts/install.sh | sh"
+
+        # Both remediations, spelled once and reused by every refusal, so the
+        # message cannot drift between the ways the fetch can fail.
+        REMEDIATIONS = "set #{ValidatorBackend::ENV_VAR} to a validate-intent binary, " \
+                       "or install one with: #{INSTALL_SH}"
+
+        # Where the cached binary lives when the user has not redirected it.
+        # Honours `SPECGUARD_CACHE_DIR` (hermetic CI caches), then XDG, then
+        # `~/.cache` for hosts without XDG set.
+        CACHE_DIR_VAR = "SPECGUARD_CACHE_DIR"
+
+        # `RUBY_PLATFORM` -> the release's os/arch vocabulary. Anything outside
+        # the four published assets is unsupported: guessable names
+        # (`freebsd`?) would produce a 404 masquerading as a policy, so the
+        # mapping is closed and the refusal names the platform it was asked
+        # about.
+        OS_FOR = { /linux/ => "linux", /darwin|mac/ => "darwin" }.freeze
+        ARCH_FOR = { /x86_64|amd64|x64/ => "amd64", /aarch64|arm64/ => "arm64" }.freeze
+
+        # `Net::HTTP` timeouts. Short on purpose: this runs at the front of a
+        # lint step, and a first-run fetch that hangs is worse than one that
+        # fails fast with the remediation message.
+        OPEN_TIMEOUT = 10
+        READ_TIMEOUT = 30
+        MAX_REDIRECTS = 5
+
+        class << self
+          # @param env [Hash, ENV]
+          # @return [String] path to an executable, SHA256SUMS-verified binary
+          # @raise [ValidatorError] when the platform is unsupported or the
+          #   binary cannot be obtained or verified
+          def obtain(env: ENV)
+            asset = asset_name
+            destination = File.join(cache_dir(env), asset)
+
+            return destination if cached?(destination)
+
+            install(asset, destination)
+          end
+
+          # The release asset name for this host.
+          #
+          # @param platform [String] a `RUBY_PLATFORM`-shaped string;
+          #   injectable so the mapping is testable off exotic hosts
+          # @raise [ValidatorError] on an OS or arch with no published asset
+          def asset_name(platform: RUBY_PLATFORM)
+            os = OS_FOR.find { |pattern, _| pattern.match?(platform) }&.last
+            arch = ARCH_FOR.find { |pattern, _| pattern.match?(platform) }&.last
+
+            if os.nil? || arch.nil?
+              raise ValidatorError,
+                    "no prebuilt validate-intent release asset for #{platform} " \
+                    "(#{RELEASE_TAG} publishes #{OS_FOR.values.uniq.product(ARCH_FOR.values.uniq) \
+                      .map { |o, a| "#{o}/#{a}" }.join(', ')}) — #{REMEDIATIONS}"
+            end
+
+            "validate-intent-#{os}-#{arch}"
+          end
+
+          # @param env [Hash, ENV]
+          # @return [String]
+          def cache_dir(env)
+            override = env[CACHE_DIR_VAR].to_s.strip
+            xdg = env["XDG_CACHE_HOME"].to_s.strip
+            root = override.empty? ? (xdg.empty? ? File.join(Dir.home, ".cache") : xdg) : override
+            File.join(root, "specguard-rspec", "validate-intent", RELEASE_TAG)
+          end
+
+          # Downloads the asset plus its manifest, verifies, and installs
+          # atomically (temp file + rename, chmod 0755) so a killed download
+          # can never leave a half-written binary the next run mistakes for
+          # good — or worse, executes.
+          def install(asset, destination)
+            manifest = download("#{DOWNLOAD_BASE}/SHA256SUMS")
+            expected = manifest_digest(manifest, asset)
+
+            bytes = download("#{DOWNLOAD_BASE}/#{asset}")
+            actual = Digest::SHA256.hexdigest(bytes)
+            unless actual == expected
+              raise ValidatorError,
+                    "downloaded #{DOWNLOAD_BASE}/#{asset} has sha256:#{actual}, but the release " \
+                    "manifest says sha256:#{expected} — the download is not the artifact the " \
+                    "release published, so it was not installed; #{REMEDIATIONS}"
+            end
+
+            dir = File.dirname(destination)
+            FileUtils.mkdir_p(dir)
+            tmp = "#{destination}.tmp.#{Process.pid}"
+            File.binwrite(tmp, bytes)
+            File.chmod(0o755, tmp)
+            File.rename(tmp, destination)
+            destination
+          rescue ValidatorError
+            raise
+          rescue StandardError => e
+            # Net::HTTP's failures (SocketError, OpenTimeout, EOFError, ...),
+            # and any filesystem failure writing the cache. All of them mean
+            # "no binary could be obtained", which is the one refusal this
+            # module has — exit 2, both remediations.
+            raise ValidatorError, "could not obtain validate-intent from #{DOWNLOAD_BASE}: " \
+                                  "#{e.class}: #{e.message}; #{REMEDIATIONS}"
+          end
+
+          private
+
+          def cached?(path)
+            File.file?(path) && File.executable?(path)
+          end
+
+          # The one row of `SHA256SUMS` naming this asset:
+          # `<64-hex>  <asset-name>` (two spaces, the coreutils format the
+          # release workflow writes). A manifest without a row for the asset,
+          # or with a row this cannot read, is a refusal — an unverified
+          # install is the vacuous green this ecosystem keeps refusing.
+          def manifest_digest(manifest, asset)
+            manifest.each_line do |line|
+              match = /\A(?<digest>\h{64})\s+\*?(?<name>\S+)\s*\z/.match(line)
+              next if match.nil?
+              return match[:digest].downcase if match[:name] == asset
+            end
+
+            raise ValidatorError,
+                  "the #{RELEASE_TAG} release manifest does not describe #{asset} — " \
+                  "cannot verify the download, so it was not installed; #{REMEDIATIONS}"
+          end
+
+          # GET with redirects (the release download 302s to a signed object
+          # URL). Bounds the hop count so a misbehaving mirror cannot loop.
+          def download(url, redirects = MAX_REDIRECTS)
+            uri = URI(url)
+            response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
+                                                          open_timeout: OPEN_TIMEOUT,
+                                                          read_timeout: READ_TIMEOUT) do |http|
+              request = Net::HTTP::Get.new(uri)
+              # GitHub's release endpoints require a client that names itself.
+              request["User-Agent"] = "specguard-rspec-installer"
+              http.request(request)
+            end
+
+            case response
+            when Net::HTTPRedirection
+              raise ValidatorError, "too many redirects fetching #{url}" if redirects.zero?
+
+              download(response["Location"], redirects - 1)
+            when Net::HTTPSuccess
+              response.body
+            else
+              raise ValidatorError,
+                    "fetching #{url} answered HTTP #{response.code} — " \
+                    "the release asset is not where the gem looked; #{REMEDIATIONS}"
+            end
+          end
+        end
       end
 
       # Invokes the binary and turns its report into {Linter::Result}s.

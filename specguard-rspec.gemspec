@@ -39,14 +39,6 @@ Gem::Specification.new do |spec|
   spec.executables = %w[specguard-lint specguard-ingest]
   spec.require_paths = ["lib"]
 
-  # The linter validates each @intent payload against the vendored
-  # OpenTestIntent v1 schema. Pinned to 2.5 on purpose: the linter renders its
-  # own reason lines from json_schemer's *structured* error fields (`type`,
-  # `data_pointer`, `details.missing_keys`) precisely so a gem bump cannot
-  # silently drift the wording — but the set of `type` values it dispatches on
-  # is still 2.x API surface, so a major bump wants a look.
-  spec.add_dependency "json_schemer", "~> 2.5"
-
   # `json` is a default gem, so without this line the parser follows whatever
   # the host Ruby happens to ship — and it is not a stable target. 2.9 alone
   # closed a nesting off-by-one, changed how an unpaired high surrogate is

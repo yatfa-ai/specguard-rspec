@@ -1,12 +1,14 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "stringio"
 require "tmpdir"
 
 require "specguard/rspec/ingest_cli"
 
 require_relative "../../support/stub_ingest_endpoint"
+require_relative "../../support/validator_stub"
 
 # The four edge-case lines in the valid fixture, plus the bare-word rule.
 #
@@ -132,6 +134,15 @@ end
 # running from the gem root, without which the rest would be comparing piles of
 # read failures.
 RSpec.describe "the default output path, byte for byte" do
+  # SPGD-867: the default path is the BINARY's now (the replay stub stands in
+  # offline — spec/support/validator_stub.rb), so the provenance line pinned
+  # below is the binary's, composed from the stub the way Runner#provenance
+  # composes it from the real thing.
+  before do
+    @stub = ValidatorStub.install_stubbable
+    allow(SpecGuard::RSpec::ValidatorBackend::Installer).to receive(:obtain).and_return(@stub)
+  end
+
   def run(*paths)
     stdout = StringIO.new
     stderr = StringIO.new
@@ -141,7 +152,12 @@ RSpec.describe "the default output path, byte for byte" do
 
   # The one line every run writes to stderr since SPGD-247. It is part of the
   # default path and so it is pinned here too, not normalised away.
-  PROVENANCE = "specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n"
+  def provenance
+    digest = Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest
+    "specguard-lint: validated by validate-intent 0.1.3 (go1.22.12 #{RUBY_PLATFORM}) " \
+      "schema sha256:#{digest} at #{@stub} (SPECGUARD_VALIDATE_INTENT) " \
+      "— it reports enforcing the schema this gem vendors, loaded from <embedded schema>\n"
+  end
 
   it "is running where the relative fixture paths resolve" do
     expect(%w[spec/fixtures/order_spec.rb spec/fixtures/broken_intent_spec.rb])
@@ -155,7 +171,7 @@ RSpec.describe "the default output path, byte for byte" do
       specguard-lint: checked 1 spec file
       specguard-lint: checked 7 @intent annotations, 0 malformed
     OUT
-    expect(stderr).to eq(PROVENANCE)
+    expect(stderr).to eq(provenance)
     expect(code).to eq(0)
   end
 
@@ -176,7 +192,7 @@ RSpec.describe "the default output path, byte for byte" do
       FAIL  spec/fixtures/broken_intent_spec.rb:34 — no '{...}' object literal follows the @intent: token
       specguard-lint: checked 12 @intent annotations, 5 malformed
     OUT
-    expect(stderr).to eq(PROVENANCE)
+    expect(stderr).to eq(provenance)
     expect(code).to eq(1)
   end
 
@@ -185,10 +201,10 @@ RSpec.describe "the default output path, byte for byte" do
 
     expect(stdout).to eq(<<~OUT)
       specguard-lint: checked 1 spec file
-      FAIL  spec/fixtures/gone_spec.rb — could not read file: No such file or directory @ rb_sysopen - spec/fixtures/gone_spec.rb
+      FAIL  spec/fixtures/gone_spec.rb — could not read file: no file at this path
       specguard-lint: checked 0 @intent annotations, 0 malformed; 1 file could not be read
     OUT
-    expect(stderr).to eq(PROVENANCE)
+    expect(stderr).to eq(provenance)
     expect(code).to eq(1)
   end
 end

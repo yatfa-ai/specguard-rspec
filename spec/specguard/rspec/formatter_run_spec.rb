@@ -12,6 +12,7 @@ require "fileutils"
 require "specguard/rspec/configuration"
 
 require_relative "../../support/stub_ingest_endpoint"
+require_relative "../../support/validator_stub"
 
 # Everything the out-of-process examples need, in a namespace of its own —
 # a bare `LIB_DIR = ...` inside an `RSpec.describe` block assigns at the
@@ -207,8 +208,17 @@ module FormatterRunHelpers
   # valid UTF-8, a vendored schema that will not compile.
   SABOTAGE = <<~RUBY
     require "specguard/rspec"
-    module SpecGuard::RSpec::Scanner
-      def self.scan_text(_text, file:) = raise(IOError, "sabotaged scanner")
+    # SPGD-867: sabotage the LOOKUP, not the Scanner. The backend path answers
+    # from the validator's report and never calls `Scanner.scan_text`, so a
+    # scanner sabotage would now be dead code — the failure mode this block
+    # pins is "the annotation half blows up", whatever layer it blows up in.
+    # Runner is on the loaded chain (`specguard/rspec` requires it), and an
+    # IOError here is outside the ValidatorError band AnnotationLookup rescues,
+    # so it reaches the formatter envelope exactly as the scanner raise did.
+    module SpecGuard::RSpec::ValidatorBackend
+      class Runner
+        def check(*) = raise(IOError, "sabotaged lookup")
+      end
     end
   RUBY
 
@@ -365,7 +375,15 @@ module FormatterRunHelpers
         File.write(full_path, contents)
       end
       targets = sources.keys.grep(/_spec\.rb\z/)
-      env = HERMETIC_ENV.merge(prepare ? prepare.call(root) : {})
+      # SPGD-867: validation is the binary's job and resolution is default-on,
+      # so the child process must find a validator. Point it at the offline
+      # replay stub (see spec/support/validator_stub.rb) — the suite must not
+      # download — and carry the stub script's own env, because capture3 with
+      # an env hash REPLACES the environment rather than extending it.
+      env = HERMETIC_ENV
+              .merge(ValidatorStub.stub_env)
+              .merge({ "SPECGUARD_VALIDATE_INTENT" => ValidatorStub.install_stubbable })
+              .merge(prepare ? prepare.call(root) : {})
 
       case wiring
       when :rspec_flags
@@ -536,22 +554,19 @@ module IngestContract
 
       # `Ingest::Payload#validate_intent` calls `OpenTestIntent.validation_errors`
       # — the platform re-validates every annotated intent against the same
-      # OpenTestIntent schema this gem vendors.
-      schema.violations(intent).map { |reason| "#{label}: intent is invalid — #{reason}" }
-    when "unannotated"
+      # OpenTestIntent schema this gem vendors. SPGD-867 deleted the gem's
+      # json_schemer loader (validation is the binary's job), so this
+      # TEST-ONLY helper validates with json_schemer directly — a development
+      # dependency, same as the offline validator stub.
+      require "json_schemer"
+      (@schemer ||= JSONSchemer.schema(JSON.parse(File.read(SpecGuard::RSpec::SCHEMA_PATH))))
+        .validate(intent).to_a.map { |error| "#{label}: intent is invalid — #{error['error']}" }    when "unannotated"
       intent.nil? ? [] : ["#{label}: intent must be null when status is \"unannotated\""]
     else
       []
     end
   end
 
-  # Memoized because {#errors_for} is called once per spec entry, and
-  # `Schema.load` reads, parses and compiles the vendored document every time.
-  # Paying that per entry would make this fixture's own cost O(specs) — the
-  # shape the code it is checking exists to avoid.
-  def schema
-    @schema ||= SpecGuard::RSpec::Schema.load
-  end
 end
 
 # The formatter in a real `rspec` process, which is the only place two of its

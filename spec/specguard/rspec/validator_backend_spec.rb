@@ -299,22 +299,43 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
   # ------------------------------------------------------------------------ #
   describe ".resolve" do
-    # The default, and the only configuration any existing user has. It is
-    # asserted first because the whole slice rests on it: an unset variable
-    # must not merely behave like the Ruby path, it must BE the Ruby path.
-    it "is nil when the variable is unset" do
-      expect(described_class.resolve(env: {})).to be_nil
+    # SPGD-867: resolution is DEFAULT-ON. Unset, blank and whitespace-only
+    # values all mean "resolve through the installer" (spec/support's replay
+    # stub stands in for the download), and a resolution failure is a
+    # ValidatorError — never a silent nil, because there is no Ruby path left
+    # to fall back to.
+    def with_installable_stub(path = stub_validator)
+      allow(described_class::Installer).to receive(:obtain).and_return(path)
     end
 
-    # `SPECGUARD_VALIDATE_INTENT=` in a CI environment file is somebody turning
-    # the backend off, not asking for a binary named "". Follows the
-    # blank-means-unset idiom Configuration already uses.
-    it "is nil when the variable is blank" do
-      expect(described_class.resolve(env: { described_class::ENV_VAR => "" })).to be_nil
+    it "resolves through the installer when the variable is unset" do
+      path = stub_validator
+      with_installable_stub(path)
+
+      expect(described_class.resolve(env: {})).to be_a(described_class::Runner)
+      expect(described_class.resolve(env: {}).path).to eq(path)
     end
 
-    it "is nil when the variable is only whitespace" do
-      expect(described_class.resolve(env: { described_class::ENV_VAR => "   " })).to be_nil
+    it "resolves through the installer when the variable is blank" do
+      path = stub_validator
+      with_installable_stub(path)
+
+      expect(described_class.resolve(env: { described_class::ENV_VAR => "" }).path).to eq(path)
+    end
+
+    it "resolves through the installer when the variable is only whitespace" do
+      path = stub_validator
+      with_installable_stub(path)
+
+      expect(described_class.resolve(env: { described_class::ENV_VAR => "   " }).path).to eq(path)
+    end
+
+    it "raises when no binary can be obtained, naming both remediations" do
+      allow(described_class::Installer).to receive(:obtain)
+        .and_raise(described_class::Installer::REMEDIATIONS.then { |r| SpecGuard::RSpec::ValidatorError.new(r) })
+
+      expect { described_class.resolve(env: {}) }
+        .to raise_error(SpecGuard::RSpec::ValidatorError, /SPECGUARD_VALIDATE_INTENT.*install\.sh/)
     end
 
     it "returns a runner for an executable binary" do
@@ -858,30 +879,28 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(paths).to all(satisfy { |path| File.file?(path) })
     end
 
-    it "prints the same stdout, byte for byte" do
-      ruby_stdout, = run_cli({})
+    # SPGD-867: the Ruby half of every comparison in this file is gone (the
+    # cutover removed the arm), so what this block pins now is the backend's
+    # OWN rendering of the recorded corpus — the bytes CI actually sees.
+    it "renders the recorded corpus" do
       go_stdout, = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
 
-      expect(go_stdout).to eq(ruby_stdout)
+      expect(go_stdout).to include("FAIL  spec/fixtures/broken_intent_spec.rb:9")
+      expect(go_stdout).to include("checked 12 @intent annotations, 5 malformed")
     end
 
     # Both are silent on stderr APART from the one line naming the validator —
     # and that line is the single thing that must NOT match, because it is what
     # tells the two runs apart when nothing else about them does.
-    it "prints the same stderr apart from the line naming the validator" do
-      _, ruby_stderr, = run_cli({})
+    it "prints nothing on stderr beyond the line naming the validator" do
       _, go_stderr, = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
 
-      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
       expect(stderr_beyond_provenance(go_stderr)).to be_empty
-      expect(go_stderr).not_to eq(ruby_stderr)
     end
 
-    it "exits with the same code" do
-      *, ruby_code = run_cli({})
+    it "exits with the recorded verdict's code" do
       *, go_code = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
 
-      expect(go_code).to eq(ruby_code)
       expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
     end
 
@@ -912,18 +931,17 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       def go_env = { described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) }
 
-      it "is identical on both backends" do
-        ruby_stdout, = run_json_cli({})
+      it "reflects the recorded corpus" do
         go_stdout, = run_json_cli(go_env)
+        document = JSON.parse(go_stdout)
 
-        expect(go_stdout).to eq(ruby_stdout)
+        expect(document["ok"]).to be(false)
+        expect(document["summary"]).to eq("files" => 2, "annotations" => 12, "failed" => 5)
       end
 
-      it "exits with the same code on both backends" do
-        *, ruby_code = run_json_cli({})
+      it "exits with the recorded verdict's code" do
         *, go_code = run_json_cli(go_env)
 
-        expect(go_code).to eq(ruby_code)
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
       end
 
@@ -983,10 +1001,11 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     let(:paths) { %w[spec/fixtures/parse_divergence_spec.rb] }
     let(:recorded) { File.read("spec/fixtures/validator/parse-divergence.json") }
 
+    # SPGD-867: the Ruby arm is gone. What these describes pin now is the
+    # BACKEND's rendering of the recorded real-binary reports.
     def both_ways
-      ruby = run_cli({})
       go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
-      [ruby, go]
+      [go, go]
     end
 
     def parse_prefix
@@ -999,24 +1018,20 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
     # Non-vacuity first: if the fixture stopped producing parse failures, every
     # "they differ" assertion below would pass over an empty list.
-    it "compared two parse findings on each side" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "compared two parse findings" do
+      (go_stdout, *, _) = both_ways.first
 
-      expect(fail_lines(ruby_stdout).length).to eq(2)
       expect(fail_lines(go_stdout).length).to eq(2)
       expect(fail_lines(go_stdout)).to all(include(parse_prefix))
-      expect(fail_lines(ruby_stdout)).to all(include(parse_prefix))
     end
 
     # The shared half. Same classification, same file, same LINE — unlike a
     # read failure, a parse failure is line-scoped and both backends agree on
     # which annotation broke — and the same prefix.
-    it "reports the same annotations, at the same locations, under the same prefix" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-
+    it "reports the recorded annotations at their recorded locations" do
+      (go_stdout, *, _) = both_ways.first
       locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
 
-      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
       expect(locations.call(go_stdout))
         .to eq(["FAIL  spec/fixtures/parse_divergence_spec.rb:21",
                 "FAIL  spec/fixtures/parse_divergence_spec.rb:22"])
@@ -1025,42 +1040,25 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # The summary line is where "same classification" stops being a claim about
     # prose: a parse failure counts as an annotation examined AND as malformed,
     # and it must land in the same clause on both sides.
-    it "counts them identically, and as annotations rather than unread files" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "counts them as annotations rather than unread files" do
+      (go_stdout, *, _) = both_ways.first
       summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
 
-      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
       expect(summary.call(go_stdout)).to eq("specguard-lint: checked 3 @intent annotations, 2 malformed")
     end
 
-    it "exits 1 on both — a divergent message is still a malformed annotation" do
-      (*, ruby_code), (*, go_code) = both_ways
+    it "exits 1 — a divergent message is still a malformed annotation" do
+      (*, _, go_code) = both_ways.first
 
-      expect(go_code).to eq(ruby_code)
       expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
     end
 
-    it "says nothing on stderr on either backend beyond the line naming the validator" do
-      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+    it "says nothing on stderr beyond the line naming the validator" do
+      (*, go_stderr, _) = both_ways.first
 
-      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
       expect(stderr_beyond_provenance(go_stderr)).to be_empty
     end
 
-    # The other side of the ratification. If these ever agree, the difference
-    # has been closed and this whole describe block should be deleted in favour
-    # of adding the fixture to the byte-identical corpus above.
-    it "still differs in the tail, and only in the tail" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(parse_prefix, 2).last } }
-
-      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
-      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
-        expect(ruby_tail).not_to be_empty
-        expect(go_tail).not_to be_empty
-        expect(go_tail).not_to eq(ruby_tail)
-      end
-    end
 
     # And the tails are the BINARY's own, passed through unaltered rather than
     # reworded by the mapping. This is what makes the difference a pass-through
@@ -1085,18 +1083,11 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # The CLAIM is that the two spell the same refusal differently, and that is
     # asserted directly below rather than inferred from two literals.
     it "passes the binary's own wording through unaltered" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+      (go_stdout, *, _) = both_ways.first
 
       expect(go_stdout).to include("could not parse annotation: expected a JSON value (line 1, column 102)")
       expect(go_stdout).to include("could not parse annotation: expected a double-quoted " \
                                    "property name (line 1, column 2)")
-
-      # Ruby's own spelling, for the same two payloads, on the same two lines:
-      # this gem's prefix, followed by something that is not the binary's text.
-      ruby_tails = fail_lines(ruby_stdout).map { |line| line.split(parse_prefix, 2).last }
-      expect(ruby_tails.length).to eq(2)
-      expect(ruby_tails).to all(satisfy { |tail| !tail.empty? })
-      expect(ruby_tails).to all(satisfy { |tail| !tail.start_with?("expected a ") })
     end
   end
 
@@ -1130,9 +1121,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     let(:recorded) { File.read("spec/fixtures/validator/utf8-divergence.json") }
 
     def both_ways
-      ruby = run_cli({})
       go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
-      [ruby, go]
+      [go, go]
     end
 
     def read_prefix
@@ -1147,23 +1137,19 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(File.read(paths.first, encoding: "UTF-8").valid_encoding?).to be(false)
     end
 
-    it "reported exactly one unreadable file on each side" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "reported exactly one unreadable file" do
+      (go_stdout, *, _) = both_ways.first
 
-      expect(fail_lines(ruby_stdout).length).to eq(1)
       expect(fail_lines(go_stdout).length).to eq(1)
       expect(fail_lines(go_stdout)).to all(include(read_prefix))
-      expect(fail_lines(ruby_stdout)).to all(include(read_prefix))
     end
 
     # The shared half. Same file, and no line — unlike a parse failure this is a
     # statement about the FILE, so neither side points a reader at a line.
-    it "names the same file, without a line, under the same prefix" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-
+    it "names the file, without a line, under the read prefix" do
+      (go_stdout, *, _) = both_ways.first
       locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
 
-      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
       expect(locations.call(go_stdout)).to eq(["FAIL  spec/fixtures/invalid_utf8_spec.rb"])
     end
 
@@ -1171,43 +1157,29 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # file is counted as a file that could not be READ, never as an annotation
     # that was checked and found clean — and the seven annotations belong to the
     # file beside it, which both backends still checked.
-    it "counts it identically, as an unread file rather than a checked annotation" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "counts it as an unread file rather than a checked annotation" do
+      (go_stdout, *, _) = both_ways.first
       summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
 
-      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
       expect(summary.call(go_stdout))
         .to eq("specguard-lint: checked 7 @intent annotations, 0 malformed; 1 file could not be read")
     end
 
-    it "exits 1 on both — an unreadable spec file is still a failed run" do
-      (*, ruby_code), (*, go_code) = both_ways
+    it "exits 1 — an unreadable spec file is still a failed run" do
+      (*, _, go_code) = both_ways.first
 
-      expect(go_code).to eq(ruby_code)
       expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
     end
 
-    it "says nothing on stderr on either backend beyond the line naming the validator" do
-      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+    it "says nothing on stderr beyond the line naming the validator" do
+      (*, go_stderr, _) = both_ways.first
 
-      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
       expect(stderr_beyond_provenance(go_stderr)).to be_empty
     end
 
     # The other side of the ratification. If these ever agree, the difference
     # has been closed and this block should be retired along with the README row
     # rather than left asserting a distinction that no longer exists.
-    it "still differs in the tail, and only in the tail" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
-
-      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
-      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
-        expect(ruby_tail).not_to be_empty
-        expect(go_tail).not_to be_empty
-        expect(go_tail).not_to eq(ruby_tail)
-      end
-    end
 
     # Both halves are pinned IN FULL, and both can be: unlike the parse tail,
     # neither wording comes from a default gem whose version tracks the Ruby the
@@ -1215,23 +1187,21 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # Ruby's is this gem's own literal in `Scanner#scan_text`, not an
     # interpolated `JSON::ParserError#message`. Each moves only when somebody
     # here moves it, and these are the two strings README.md's table quotes.
-    it "passes the binary's own wording through unaltered, and keeps the gem's own" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "passes the binary's own wording through unaltered" do
+      (go_stdout, *, _) = both_ways.first
 
       expect(go_stdout).to include("could not read file: input is not well-formed UTF-8 " \
                                    "(PROTOCOL.md §1.1 requires it)")
-      expect(ruby_stdout).to include("could not read file: invalid UTF-8 byte sequence")
     end
 
     # Both name the CONDITION rather than an offset, which is the property
     # `scanner.rb` ratifies the difference ON. Neither claims to know where the
     # bad byte was, because neither stopped to find out.
-    it "names the condition rather than an offset on either side" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "names the condition rather than an offset" do
+      (go_stdout, *, _) = both_ways.first
       tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
 
-      expect(tails.call(ruby_stdout) + tails.call(go_stdout))
-        .to all(satisfy { |tail| !tail.match?(/\b(byte|offset|position|column)\s+\d/) })
+      expect(tails.call(go_stdout)).to all(satisfy { |tail| !tail.match?(/\b(byte|offset|position|column)\s+\d/) })
     end
   end
 
@@ -1261,9 +1231,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     let(:recorded) { File.read("spec/fixtures/validator/not-a-regular-file.json") }
 
     def both_ways
-      ruby = run_cli({})
       go = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
-      [ruby, go]
+      [go, go]
     end
 
     def read_prefix
@@ -1279,13 +1248,11 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       expect(File.file?(paths.last)).to be(true)
     end
 
-    it "reported exactly one unreadable path on each side" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "reported exactly one unreadable path" do
+      (go_stdout, *, _) = both_ways.first
 
-      expect(fail_lines(ruby_stdout).length).to eq(1)
       expect(fail_lines(go_stdout).length).to eq(1)
       expect(fail_lines(go_stdout)).to all(include(read_prefix))
-      expect(fail_lines(ruby_stdout)).to all(include(read_prefix))
     end
 
     # The shared half: both sides name the same path, drop the line, and carry
@@ -1298,60 +1265,47 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # backend reports the path the CALLER named rather than the escaped pattern
     # is asserted under "a path that matched nothing (`no-match`)", on
     # `bracket[1]_spec.rb`, where the two spellings actually differ.
-    it "names the same path, without a line, under the same prefix" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-
+    it "names the path, without a line, under the read prefix" do
+      (go_stdout, *, _) = both_ways.first
       locations = ->(stdout) { fail_lines(stdout).map { |line| line.split(" — ").first } }
 
-      expect(locations.call(go_stdout)).to eq(locations.call(ruby_stdout))
       expect(locations.call(go_stdout)).to eq(["FAIL  spec/fixtures/payloads"])
     end
 
-    it "counts it identically, as an unread file rather than a checked annotation" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    it "counts it as an unread file rather than a checked annotation" do
+      (go_stdout, *, _) = both_ways.first
       summary = ->(stdout) { stdout.lines.map(&:chomp).grep(/checked \d+ @intent/).first }
 
-      expect(summary.call(go_stdout)).to eq(summary.call(ruby_stdout))
       expect(summary.call(go_stdout))
         .to eq("specguard-lint: checked 7 @intent annotations, 0 malformed; 1 file could not be read")
     end
 
-    it "exits 1 on both — an unreadable path is still a failed run" do
-      (*, ruby_code), (*, go_code) = both_ways
+    it "exits 1 — an unreadable path is still a failed run" do
+      (*, _, go_code) = both_ways.first
 
-      expect(go_code).to eq(ruby_code)
       expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
     end
 
-    it "says nothing on stderr on either backend beyond the line naming the validator" do
-      (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+    it "says nothing on stderr beyond the line naming the validator" do
+      (*, go_stderr, _) = both_ways.first
 
-      expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
       expect(stderr_beyond_provenance(go_stderr)).to be_empty
     end
 
-    it "still differs in the tail, and only in the tail" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
-      tails = ->(stdout) { fail_lines(stdout).map { |line| line.split(read_prefix, 2).last } }
-
-      expect(fail_lines(go_stdout)).not_to eq(fail_lines(ruby_stdout))
-      tails.call(ruby_stdout).zip(tails.call(go_stdout)).each do |ruby_tail, go_tail|
-        expect(ruby_tail).not_to be_empty
-        expect(go_tail).not_to be_empty
-        expect(go_tail).not_to eq(ruby_tail)
-      end
-    end
 
     # The two spellings README.md's table quotes. Ruby's is pinned only as far
     # as the errno phrase `Errno::EISDIR` contributes — the `@ io_fread - <path>`
     # tail is Ruby's own and has moved across versions, exactly the trap the
     # parse block documents.
-    it "keeps Ruby's errno and declines to invent one for the backend" do
-      (ruby_stdout, *), (go_stdout, *) = both_ways
+    # SPGD-867 rewrote this example: the Ruby errno half is gone with the Ruby
+    # arm, and what survives is the property that still matters — the binary's
+    # glob semantics fold a directory and a missing name into the same
+    # `no-match` answer, which this gem re-words rather than inventing an
+    # errno it never had.
+    it "reports the no-match wording the gem mints for a non-regular path" do
+      (go_stdout, *, _) = both_ways.first
 
-      expect(ruby_stdout).to include("could not read file: Is a directory")
       expect(go_stdout).to include("could not read file: no file at this path")
-      expect(go_stdout).not_to include("io_fread")
       expect(go_stdout).not_to include("Is a directory")
     end
 
@@ -1448,7 +1402,10 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-kind.json") }
 
       def both_ways
-        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
+        # SPGD-867: the Ruby arm is gone; the helper keeps its arity for the
+        # untouched destructure sites, which now compare the backend to itself.
+        run = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+        [run, run]
       end
 
       it "is running where the recorded path resolves" do
@@ -1487,10 +1444,9 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
       end
 
-      it "says nothing on stderr on either backend beyond the line naming the validator" do
-        (_, ruby_stderr, *), (_, go_stderr, *) = both_ways
+      it "says nothing on stderr beyond the line naming the validator" do
+        (*, go_stderr, _) = both_ways.first
 
-        expect(stderr_beyond_provenance(go_stderr)).to eq(stderr_beyond_provenance(ruby_stderr))
         expect(stderr_beyond_provenance(go_stderr)).to be_empty
       end
 
@@ -1517,18 +1473,12 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # The binary's half is the interesting one: it names the PROTOCOL CLAUSE
       # it is enforcing rather than reproducing another parser's message text,
       # which is what makes a refusal something a reader can look up.
-      it "differs only in the wording of the refusal" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
-
-        expect(ruby_stdout).to include("could not parse annotation: unexpected token 'NaN'")
-        expect(ruby_stdout).to include("could not parse annotation: incomplete surrogate pair")
-        expect(ruby_stdout).to include("could not parse annotation: nesting of 101 is too deep")
+      it "names the protocol clause it is enforcing" do
+        (go_stdout, *, _) = both_ways.first
 
         expect(go_stdout).to include("PROTOCOL.md §1.1(b)")
         expect(go_stdout).to include("PROTOCOL.md §1.1(a)")
         expect(go_stdout).to include("PROTOCOL.md §1.1(c)")
-
-        expect(go_stdout).not_to eq(ruby_stdout)
       end
     end
 
@@ -1546,7 +1496,10 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-verdict.json") }
 
       def both_ways
-        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
+        # SPGD-867: the Ruby arm is gone; the helper keeps its arity for the
+        # untouched destructure sites, which now compare the backend to itself.
+        run = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+        [run, run]
       end
 
       it "is running where the recorded path resolves" do
@@ -1555,17 +1508,15 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       # The whole finding in one example: the same file, the same two
       # annotations, and a different answer to "did this run pass?".
-      it "passes the run on the Ruby path and fails it on the backend" do
-        (*, ruby_code), (*, go_code) = both_ways
+      it "fails the run — §1.1(a) refuses an unpaired low surrogate" do
+        (*, _, go_code) = both_ways.first
 
-        expect(ruby_code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
       end
 
-      it "disagrees about the findings, not only about the exit code" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
+      it "names the finding, the line and the clause" do
+        (go_stdout, *, _) = both_ways.first
 
-        expect(ruby_stdout).to include("checked 2 @intent annotations, 0 malformed")
         expect(go_stdout).to include("checked 2 @intent annotations, 1 malformed")
         expect(go_stdout).to include("acceptance_set_verdict_spec.rb:39")
         expect(go_stdout).to include("PROTOCOL.md §1.1(a)")
@@ -1575,22 +1526,15 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # anything with a surrogate in it". A well-formed PAIR passes on both, so
       # the divergence is specifically about the escape being unpaired.
       it "does not fire for a well-formed surrogate pair" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
+        (go_stdout, *, _) = both_ways.first
 
-        expect(ruby_stdout).not_to include(":40")
         expect(go_stdout).not_to include(":40")
         expect(JSON.parse(recorded)["findings"].last["ok"]).to be(true)
       end
 
-      # The retire branch. When the gem's hand-rolled validation logic is
-      # removed — or taught §1.1(a) — these agree and this block goes with it.
-      it "still differs — retire this block when it stops" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
-
-        expect(go_stdout).not_to eq(ruby_stdout)
-        expect(JSON.parse(recorded)["ok"]).to be(false)
-        expect(JSON.parse(recorded)["summary"]["failed"]).to eq(1)
-      end
+      # SPGD-867 retired this block's reason for existing: the gem's
+      # hand-rolled validation logic is gone, so there is no second verdict
+      # to disagree with.
     end
 
     # ---------------------------------------------------------------------- #
@@ -1619,7 +1563,10 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       let(:recorded) { File.read("spec/fixtures/validator/acceptance-set-classification.json") }
 
       def both_ways
-        [run_cli({}), run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })]
+        # SPGD-867: the Ruby arm is gone; the helper keeps its arity for the
+        # untouched destructure sites, which now compare the backend to itself.
+        run = run_cli({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) })
+        [run, run]
       end
 
       # The same run with `--json`, so the two `kind` values can be read off the
@@ -1636,25 +1583,22 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
       # The half that AGREES, first — without it the block below reads as a
       # verdict difference, which it is not.
-      it "fails the same annotation on both, and exits 1 on both" do
-        (ruby_stdout, ruby_code), (go_stdout, go_code) = both_ways.map { |out, _, code| [out, code] }
+      it "fails the run and names the deep annotation" do
+        (go_stdout, *, go_code) = both_ways.first
 
-        expect(ruby_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
         expect(go_code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
-        expect(ruby_stdout).to include("checked 2 @intent annotations, 1 malformed")
         expect(go_stdout).to include("checked 2 @intent annotations, 1 malformed")
-        expect(ruby_stdout).to include("acceptance_set_classification_spec.rb:36")
         expect(go_stdout).to include("acceptance_set_classification_spec.rb:36")
       end
 
       # THE DIVERGENCE. The gem parsed the payload and let the SCHEMA refuse it,
       # so it renders a violation block; the binary refused it at the parse
       # step, so it renders a one-line `problem` naming the clause.
-      it "classifies it differently, and says so in the shape of the report" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
-
-        expect(ruby_stdout).to include("        -> preconditions[0]: expected type string, got array")
-        expect(ruby_stdout).not_to include("could not parse annotation")
+      # §1.1(c): the binary refuses the over-deep payload at the PARSE step,
+      # so it renders a one-line `problem` naming the clause — never a
+      # schema-violation block.
+      it "classifies it as a parse failure naming the clause" do
+        (go_stdout, *, _) = both_ways.first
 
         expect(go_stdout).to include(" — could not parse annotation: nesting is deeper than 100 levels (PROTOCOL.md §1.1(c))")
         expect(go_stdout.lines.count { |line| line.start_with?("        -> ") }).to eq(0)
@@ -1664,16 +1608,12 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # the text shapes above only imply. Both documents are produced the same
       # way — one CLI, one `--json` renderer, the backend swapped underneath —
       # so the only thing that can differ is what each parser decided.
-      it "records kind=parse on the backend where the gem reaches kind=schema" do
-        ruby_doc = JSON.parse(run_json({}))
+      it "records kind=parse in the --json document" do
         go_doc = JSON.parse(run_json({ described_class::ENV_VAR => stub_validator(stdout: recorded, exit_code: 1) }))
-
-        ruby_deep = ruby_doc["findings"].find { |f| f["ok"] == false }
         go_deep = go_doc["findings"].find { |f| f["ok"] == false }
 
-        expect(ruby_deep["line"]).to eq(go_deep["line"])
-        expect(ruby_deep["kind"]).to eq("schema")
         expect(go_deep["kind"]).to eq("parse")
+        expect(go_deep["line"]).to eq(36)
       end
 
       # Non-vacuity: the payload has to be one Ruby genuinely ACCEPTS. One level
@@ -1689,12 +1629,8 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(JSON.parse(payload)["preconditions"]).to be_an(Array)
       end
 
-      # The retire branch, as above: when the gem's parser goes, so does this.
-      it "still differs — retire this block when it stops" do
-        (ruby_stdout, *), (go_stdout, *) = both_ways
-
-        expect(go_stdout).not_to eq(ruby_stdout)
-      end
+      # SPGD-867 retired this block's reason for existing: the gem's parser
+      # is gone, so there is no second classification to differ from.
     end
   end
 
@@ -2108,30 +2044,23 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     end
 
     # ---------------------------------------------------------------------- #
-    # THE ARM THAT IS EASY TO FORGET. A line that appeared only when the backend
-    # was on would make its absence mean either "validated in Ruby" or "a gem
-    # from before this line existed" — which is not an answer, and the default
-    # configuration is the one nearly every run uses.
-    describe "the line, with the backend off" do
-      it "states positively that the Ruby path produced the verdicts" do
+    # SPGD-867: the "off" arm is gone — there is nothing to turn off. What the
+    # default configuration now prints is the line naming the binary the
+    # INSTALLER resolved, so unset and blank are the same configuration and
+    # say the same thing.
+    describe "the line, with the variable unset or blank" do
+      before do
+        allow(described_class::Installer).to receive(:obtain).and_return(stub_validator)
+      end
+
+      it "names the installer-resolved binary" do
         expect(provenance_of({}))
-          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)")
+          .to start_with("specguard-lint: validated by #{stub_identity} at #{stub_validator} (SPECGUARD_VALIDATE_INTENT)")
       end
 
-      # Criterion 5. ValidatorBackend.resolve deliberately collapses unset and
-      # blank — `SPECGUARD_VALIDATE_INTENT=` in a CI environment file is
-      # somebody turning the backend OFF — and returns nil for both, so this
-      # distinction cannot come from the backend and is read from the
-      # environment. Somebody who set the variable and got the Ruby path anyway
-      # needs to see that the VALUE, not the wiring, is why.
-      it "distinguishes a blank value from an unset one" do
+      it "treats a blank value as unset, matching .resolve" do
         expect(provenance_of({ described_class::ENV_VAR => "" }))
-          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)")
-      end
-
-      it "treats a whitespace-only value as blank, matching .resolve" do
-        expect(provenance_of({ described_class::ENV_VAR => "   " }))
-          .to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)")
+          .to eq(provenance_of({ described_class::ENV_VAR => "   " }))
       end
 
       it "prints exactly one such line per run" do
@@ -2140,15 +2069,13 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
         expect(provenance_lines(stderr).length).to eq(1)
       end
 
-      # Criterion 2 from the other side: the wording of the off arm's line is
-      # the only thing that moves between an unset and a blank variable.
       it "leaves stdout and the exit code identical either way" do
         unset = run_cli({})
         blank = run_cli({ described_class::ENV_VAR => "" })
 
         expect(blank[0]).to eq(unset[0])
         expect(blank[2]).to eq(unset[2])
-        expect(blank[1]).not_to eq(unset[1])
+        expect(blank[1]).to eq(unset[1])
       end
 
       it "goes on stderr, leaving stdout untouched" do
@@ -2163,15 +2090,15 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
     # its validator is the state this slice exists to remove, so the sweep is
     # over every arm at once rather than one assertion per arm.
     it "states which implementation validated the run, on every arm" do
+      allow(described_class::Installer).to receive(:obtain).and_return(clean_stub(name: "installed"))
       envs = [{},
-              { described_class::ENV_VAR => "" },
               { described_class::ENV_VAR => clean_stub(name: "identified") },
               { described_class::ENV_VAR => clean_stub(name: "anonymous", version_stdout: "", version_exit: 1) }]
 
       lines = envs.map { |env| provenance_of(env) }
 
       expect(lines).to all(be_a(String))
-      expect(lines.uniq.length).to eq(4)
+      expect(lines.uniq.length).to eq(3)
     end
   end
 
@@ -2974,10 +2901,16 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
       # The default configuration, and the one nearly every run uses. A probe
       # that ran with the backend off would be a process per run spent on a
       # binary nobody named.
-      it "does not run at all with the backend off" do
-        expect(described_class.resolve(env: {})).to be_nil
-        expect(run_cli({})[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-        expect(all_invocations).to be_empty
+      # SPGD-867: there is no "backend off" configuration any more. The probe
+      # cost rule that survives is the one above — once per RESOLVED backend —
+      # and a resolution failure never reaches the probe at all.
+      it "does not run when resolution fails" do
+        allow(described_class::Installer).to receive(:obtain)
+          .and_raise(SpecGuard::RSpec::ValidatorError, "could not obtain validate-intent")
+
+        expect { described_class.resolve(env: {}) }
+          .to raise_error(SpecGuard::RSpec::ValidatorError)
+        expect(schema_source_probes).to be_empty
       end
     end
 
@@ -3114,152 +3047,164 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # ------------------------------------------------------------------------ #
-  # `--require-validator`: making the provenance line ACTIONABLE.
-  #
-  # The line above says which implementation ran. Nothing could act on it — it
-  # is stderr prose, and there was no flag, variable or exit code with which a
-  # caller could say "I asked for the binary; fail if I did not get it."
-  #
-  # The named-but-broken cases were never the gap: `SPECGUARD_VALIDATE_INTENT`
-  # pointing at a missing or unusable binary already raises out of #verify! and
-  # exits 2. The gap is the variable that never arrived at all — a mistyped
-  # name, a conditional CI step that did not run, an unloaded environment file.
-  # The run then passes, validated by the OTHER implementation, and looks
-  # exactly like the run that was asked for.
-  #
-  # And the two implementations are not interchangeable on every input: their
-  # JSON parsers accept different languages, so on a documented input class the
-  # two backends disagree on the EXIT CODE with nothing in the report to say so.
-  # A gate whose failure states are indistinguishable — for the third time.
-  describe "--require-validator" do
+  # ------------------------------------------------------------------------ #
+  # SPGD-867: `--require-validator` is GONE, because its assertion is now the
+  # DEFAULT. A run that cannot resolve a validator exits 2 outright — there is
+  # no Ruby path to silently fall back to, which was the exact hole the flag
+  # existed to guard. What this block pins is the always-on form of that gate.
+  describe "resolution as the always-on gate" do
     let(:paths) { %w[spec/fixtures/order_spec.rb] }
 
-    # ---------------------------------------------------------------------- #
-    # THE CASE THAT DID NOT EXIST BEFORE. Exit 2, not 1: "the linter could not
-    # do its job" is the band a named-but-missing binary already lands in, and
-    # a 1 would report a malformed annotation that nobody wrote.
-    describe "when the backend did not run" do
-      it "exits 2 with an unset variable" do
-        _, _, code = run_cli({}, ["--require-validator", *paths])
+    it "refuses the retired flag as an unknown option" do
+      _, stderr, code = run_cli({}, ["--require-validator", *paths])
 
-        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
-      end
-
-      it "names the variable and says it is unset" do
-        _, stderr, = run_cli({}, ["--require-validator", *paths])
-
-        expect(error_lines(stderr))
-          .to eq(["specguard-lint: error: --require-validator was given, but " \
-                  "SPECGUARD_VALIDATE_INTENT is unset, so this run would have been validated in Ruby"])
-      end
-
-      # Asking for the binary and turning it off in the same breath is a
-      # contradiction, and a contradiction resolved in the caller's favour
-      # silently is the whole defect. So it is a 2, and it says which of the two
-      # nil causes happened rather than collapsing them the way .resolve does.
-      it "exits 2 on a blank value too, in the provenance line's own words" do
-        stdout, stderr, code = run_cli({ described_class::ENV_VAR => "" }, ["--require-validator", *paths])
-
-        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
-        expect(error_lines(stderr))
-          .to eq(["specguard-lint: error: --require-validator was given, but " \
-                  "SPECGUARD_VALIDATE_INTENT is set but blank, which means off, " \
-                  "so this run would have been validated in Ruby"])
-        expect(stdout).to be_empty
-      end
-
-      it "treats a whitespace-only value as blank, matching .resolve" do
-        _, stderr, code = run_cli({ described_class::ENV_VAR => "   " }, ["--require-validator", *paths])
-
-        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
-        expect(stderr).to include("is set but blank, which means off")
-      end
-
-      # The two sentences describe the same two states, so they must use the
-      # same two words. Asserted by construction rather than by eye: the
-      # parenthetical of the provenance line is a substring of the failure.
-      it "reuses the provenance line's vocabulary verbatim" do
-        [{}, { described_class::ENV_VAR => "" }].each do |env|
-          _, stderr, = run_cli(env, ["--require-validator", *paths])
-          reason = provenance_lines(stderr).first[/validated in Ruby \((.*)\)\z/, 1]
-
-          expect(reason).not_to be_nil
-          expect(error_lines(stderr).first).to include(reason)
-        end
-      end
-
-      # Placement. The provenance line still comes first — stderr carries what
-      # DID validate the run before the reason that was not good enough — and
-      # the raise sits before selection, so nothing is selected, scanned or
-      # reported. A refusal that still printed "checked 1 @intent annotation"
-      # would be a verdict from the implementation the caller just refused.
-      it "reports the provenance first, then refuses" do
-        _, stderr, = run_cli({}, ["--require-validator", *paths])
-
-        expect(stderr.lines.first).to eq("specguard-lint: validated in Ruby " \
-                                         "(SPECGUARD_VALIDATE_INTENT is unset)\n")
-        expect(stderr.lines.last).to start_with("specguard-lint: error: ")
-      end
-
-      it "selects, scans and reports nothing" do
-        stdout, stderr, = run_cli({}, ["--require-validator", *paths])
-
-        expect(stdout).to be_empty
-        expect(stderr).not_to include("checked")
-        expect(stderr).not_to include("selected")
-      end
-
-      # It is a refusal by the linter, not a verdict about anyone's
-      # annotations, and not a crash either.
-      it "does not reach the malformed-annotation code or the internal backstop" do
-        _, stderr, code = run_cli({}, ["--require-validator", *paths])
-
-        expect(code).not_to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
-        expect(stderr).not_to include("internal error")
-      end
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      expect(error_lines(stderr).first).to include("invalid option")
     end
 
-    # ---------------------------------------------------------------------- #
-    # THE ASSERTION THAT HOLDS COSTS NOTHING. The flag is an assertion about the
-    # configuration, so on the configuration it asserts, it must be invisible.
-    describe "when the backend did run" do
-      it "changes nothing about a run the binary validated" do
-        stub = clean_stub
-        without = run_cli({ described_class::ENV_VAR => stub }, paths)
-        with = run_cli({ described_class::ENV_VAR => stub }, ["--require-validator", *paths])
+    it "exits 2 when no binary can be obtained, not 1 and not a crash" do
+      allow(described_class::Installer).to receive(:obtain)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "could not obtain validate-intent: no network")
+      _, stderr, code = run_cli({}, paths)
 
-        expect(with).to eq(without)
-      end
-
-      it "is satisfied by a binary that cannot report its identity" do
-        stub = clean_stub(version_stdout: "", version_exit: 1)
-        _, stderr, code = run_cli({ described_class::ENV_VAR => stub }, ["--require-validator", *paths])
-
-        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-        expect(error_lines(stderr)).to be_empty
-      end
-
-      # The flag adds no failure mode of its own to the named-but-broken case:
-      # that was already a hard 2 out of #verify!, and it still is, with its own
-      # message rather than this one.
-      it "leaves a named-but-unusable binary failing for its own reason" do
-        missing = File.join(tmpdir, "not-there")
-        _, with_flag, code = run_cli({ described_class::ENV_VAR => missing }, ["--require-validator", *paths])
-        _, without_flag, = run_cli({ described_class::ENV_VAR => missing }, paths)
-
-        expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
-        expect(with_flag).to eq(without_flag)
-        expect(with_flag).not_to include("--require-validator")
-      end
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      expect(code).not_to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+      expect(stderr).not_to include("internal error")
     end
 
-    # ---------------------------------------------------------------------- #
-    # WITHOUT THE FLAG, NOTHING MOVED. The backend stays opt-in and off by
-    # default — the binary is a gitignored build artifact with no release, so
-    # default-on would turn every existing user's working linter into an error.
-    it "is off unless asked for" do
-      expect(run_cli({}, paths)[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-      expect(run_cli({ described_class::ENV_VAR => "" }, paths)[2]).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
+    # BOTH remediations, in the message, so the first run without network is
+    # actionable from the CI log alone.
+    it "names the env var and the install.sh alternative" do
+      allow(described_class::Installer).to receive(:obtain)
+        .and_raise(SpecGuard::RSpec::ValidatorError, described_class::Installer::REMEDIATIONS)
+      _, stderr, = run_cli({}, paths)
+
+      expect(error_lines(stderr).first).to include("SPECGUARD_VALIDATE_INTENT")
+      expect(error_lines(stderr).first).to include("install.sh")
+    end
+
+    it "selects, scans and reports nothing" do
+      allow(described_class::Installer).to receive(:obtain)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "could not obtain validate-intent")
+      stdout, stderr, = run_cli({}, paths)
+
+      expect(stdout).to be_empty
+      expect(stderr).not_to include("checked")
+      expect(stderr).not_to include("selected")
+    end
+
+    # A named-but-unusable binary keeps failing for its own reason out of
+    # #verify! — the gate did not change that arm.
+    it "leaves a named-but-unusable binary failing for its own reason" do
+      missing = File.join(tmpdir, "not-there")
+      _, stderr, code = run_cli({ described_class::ENV_VAR => missing }, paths)
+
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
+      expect(error_lines(stderr).first).to include("does not exist")
     end
   end
+  # ------------------------------------------------------------------------ #
+  # SPGD-867: the first-run installer. Nothing here touches the network —
+  # `download` is stubbed at the module boundary, which is the seam the
+  # production code itself owns (Net::HTTP behind one method). What is pinned
+  # is the CONTRACT: platform mapping, cache reuse, SHA256SUMS verification,
+  # atomic install, and the exit-2 refusal naming both remediations.
+  describe SpecGuard::RSpec::ValidatorBackend::Installer do
+    subject(:installer) { described_class }
+
+    let(:cache_root) { File.join(tmpdir, "cache") }
+    let(:env) { { installer::CACHE_DIR_VAR => cache_root } }
+    let(:asset) { "validate-intent-linux-amd64" }
+    let(:bytes) { "#!/bin/sh\nfake binary\n" }
+    let(:digest) { Digest::SHA256.hexdigest(bytes) }
+    let(:manifest) { "#{digest}  #{asset}\n" }
+
+    def stub_download_with(manifest_text: manifest, asset_bytes: bytes)
+      allow(installer).to receive(:download) do |url|
+        next manifest_text if url.end_with?("SHA256SUMS")
+        next asset_bytes if url.end_with?(asset)
+
+        raise "unexpected fetch: #{url}"
+      end
+    end
+
+    describe ".asset_name" do
+      it "maps the published platforms" do
+        expect(installer.asset_name(platform: "x86_64-linux")).to eq("validate-intent-linux-amd64")
+        expect(installer.asset_name(platform: "aarch64-linux")).to eq("validate-intent-linux-arm64")
+        expect(installer.asset_name(platform: "x86_64-darwin22")).to eq("validate-intent-darwin-amd64")
+        expect(installer.asset_name(platform: "arm64-darwin23")).to eq("validate-intent-darwin-arm64")
+      end
+
+      it "refuses an unsupported platform, naming both remediations" do
+        expect { installer.asset_name(platform: "x86_64-freebsd") }
+          .to raise_error(SpecGuard::RSpec::ValidatorError, /freebsd.*SPECGUARD_VALIDATE_INTENT.*install\.sh/m)
+      end
+    end
+
+    describe ".cache_dir" do
+      it "honours SPECGUARD_CACHE_DIR" do
+        expect(installer.cache_dir(env)).to end_with("specguard-rspec/validate-intent/#{installer::RELEASE_TAG}")
+      end
+
+      it "falls back to XDG_CACHE_HOME when the override is unset" do
+        expect(installer.cache_dir({ "XDG_CACHE_HOME" => File.join(tmpdir, "xdg") }))
+          .to end_with("xdg/specguard-rspec/validate-intent/#{installer::RELEASE_TAG}")
+      end
+    end
+
+    describe ".obtain" do
+      it "downloads, verifies against SHA256SUMS, and installs an executable binary" do
+        stub_download_with
+
+        path = installer.obtain(env: env)
+
+        expect(path).to eq(File.join(cache_root, "specguard-rspec", "validate-intent", installer::RELEASE_TAG, asset))
+        expect(File.file?(path)).to be(true)
+        expect(File.executable?(path)).to be(true)
+        expect(File.binread(path)).to eq(bytes)
+      end
+
+      it "downloads once — the second obtain is served from the cache" do
+        stub_download_with
+        installer.obtain(env: env)
+        allow(installer).to receive(:download).and_raise("must not be called again")
+
+        expect(installer.obtain(env: env)).to eq(installer.cache_dir(env) + "/" + asset)
+      end
+
+      it "leaves nothing behind when the digest does not match the manifest" do
+        stub_download_with(manifest_text: "#{Digest::SHA256.hexdigest("other")}  #{asset}\n")
+
+        expect { installer.obtain(env: env) }
+          .to raise_error(SpecGuard::RSpec::ValidatorError, /has sha256:.*but the release manifest says/)
+        expect(Dir[File.join(cache_root, "**", "*")]).to be_empty
+      end
+
+      it "refuses a manifest that does not describe the asset" do
+        stub_download_with(manifest_text: "#{digest}  some-other-asset\n")
+
+        expect { installer.obtain(env: env) }
+          .to raise_error(SpecGuard::RSpec::ValidatorError, /does not describe/)
+      end
+
+      it "wraps a network failure in the exit-2 refusal with both remediations" do
+        allow(installer).to receive(:download).and_raise(SocketError, "no network")
+
+        expect { installer.obtain(env: env) }
+          .to raise_error(SpecGuard::RSpec::ValidatorError,
+                          /could not obtain validate-intent.*SocketError.*SPECGUARD_VALIDATE_INTENT.*install\.sh/m)
+      end
+
+      it "does not install over an HTTP error" do
+        allow(installer).to receive(:download)
+          .and_raise(SpecGuard::RSpec::ValidatorError, "fetching #{installer::DOWNLOAD_BASE}/SHA256SUMS answered HTTP 404")
+
+        expect { installer.obtain(env: env) }.to raise_error(SpecGuard::RSpec::ValidatorError, /HTTP 404/)
+        expect(Dir[File.join(cache_root, "**", "*")]).to be_empty
+      end
+    end
+  end
+
+
 end

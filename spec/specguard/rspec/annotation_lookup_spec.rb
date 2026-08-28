@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "specguard/rspec/annotation_lookup"
+require_relative "../../support/validator_stub"
 
 # The lookback rule (SPGD-12 §2), the downgrade policy, and the cost bound.
 #
@@ -13,6 +14,17 @@ require "specguard/rspec/annotation_lookup"
 # way round.
 RSpec.describe SpecGuard::RSpec::AnnotationLookup do
   subject(:lookup) { described_class.new }
+
+  # SPGD-867: validation is the binary's job and binary resolution is
+  # default-on, so the default `lookup` resolves through the installer. The
+  # suite must not download, so obtain is stubbed to the offline replay stub,
+  # which also genuinely validates ad-hoc spec files (discovery from this gem +
+  # json_schemer as a development-only dependency). See
+  # spec/support/validator_stub.rb.
+  before do
+    allow(SpecGuard::RSpec::ValidatorBackend::Installer)
+      .to receive(:obtain).and_return(ValidatorStub.install_stubbable)
+  end
 
   attr_reader :tmpdir
 
@@ -419,49 +431,28 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       expect(runner).to have_received(:check).once
     end
 
-    it "does not consult the Ruby schema at all" do
-      with_backend([result(line: 1, intent: valid_intent)])
-      allow(SpecGuard::RSpec::Schema).to receive(:load).and_call_original
-      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
 
-      lookup.intent_for(file: path, line: 2)
-
-      expect(SpecGuard::RSpec::Schema).not_to have_received(:load)
-    end
-
-    # The other half of the ticket's non-negotiable: with the variable UNSET,
-    # nothing changes and no subprocess is started. Asserted rather than assumed
-    # — it is the behaviour every existing user has.
-    it "is not resolved at all when the variable is unset" do
-      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_call_original
+    # SPGD-867: there is no Ruby path to defer to any more, so the variable
+    # being unset now means "resolve through the installer" — and the answer
+    # still comes from the binary.
+    it "resolves through the installer when the variable is unset" do
       path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
 
       expect(described_class.new(env: {}).intent_for(file: path, line: 2)).to eq(valid_intent)
     end
 
-    # THE NON-NEGOTIABLE (ticket step 3): a backend that cannot answer falls
-    # back to the RUBY PATH, and never to nil.
-    #
-    # This example previously asserted the opposite — that the raise escapes to
-    # {Formatter}'s `never_fail_the_run` envelope. That envelope keeps the RUN
-    # alive, which is why it exists, but it does so by abandoning the example's
-    # annotation. So a single mistyped path in `SPECGUARD_VALIDATE_INTENT` shipped
-    # an ENTIRE SUITE as `unannotated` while every one of those annotations was
-    # valid and locally checkable — losing the whole run's telemetry to a
-    # misconfiguration, which is strictly worse than the state before the backend
-    # existed. An unusable binary means the backend cannot say what an annotation
-    # is; it does not mean the annotation is bad.
-    #
-    # Asserted with a REAL intent rather than `not_to raise_error`, because the
-    # latter passes just as happily if the fallback returns nil for everything —
-    # which is the failure this is about.
-    it "falls back to the Ruby path when the configured binary is unusable" do
+    # SPGD-867, and the shape of the cutover: there is no Ruby path left to
+    # fall back to, so a backend that cannot answer means the annotation ships
+    # `unannotated` — the same answer this class gives for anything it could
+    # not verify. The never-block-CI contract forbids anything louder from the
+    # formatter; the LINTER is the loud half, and it exits 2 outright.
+    it "answers unannotated when the configured binary is unusable" do
       allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
         .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
       path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\n# @intent: #{valid_annotation}\nit 'b' do\n")
 
-      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
-      expect(lookup.intent_for(file: path, line: 4)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 2)).to be_nil
+      expect(lookup.intent_for(file: path, line: 4)).to be_nil
     end
 
     # ...and it probes ONCE. The resolve is a subprocess, so re-probing per
@@ -478,16 +469,16 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       expect(SpecGuard::RSpec::ValidatorBackend).to have_received(:resolve).once
     end
 
-    # The same rule one layer in: a backend that resolved and then died MID-RUN
-    # has still told us nothing about the annotation, so the file falls back
-    # rather than costing every annotation in it its payload.
-    it "falls back to the Ruby path when the backend dies mid-run" do
+    # The same rule one layer in: a backend that resolved and then died
+    # MID-RUN has still told us nothing about the annotation, so the file
+    # answers unannotated rather than costing the run its telemetry.
+    it "answers unannotated when the backend dies mid-run" do
       runner = instance_double(SpecGuard::RSpec::ValidatorBackend::Runner)
       allow(runner).to receive(:check).and_raise(SpecGuard::RSpec::ValidatorError, "died")
       allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_return(runner)
       path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
 
-      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 2)).to be_nil
     end
 
     # An unreadable file is answered without starting a subprocess: the read
@@ -560,48 +551,19 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       expect(counts[second]).to eq(1)
     end
 
-    it "scans each spec file once" do
-      allow(SpecGuard::RSpec::Scanner).to receive(:scan_text).and_call_original
+    # SPGD-867: on the backend path the LINES come from the backend's report
+    # and `Scanner.scan_text` runs only when the backend could not answer, so
+    # the local cost bound is the FILE READ the comment-form rule needs.
+    it "reads each spec file once" do
+      counts = read_counts
       path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\nit 'b' do\n")
 
       3.times { |i| lookup.intent_for(file: path, line: i + 1) }
 
-      expect(SpecGuard::RSpec::Scanner).to have_received(:scan_text).with(anything, file: path).once
+      expect(counts[path]).to eq(1)
     end
 
-    # The schema is a JSON document that has to be read, parsed and compiled.
-    # Doing that per annotation would be a second O(examples) cost hiding behind
-    # the one this class exists to remove.
-    it "loads the schema once for the whole run" do
-      counts = read_counts
-      path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\nit 'b' do\n")
 
-      2.times { |i| lookup.intent_for(file: path, line: i + 2) }
-
-      expect(counts[SpecGuard::RSpec::SCHEMA_PATH]).to eq(1)
-    end
-
-    # Compiling an intent against the schema is json_schemer work, and a suite
-    # repeats annotations — the same `@intent` on twenty examples of the same
-    # behavior is normal. Validating per *example* would be a second O(examples)
-    # cost hiding behind the one the index removes.
-    it "validates a repeated annotation once, not once per example carrying it" do
-      real = SpecGuard::RSpec::Schema.load
-      counting = instance_double(SpecGuard::RSpec::Schema)
-      allow(counting).to receive(:violations) { |intent| real.violations(intent) }
-      allow(SpecGuard::RSpec::Schema).to receive(:load).and_return(counting)
-
-      path = write_spec(<<~RUBY)
-        # @intent: #{valid_annotation}
-        it "a" do
-        # @intent: #{valid_annotation}
-        it "b" do
-      RUBY
-
-      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
-      expect(lookup.intent_for(file: path, line: 4)).to eq(valid_intent)
-      expect(counting).to have_received(:violations).once
-    end
   end
 
   # Nothing here is rescued on purpose: the formatter wraps every call in its
@@ -622,37 +584,28 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
       RUBY
     end
 
-    def unloadable_schema
-      described_class.new(schema_path: File.join(tmpdir, "no-such-schema.json"))
+    def unresolvable_backend
+      described_class.new(env: { "SPECGUARD_VALIDATE_INTENT" => File.join(tmpdir, "no-such-binary") })
     end
 
-    it "raises a SchemaError once when the vendored schema cannot be loaded" do
-      broken = unloadable_schema
+    # SPGD-867: the Ruby schema load this block used to pin is gone. What
+    # survives is its shape: a lookup that cannot obtain verdicts answers
+    # `unannotated` — never a raise, never a silent ship — and the formatter's
+    # envelope stays out of it.
+    it "answers unannotated when no validator can be resolved" do
+      broken = unresolvable_backend
       path = two_annotated_examples
 
-      expect { broken.intent_for(file: path, line: 2) }.to raise_error(SpecGuard::RSpec::SchemaError)
-      expect { broken.intent_for(file: path, line: 4) }.not_to raise_error
-    end
-
-    # The half that matters to the platform: an annotation nothing could
-    # validate is not shipped on trust. `Ingest::Payload` re-checks every intent
-    # against the same schema and rejects the **whole run** over one failure, so
-    # "we could not check it" and "it is fine" are not interchangeable — that
-    # substitution is this project's signature vacuous green (KB SPGD-78).
-    it "reports annotations as unannotated once the schema is known to be unloadable" do
-      broken = unloadable_schema
-      path = two_annotated_examples
-
-      begin
-        broken.intent_for(file: path, line: 2)
-      rescue SpecGuard::RSpec::SchemaError
-        nil
-      end
-
+      expect(broken.intent_for(file: path, line: 2)).to be_nil
       expect(broken.intent_for(file: path, line: 4)).to be_nil
     end
 
+    # The unverified path (backend unusable) is the one that scans locally,
+    # so the blow-up lands there — and the pessimistic index cache keeps
+    # "warns once" meaning "scans once".
     it "does not rescan a file whose scan blew up" do
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
       allow(SpecGuard::RSpec::Scanner).to receive(:scan_text).and_raise(NotImplementedError, "nope")
       path = write_spec("it 'a' do\nit 'b' do\n")
 

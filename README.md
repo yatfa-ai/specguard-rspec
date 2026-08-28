@@ -30,15 +30,14 @@ bundle exec specguard-lint             # one-off audit: every *_spec.rb
 Files are **positional** (`specguard-lint spec/order_spec.rb`); there is no `--source` flag —
 that belongs to `validate-intent`, not to this one.
 
-The linter is an independent implementation of the same protocol — written against
-[`PROTOCOL.md`](https://github.com/yatfa-ai/open-test-intent/blob/main/PROTOCOL.md) and the
-canonical schema, which are what decide whether an annotation is valid. Its agreement with
-`validate-intent` is checked by replaying that tool's own recorded reports through this CLI and
-comparing findings, ordering and exit codes, in
-`spec/specguard/rspec/validator_backend_spec.rb`. A handful of differences are ratified as such
-there, each with its reason and each asserted to *still* differ; everything else matches byte for
-byte. They are the same ones described under the backend below — two read failures, a
-parse-failure message, and one that is not about wording at all.
+The linter is a thin CLI over the [`validate-intent`](https://github.com/yatfa-ai/open-test-intent)
+binary — the protocol's own reference implementation, which decides whether an annotation is valid
+against [`PROTOCOL.md`](https://github.com/yatfa-ai/open-test-intent/blob/main/PROTOCOL.md) and the
+canonical schema compiled into it. Since SPGD-867 that is the only validator: the gem selects the
+files, resolves the binary, renders the report and owns the 0/1/2 exit contract, and the verdicts
+are the binary's. Its rendering is checked by replaying that tool's own recorded reports through
+this CLI in `spec/specguard/rspec/validator_backend_spec.rb` — findings, ordering and exit codes,
+byte for byte.
 
 ### Machine-readable output (`--json`)
 
@@ -117,90 +116,61 @@ Three things worth knowing:
   way in `spec/specguard/rspec/exit_contract_spec.rb` and
   `spec/specguard/rspec/regression_targets_spec.rb`.
 - **A run that could not produce verdicts emits no document.** Bad flags, `--changed` outside a
-  repository, an unloadable schema, an unmet `--require-validator` — all still exit `2` with prose
-  on stderr. Those runs checked nothing, and `{"ok": false, "findings": []}` is exactly how a
+  repository, a validator that could not be resolved — all still exit `2` with prose on stderr. Those runs checked nothing, and `{"ok": false, "findings": []}` is exactly how a
   gate that checked nothing gets mistaken for one that found nothing.
 - **The provenance line stays on stderr** and is deliberately *not* duplicated into the document
   (see below). Redirect `2>` to keep it; stdout is the document and nothing else.
 
-### Optional: the Go validator as a backend
+### The validator: `validate-intent`, resolved on every run
 
-Set `SPECGUARD_VALIDATE_INTENT` to a `validate-intent` binary and `specguard-lint` will hand the
-selected files to it (`--source --json`) instead of validating them in Ruby, then render the same
-report from its findings:
+`specguard-lint` validates through the Go `validate-intent` binary and **only** through it — the
+Ruby hand-rolled validation path was removed at SPGD-867, completing the SPGD-96 cutover. The
+formatter's annotation half asks the same binary the linter does, so what CI ratified and what the
+platform receives come from one implementation.
+
+**Resolution order** (in `ValidatorBackend.resolve`):
+
+1. `SPECGUARD_VALIDATE_INTENT` names a binary → that one, verified before anything is selected or
+   checked. A blank value counts as unset.
+2. Otherwise → the platform-matched prebuilt binary from open-test-intent's GitHub release
+   (`v0.1.3`: `validate-intent-{linux,darwin}-{amd64,arm64}`, static, schema compiled in), fetched
+   on first run, verified against the release's `SHA256SUMS` manifest, installed atomically under
+   the user cache dir, and reused from there afterwards. Redirect the cache with
+   `SPECGUARD_CACHE_DIR` (XDG_CACHE_HOME is honoured too).
+
+**When no binary can be resolved** — first run with no network, an unsupported platform — the run
+exits `2` with a message naming **both** remediations, before anything is selected or checked:
+
+```
+specguard-lint: error: could not obtain validate-intent from https://github.com/yatfa-ai/open-test-intent/releases/download/v0.1.3: ... ; set SPECGUARD_VALIDATE_INTENT to a validate-intent binary, or install one with: curl -fsSL https://raw.githubusercontent.com/yatfa-ai/open-test-intent/v0.1.3/scripts/install.sh | sh
+```
+
+It never falls back to Ruby, because there is no Ruby validation left to fall back to — that is the
+cutover. `--require-validator` is gone with the same stroke: its assertion ("fail unless the binary
+actually ran") is now the always-on failure mode, so passing the retired flag is an ordinary usage
+error (exit `2`, `invalid option`).
+
+**CI without network access** should pin the install explicitly with open-test-intent's own
+`install.sh` (the same verified release artifact) and point the env var at the result:
 
 ```bash
-SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed
+curl -fsSL https://raw.githubusercontent.com/yatfa-ai/open-test-intent/v0.1.3/scripts/install.sh | sh
+SPECGUARD_VALIDATE_INTENT="$(command -v validate-intent)" bundle exec specguard-lint --changed
 ```
 
-**Off by default.** The binary is not shipped with this gem and is not
-published anywhere yet, so the Ruby path stays the default and stays supported — this is for people
-who already build or vendor the validator and would rather run one implementation than two. A blank
-value counts as unset.
+#### Every run says which validator ran
 
-Naming a binary that is missing or unusable is already a hard failure (exit `2`) rather than a quiet
-fall back to Ruby. What is *not* caught by that is never naming one at all — see
-`--require-validator` below.
-
-#### `--require-validator` — assert that the binary actually ran
-
-```bash
-SPECGUARD_VALIDATE_INTENT=/path/to/validate-intent bundle exec specguard-lint --changed --require-validator
-```
-
-Exits `2` unless `SPECGUARD_VALIDATE_INTENT` named a usable binary, before any file is selected or
-checked:
-
-```
-specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
-specguard-lint: error: --require-validator was given, but SPECGUARD_VALIDATE_INTENT is unset, so this run would have been validated in Ruby
-```
-
-Without the flag nothing changes: the backend stays opt-in, and a run with the variable unset is
-byte-identical to what it always was.
-
-The case this exists for is the one the exit code alone cannot show you: a mistyped variable name, a
-conditional CI step that did not run, an environment file that was not loaded. The run *succeeds* —
-validated by the other implementation — and the only trace is a line on stderr that nothing reads.
-That is not "same answer, different engine": the two backends' JSON parsers do not accept the same
-language (see "The difference that is not about wording", below), so on a payload one accepts and
-the other rejects **the two exit codes disagree**, and a report with no findings is exactly what a
-clean run looks like.
-
-It is a flag rather than a second environment variable on purpose. `SPECGUARD_VALIDATE_INTENT_REQURED=1`
-would be silently no assertion at all — the same bug one level up. A mistyped `--requre-validator`
-cannot fail open; it exits `2`.
-
-`--require-validator --help` and `--require-validator --version` still exit `0`. The flag asserts
-something about a run, and neither of those is one.
-
-#### Every run says which implementation validated it
-
-Because the two backends produce the same report, the report alone cannot tell you which one ran.
-So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
+`specguard-lint` states it, in one line on **stderr**, on every run:
 
 ```
 specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:3760d8f7… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, loaded from /usr/local/schemas/open-test-intent.v1.json
-specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
-specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
-
-The two "validated in Ruby" wordings are the same two `--require-validator` reports its refusal
-with, so one vocabulary describes both. The clause after the backend line is the schema-contract
-comparison — see "Which schema the run enforces", below.
-
-The `schema sha256:` token in the first line is elided above only to fit; it prints in full, and it
-is part of the binary's own `--version` answer rather than something `specguard-lint` appends. A
-backend line *without* that token is a different band, and is worded differently.
 
 Three things worth knowing about it:
 
 * **stdout is untouched.** The line is on stderr, beside the other diagnostics about the linter
-  itself, so the findings and the two `checked …` lines are still byte-identical across the two
-  backends and still safe to pipe. Under `--json` it stays exactly where it is and is **not**
-  copied into the document: that would be the first key by which this gem's document differs from
-  the port's, and it would give provenance two homes that can disagree about one fact — the hole
-  this line was added to close, not to widen.
+  itself, so the findings and the two `checked …` lines stay safe to pipe. Under `--json` it stays
+  exactly where it is and is **not** copied into the document.
 * **The identity is the binary's own.** It comes from `<binary> --version`, asked once per run
   before any file is selected, and is passed through verbatim rather than reworded — that is the
   only thing that can tell two builds of the validator apart.
@@ -227,10 +197,9 @@ loader and reports the origin and digest of the bytes a verdict run would enforc
 
 This is the one thing about the pair that neither half can check by itself. Both sides already pin
 their own schema against their own tree, and both stay green while disagreeing with each other: the
-gem is installed from RubyGems, the binary is built or fetched by version separately, and nothing
+gem is installed from RubyGems, the binary is resolved or fetched by version separately, and nothing
 ties the two vintages together. What that produces is a run that succeeds under a contract other
-than the one this gem ships — and on the backend path the gem never loads its own schema at all, so
-no finding, count or exit code downstream can reflect the difference.
+than the one this gem ships.
 
 **The run enforces the schema this gem vendors.** It proceeds, and the line names where that schema
 came from — an absolute path when a file beside the binary won, or `<embedded schema>` when the
@@ -250,16 +219,7 @@ Both digests are printed in full (elided above only to fit), because one of them
 binary and the other inside an installed gem and neither is inspectable from where the other lives.
 The origin is there because it says *which half to move*: a stale `<embedded schema>` is fixed by
 rebuilding or reinstalling the binary, and a path on this host by replacing or deleting that file.
-The version string is there for the question that follows immediately — *which build is this* —
-since on this path the provenance line above never prints. Note the identity in the example above
-carries the digest the gem vendors: a binary can be built against the right schema and still enforce
-the wrong one, which is exactly the case this comparison exists to catch.
-
-This is a new way for a run to fail, and it can fail a job that was green yesterday without
-anything in your repository changing: upgrading the gem or the binary, or dropping a schema file
-beside the binary, is enough. That is the intended behaviour, and it is the same judgement
-`--require-validator` makes one level up — a verdict produced under a contract this gem does not
-ship is one it declines to launder. To fix it, move whichever half is stale so the two agree.
+To fix a divergence, move whichever half is stale so the two agree.
 
 **The binary is too old to be asked.** `--schema-source` arrived in a later slice of the validator;
 an older build reads it as a filename and exits 1, and a schema that exists beside the binary and
@@ -276,88 +236,21 @@ specguard-lint: validated by validate-intent 1.2.0 (…) at /path/to/validate-in
 provenance line says which kind of "could not check" it was, in its own words:
 
 * `…, which reports no schema digest, so the contract it carries could not be checked` — a build
-  older than the slice that added the token. The rule that an older binary must not cost you a
-  verdict is unchanged here.
+  older than the slice that added the token.
 * `…, which could not report its identity, so the schema contract it carries could not be checked` —
   a build too old to answer `--version` at all.
 * `…, whose schema contract could not be checked: this gem could not read its own vendored copy` —
-  the gem's own installation is missing or unreadable. This is not fatal *on this path* on purpose:
-  the backend run does not otherwise read that file, and a missing operand is an unanswered
-  question, not a disagreement. (On the Ruby path the same file being unreadable is still exit `2`,
-  because there it is the contract the run is about to enforce.)
+  the gem's own installation is missing or unreadable. Not fatal on purpose: the binary's run does
+  not otherwise read that file, and a missing operand is an unanswered question, not a
+  disagreement.
 
-"Could not check" and "checked and clean" are different statements, so they are worded differently
-rather than both reading as silence.
+#### Read-failure wording
 
-What the backend does *not* change: the selection, the report format, or the summary-line format.
-What it *can* change is narrower than an earlier version of this section claimed, and the difference
-is worth stating precisely rather than reassuringly.
-
-For every payload both JSON parsers accept, the two backends agree completely: the same finding
-against the same file at the same line, the same classification, the same counts and the same exit
-code. **The messages in the table below differ in their trailing text only** — the rows *are* the
-enumeration, not a sample of it, and all four are asserted in both directions, so closing one fails
-the suite rather than leaving a stale claim here — in
-`spec/specguard/rspec/validator_backend_spec.rb`, where each row's comparison is labelled
-`ENUMERATED DIFFERENCE n of 4` under the number it carries here:
-
-| # | input | Ruby path | Go backend |
-|---|---|---|---|
-| 1 | a payload that is still not JSON after normalisation | Ruby's `JSON::ParserError` text | `expected a JSON value (line 1, column 102)` |
-| 2 | a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | `input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)` |
-| 3 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
-| 4 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
-
-The first row is the one you are most likely to actually see: `parse` is one of the three things
-the linter reports, and **every** malformed-JSON annotation renders differently under the backend.
-The Ruby path interpolates Ruby's `JSON::ParserError`; the validator has its own prose, and the
-backend passes it through unaltered rather than inventing a third spelling. `PROTOCOL.md` specifies
-the accepted JSON *language*, not the words a validator refuses in, so two spellings of one refusal
-are both conformant. Both agree on which annotation broke, and on the line and column — only the
-prose moves. The other rows are read failures and need an unreadable path to reach at all.
-
-Rows 3 and 4 share a Go column, and that is the substance of row 4 rather than a typo. The
-binary's arguments are glob *patterns* and a match is filtered to regular files, so a directory and
-a name matching nothing reach it as the same answer; the Ruby path opens the path it was given, so
-it has an errno and names which one. Ruby tells the two apart, the backend cannot, and neither
-pretends otherwise.
-
-#### The difference that is not about wording
-
-The two JSON parsers do not accept quite the same language, and the difference is now small and
-runs the *opposite* way from how it used to.
-
-`PROTOCOL.md` §1.1 states the accepted language — an RFC 8259 JSON text, with the three points that
-RFC leaves to the implementation settled explicitly. The validator refuses the non-finite literals
-(§1.1(b)), unpaired surrogate escapes (§1.1(a)) and nesting past 100 (§1.1(c)). Ruby's `JSON.parse`
-refuses or limits all three too, so on those three the two now **agree**. (They did not before: the
-validator's parser used to reproduce a foreign runtime's grammar, which the protocol had never
-specified. Removing that is what SPGD-403 did.)
-
-**What survives is this gem being the more permissive side**, in two places:
-
-1. **A lone LOW surrogate escape** (`\udc00`–`\udfff`). `JSON.parse` accepts it; §1.1(a) refuses it,
-   because a surrogate escape must form a pair. Ruby refuses only the HIGH half, which is why the
-   rule is narrower than "surrogate escapes diverge".
-2. **The nesting boundary**, which sits a little deeper here than §1.1(c)'s 100.
-
-The first one is not only a verdict difference. What `JSON.parse` returns for `"\udc00"` is a
-String whose `valid_encoding?` is **false**: it cannot be re-serialised and cannot cross the ingest
-transport, so a payload this gem calls valid is one it cannot send. That is the cost §1.1(a) exists
-to remove, and it is still paid on the Ruby path.
-
-On such a payload the backend does not word the failure differently; it *has* one where the Ruby
-path does not. And because the only surviving member lives inside a string — a slot the schema
-declares — the payload is otherwise schema-valid, so the backend **exits 1 where the Ruby path
-exits 0**. This is the one input on which the two backends disagree about whether your suite passes.
-It is enumerated and asserted from both sides in
-`spec/specguard/rspec/validator_backend_spec.rb`, along with the convergence above, so a validator
-that went back to accepting a superset of JSON fails there by name.
-
-Both are ratified rather than fixed, and the reason is scope: this gem's hand-rolled validation
-logic is slated for **removal** by the roadmap that owns the validator rather than for repair, and
-closing the gap here would change what the **default** Ruby path does, which the slice that added
-this backend deliberately holds fixed. See `Scanner#parse` for the full reasoning.
+The gem's arguments are paths; the binary's are glob patterns. A path that matches nothing —
+missing, or not a regular file — reaches the gem as the same answer the binary gives both shapes
+(`no-match`), which the CLI re-words as `could not read file: no file at this path` and folds into
+the `read` kind. The binary's own UTF-8 refusal prose (`input is not well-formed UTF-8
+(PROTOCOL.md §1.1 requires it)`) and parse-failure prose are passed through unaltered.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
@@ -1090,8 +983,11 @@ export SPECGUARD_ENDPOINT=https://specguard.internal.example.com
   `SPECGUARD_API_KEY`, which leaves the machine only as the bearer token
   described above. The other three are never sent, and there is no general
   environment capture to be caught by. (The linter is a separate program that
-  sends nothing at all; it reads one variable of its own,
-  `SPECGUARD_VALIDATE_INTENT`, documented above.)
+  sends nothing at all; it reads two variables of its own —
+  `SPECGUARD_VALIDATE_INTENT` to name a validator binary, and
+  `SPECGUARD_CACHE_DIR` to redirect its download cache — documented above. On a
+  first run with neither cache nor variable set it fetches the validator
+  binary from open-test-intent's GitHub release, over HTTPS, and nothing else.)
 - **One exception, and it is about the route rather than the contents: your
   proxy settings are read.** Sending the run goes through Ruby's `Net::HTTP`,
   which resolves a proxy from the environment the way every Ruby HTTP client

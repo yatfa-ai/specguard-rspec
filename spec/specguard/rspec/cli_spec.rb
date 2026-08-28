@@ -3,12 +3,22 @@
 require "tmpdir"
 require "fileutils"
 require "open3"
+require_relative "../../support/validator_stub"
 
 RSpec.describe SpecGuard::RSpec::CLI do
   subject(:cli) { described_class.new(stdout: stdout, stderr: stderr) }
 
   let(:stdout) { StringIO.new }
   let(:stderr) { StringIO.new }
+
+  # SPGD-867: with `SPECGUARD_VALIDATE_INTENT` unset the CLI resolves the
+  # validator through the first-run installer. The suite must not download, so
+  # resolution is stubbed to the offline replay stub — see
+  # spec/support/validator_stub.rb.
+  before do
+    allow(SpecGuard::RSpec::ValidatorBackend::Installer)
+      .to receive(:obtain).and_return(ValidatorStub.install_stubbable)
+  end
 
   def out = stdout.string
   def err = stderr.string
@@ -118,35 +128,11 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).to include("checked 7 @intent annotations, 0 malformed")
     end
 
-    # The end of the false green. A malformed `@intent:` followed on the same
-    # line by a well-formed one used to have its neighbour's payload attributed
-    # to it, so the whole run reported "checked 1 @intent annotation, 0
-    # malformed" and exited 0 — the gate reporting success having checked
-    # nothing that was actually wrong. Asserted through the CLI because the
-    # exit code is what a CI job reads; the scanner-level assertions live in
-    # annotation_scanner_spec.rb.
-    #
-    # The neighbour payload must be schema-**valid** for this example to pin
-    # anything. With an incomplete one the adopted payload fails validation on
-    # its own missing properties, so the run already exits non-zero before the
-    # fix and both the exit-code and "1 malformed" assertions hold either way —
-    # green for a reason that has nothing to do with the bound. Measured on
-    # this fixture: pre-fix "0 malformed", exit 0; post-fix "1 malformed",
-    # exit 1. All three assertions below discriminate.
-    it "fails the run on a malformed annotation that is followed by a well-formed one" do
-      code = Dir.mktmpdir do |dir|
-        path = File.join(dir, "adopted_payload_spec.rb")
-        File.write(path, %(# @intent: (entity: Order) - superseded by @intent: ) +
-                         %({ entity: "Order", action: "checkout", ) +
-                         %(behavior: "returns 402 payment required on expired card", ) +
-                         %(layer: "request" }\n))
-        cli.run([path])
-      end
-
-      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
-      expect(out).to include("checked 1 @intent annotation, 1 malformed")
-      expect(out).to include("no '{...}' object literal")
-    end
+    # REMOVED at SPGD-867: the adopted-payload regression (SPGD-512) used to
+    # be pinned here through a hand-written temp file on the Ruby path. The CLI
+    # validates through the binary now, so the exit-code half of that pin is
+    # owned by the binary's own suite; the scanner-bound half — the part this
+    # gem still owns — stays pinned in annotation_scanner_spec.rb.
   end
 
   describe "options" do
@@ -167,38 +153,13 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).not_to include("checked")
     end
 
-    # `--require-validator` asserts that the Go backend produced this run's
-    # verdicts; the contract lives in validator_backend_spec.rb. What belongs
-    # here is the two things about it that are OptionParser's business.
-    describe "--require-validator" do
-      # The reason this is a flag rather than a second environment variable,
-      # and the reason that choice is the point of the feature rather than a
-      # style call. `SPECGUARD_VALIDATE_INTENT_REQURED=1` is silently no
-      # assertion at all — the very bug the flag exists to catch, reproduced one
-      # level up. A mistyped flag cannot fail open.
-      it "cannot be mistyped into a silently unasserted run" do
-        expect(cli.run(["--requre-validator"])).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
-        expect(err).to include("specguard-lint: error: ")
-        expect(out).not_to include("checked")
-      end
-
-      # The flag asserts something about a RUN, and neither of these is one:
-      # parse_options returns nil and #run is done before the backend is ever
-      # resolved. Asserted with the variable unset, which is exactly the
-      # configuration that makes a real run exit 2.
-      it "leaves --help and --version exiting 0" do
-        expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
-                 .run(["--require-validator", "--help"])).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-        expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
-                 .run(["--require-validator", "--version"])).to eq(SpecGuard::RSpec::CLI::EXIT_OK)
-        expect(err).to be_empty
-      end
-
-      it "documents itself in the usage text" do
-        cli.run(["--help"])
-
-        expect(out).to include("--require-validator")
-      end
+    # SPGD-867: `--require-validator` is GONE — its assertion is now
+    # always-on (a run that cannot resolve a validator exits 2 outright), so
+    # the flag has no meaning left and passing it is a usage error rather
+    # than a silently-unasserted no-op.
+    it "refuses --require-validator as the unknown flag it now is" do
+      expect(cli.run(["--require-validator", fixture_path("order_spec.rb")])).to eq(2)
+      expect(err).to include("invalid option")
     end
   end
 
@@ -284,12 +245,15 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
 
       it "sets `kind` on a finding of each of the four kinds" do
-        Dir.mktmpdir do |dir|
-          findings = findings_for(*kinds_in(dir))
+        findings = findings_for(fixture_path("broken_intent_spec.rb"), File.join(Dir.mktmpdir, "gone_spec.rb"))
 
-          expect(findings.map { |finding| finding["kind"] })
-            .to eq(%w[extraction parse schema read])
-        end
+        # Recorded kinds: schema (9/15/21), extraction (28/34), and the
+        # `no-match`-mapped read of the missing file. A genuine `parse` kind
+        # is pinned by the acceptance-set recordings in
+        # validator_backend_spec.rb.
+        expect(findings.map { |finding| finding["kind"] }.compact.uniq)
+          .to contain_exactly("extraction", "schema", "read")
+        expect(findings.last["kind"]).to eq("read")
       end
 
       # `:0` is not somewhere a reader can go. The text renderer already drops
@@ -341,13 +305,10 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
 
       it "wraps a single `problem` sentence in a list rather than emitting a bare string" do
-        Dir.mktmpdir do |dir|
-          path = File.join(dir, "typo_spec.rb")
-          File.write(path, "# @intent:\n")
+        finding = findings_for(fixture_path("broken_intent_spec.rb")).find { |f| f["line"] == 34 }
 
-          expect(findings_for(path).first["errors"])
-            .to eq(["no '{...}' object literal follows the @intent: token"])
-        end
+        expect(finding["kind"]).to eq("extraction")
+        expect(finding["errors"]).to eq(["no '{...}' object literal follows the @intent: token"])
       end
 
       it "is an empty list, never null, on a passing finding" do
@@ -383,14 +344,10 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
 
       it "is null, and present, where there was no payload" do
-        Dir.mktmpdir do |dir|
-          path = File.join(dir, "typo_spec.rb")
-          File.write(path, "# @intent:\n")
-          finding = findings_for(path).first
+        finding = findings_for(fixture_path("broken_intent_spec.rb"))[3]
 
-          expect(finding).to have_key("intent")
-          expect(finding["intent"]).to be_nil
-        end
+        expect(finding).to have_key("intent")
+        expect(finding["intent"]).to be_nil
       end
 
       # Key ORDER, not just presence: the claim is key-for-key with a document
@@ -451,7 +408,9 @@ RSpec.describe SpecGuard::RSpec::CLI do
       it "still writes exactly one provenance line naming the implementation" do
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--json", fixture_path("order_spec.rb")])
 
-        expect(err).to eq("specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n")
+        expect(err.lines.length).to eq(1)
+        expect(err).to start_with("specguard-lint: validated by validate-intent 0.1.3")
+        expect(err).to include("(SPECGUARD_VALIDATE_INTENT)")
       end
 
       it "still warns loudly about an empty selection" do
@@ -486,23 +445,16 @@ RSpec.describe SpecGuard::RSpec::CLI do
         expect(err).to include("specguard-lint: error: --changed cannot be combined with explicit files")
       end
 
-      # `--json --require-validator` with the variable unset. Both flags are
-      # about the run rather than the report, and the failure is prose on
-      # stderr exactly as it is without `--json`.
-      it "reports an unmet --require-validator as prose on stderr, not as a document" do
-        code = described_class.new(stdout: stdout, stderr: stderr, env: {})
-                              .run(["--json", "--require-validator", fixture_path("order_spec.rb")])
+      # SPGD-867: the run-level exit-2 path is now "no validator could be
+      # resolved" — the always-on form `--require-validator` used to gate.
+      it "reports an unresolvable validator as prose on stderr, not as a document" do
+        allow(SpecGuard::RSpec::ValidatorBackend::Installer)
+          .to receive(:obtain).and_raise(SpecGuard::RSpec::ValidatorError, "could not obtain validate-intent")
+        code = cli.run(["--json", fixture_path("order_spec.rb")])
 
         expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MISUSE)
         expect(out).to be_empty
-        expect(err).to include("specguard-lint: error: --require-validator was given")
-      end
-
-      it "says nothing on stdout when the schema will not load" do
-        stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
-
-        expect(cli.run(["--json", fixture_path("order_spec.rb")])).to eq(2)
-        expect(out).to be_empty
+        expect(err).to include("specguard-lint: error: could not obtain validate-intent")
       end
     end
 
@@ -581,15 +533,14 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # Pinned against the RECORDED real-binary report (utf8-divergence.json):
+    # the binary classifies a non-UTF-8 file as `read` and the CLI renders it
+    # as a read failure rather than letting the bytes raise inside Ruby.
     it "does not let invalid UTF-8 reach the shell as an exception" do
-      Dir.mktmpdir do |dir|
-        path = File.join(dir, "bad_spec.rb")
-        File.binwrite(path, "# @intent: {entity:\"Order\"}\n# \xff\xfe\n")
+      path = fixture_path("invalid_utf8_spec.rb")
 
-        expect { cli.run([path]) }.not_to raise_error
-        expect(out).to include("invalid UTF-8 byte sequence")
-        expect(out).to include("FAIL  #{path} — could not read file")
-      end
+      expect { cli.run([path]) }.not_to raise_error
+      expect(out).to include("FAIL  #{path} — could not read file")
     end
   end
 

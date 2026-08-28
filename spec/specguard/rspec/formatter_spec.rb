@@ -1480,7 +1480,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     describe "when the annotation lookup itself fails" do
       before { allow(annotations).to receive(:intent_for).and_raise(broken_lookup) }
 
-      let(:broken_lookup) { SpecGuard::RSpec::SchemaError.new("could not load schema") }
+      let(:broken_lookup) { SpecGuard::RSpec::ValidatorError.new("could not resolve the validator") }
 
       it "does not raise out of example_finished" do
         expect { finish(build_example) }.not_to raise_error
@@ -1506,7 +1506,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         50.times { finish(build_example) }
 
         expect(errors.string.scan(described_class::WARNING_PREFIX).length).to eq(1)
-        expect(errors.string).to include("SchemaError")
+        expect(errors.string).to include("ValidatorError")
       end
 
       it "records all 50 of them anyway" do
