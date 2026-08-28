@@ -44,6 +44,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
       end
 
+      # The keyless branch's sink is its own file, so the replay queue never
+      # accumulates a laptop's ordinary local runs.
+      it "defaults the local sink apart from the replay queue" do
+        expect(configuration.local_output_path).to eq("log/test_results.local.jsonl")
+      end
+
       # Transport is opt-in, and stays off until somebody supplies a
       # credential. A default endpoint would be worse than none: SpecGuard is
       # self-hostable, so there is no address that is right for everybody, and
@@ -245,6 +251,15 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       it "honours a configured output path" do
         expect(configuration.output_path).to eq("tmp/specguard.jsonl")
       end
+
+      it "honours a configured local output path without disturbing the replay queue" do
+        local = described_class.new(env: env.merge("SPECGUARD_LOCAL_OUTPUT_PATH" => "tmp/local.jsonl"), git: no_git)
+
+        expect(local).to have_attributes(
+          output_path: "tmp/specguard.jsonl",
+          local_output_path: "tmp/local.jsonl"
+        )
+      end
     end
 
     describe "the transport settings" do
@@ -295,6 +310,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       it "falls back to the default path rather than writing to \"\"" do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
+      end
+
+      it "falls back to the default local path rather than writing to \"\"" do
+        blank_local = described_class.new(env: { "SPECGUARD_LOCAL_OUTPUT_PATH" => "" }, git: no_git)
+
+        expect(blank_local.local_output_path).to eq("log/test_results.local.jsonl")
       end
 
       # An empty run id is worse than none: it is a *key*, and every unrelated
@@ -418,7 +439,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     it "reads no key list beyond the ones the README accounts for" do
       expect(described_class.constants.grep(/_KEYS\z/).sort).to eq(
         %i[API_KEY_KEYS BRANCH_KEYS COMMIT_SHA_KEYS ENDPOINT_KEYS
-           OUTPUT_PATH_KEYS RUN_ID_KEYS SHARD_ID_KEYS TIMEOUT_KEYS]
+           LOCAL_OUTPUT_PATH_KEYS OUTPUT_PATH_KEYS RUN_ID_KEYS SHARD_ID_KEYS TIMEOUT_KEYS]
       )
     end
 
@@ -431,6 +452,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         "endpoint" => described_class::ENDPOINT_KEYS,
         "api_key" => described_class::API_KEY_KEYS,
         "output_path" => described_class::OUTPUT_PATH_KEYS,
+        "local_output_path" => described_class::LOCAL_OUTPUT_PATH_KEYS,
         "timeout" => described_class::TIMEOUT_KEYS
       ).to eq(
         "commit_sha" => %w[SPECGUARD_COMMIT_SHA GITHUB_SHA CI_COMMIT_SHA
@@ -444,6 +466,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         "endpoint" => %w[SPECGUARD_ENDPOINT],
         "api_key" => %w[SPECGUARD_API_KEY],
         "output_path" => %w[SPECGUARD_OUTPUT_PATH],
+        "local_output_path" => %w[SPECGUARD_LOCAL_OUTPUT_PATH],
         "timeout" => %w[SPECGUARD_TIMEOUT]
       )
     end

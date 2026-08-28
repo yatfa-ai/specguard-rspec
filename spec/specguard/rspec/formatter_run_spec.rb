@@ -415,7 +415,15 @@ module FormatterRunHelpers
         chdir: root
       )
 
-      sink = File.join(root, env.fetch("SPECGUARD_OUTPUT_PATH", DEFAULT_SINK) || DEFAULT_SINK)
+      # SPGD-810: which file the child wrote depends on whether it had a key —
+      # keyless runs land on the local sink, everything else (refusals,
+      # undeliverable envelopes) on the replay queue. Resolving the harness's
+      # sink the same way the child resolved its own is what keeps the
+      # assertions reading the file that was actually written.
+      keyless = env.fetch("SPECGUARD_API_KEY", nil).nil?
+      default_sink = keyless ? "log/test_results.local.jsonl" : DEFAULT_SINK
+      sink_var = keyless ? "SPECGUARD_LOCAL_OUTPUT_PATH" : "SPECGUARD_OUTPUT_PATH"
+      sink = File.join(root, env.fetch(sink_var, default_sink) || default_sink)
       sink_exists = File.exist?(sink)
       lines = sink_exists ? File.readlines(sink, chomp: true) : []
 
@@ -463,7 +471,9 @@ module FormatterRunHelpers
   def blocked_sink
     lambda do |root|
       File.write(File.join(root, "blocker"), "not a directory")
-      { "SPECGUARD_OUTPUT_PATH" => "blocker/test_results.jsonl" }
+      # SPGD-810: these keyless runs write the local sink, so that is the path
+      # that has to be blocked for the write to fail.
+      { "SPECGUARD_LOCAL_OUTPUT_PATH" => "blocker/test_results.jsonl" }
     end
   end
 end
@@ -1171,9 +1181,11 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       expect(run.payload).to include("commit_sha" => "abc123", "branch" => "feature/x")
     end
 
-    it "honours a configured output path" do
+    # SPGD-810: a keyless run writes the local sink, so this is the path the
+    # gem must honour for it.
+    it "honours a configured local output path" do
       run = run_rspec(FormatterRunHelpers::GREEN_SUITE,
-                      prepare: ->(_root) { { "SPECGUARD_OUTPUT_PATH" => "tmp/telemetry.jsonl" } })
+                      prepare: ->(_root) { { "SPECGUARD_LOCAL_OUTPUT_PATH" => "tmp/telemetry.jsonl" } })
 
       expect(run.lines.length).to eq(1)
     end

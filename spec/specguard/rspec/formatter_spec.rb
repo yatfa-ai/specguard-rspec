@@ -21,6 +21,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
   let(:output) { StringIO.new }
   let(:errors) { StringIO.new }
   let(:sink) { File.join(tmpdir, "log", "test_results.jsonl") }
+  let(:local_sink) { File.join(tmpdir, "log", "test_results.local.jsonl") }
 
   # Injected rather than real: what an annotation *is* belongs to
   # annotation_lookup_spec.rb, and resolving one here would make every example
@@ -50,6 +51,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       SpecGuard::RSpec.reset_configuration!
       SpecGuard::RSpec.configure do |config|
         config.output_path = File.join(dir, "log", "test_results.jsonl")
+        config.local_output_path = File.join(dir, "log", "test_results.local.jsonl")
         config.commit_sha = "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2"
         config.branch = "main"
         # Pinned for the same reason `endpoint` and `api_key` are: `Configuration.new` seeds from
@@ -101,6 +103,10 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
   def sink_lines
     File.exist?(sink) ? File.readlines(sink, chomp: true) : []
+  end
+
+  def local_sink_lines
+    File.exist?(local_sink) ? File.readlines(local_sink, chomp: true) : []
   end
 
   describe "registration" do
@@ -662,6 +668,8 @@ RSpec.describe SpecGuard::RSpecFormatter do
   describe "the JSONL sink" do
     # Criterion 2. Every example in this block runs with no API key, which is
     # the local-development default, and none of them may reach the network.
+    # SPGD-810 criterion 1: a keyless run belongs to the *local* sink, and the
+    # replay-queue file is neither created nor written.
     it "attempts no HTTP call at all when there is no API key" do
       allow(SpecGuard::RSpec::Transport).to receive(:new).and_call_original
 
@@ -676,12 +684,12 @@ RSpec.describe SpecGuard::RSpecFormatter do
       formatter.stop(nil)
       formatter.close(nil)
 
-      expect(sink_lines.length).to eq(1)
-      expect(JSON.parse(sink_lines.first)["specs"].length).to eq(1)
+      expect(local_sink_lines.length).to eq(1)
+      expect(JSON.parse(local_sink_lines.first)["specs"].length).to eq(1)
     end
 
     it "creates the output directory when it does not exist yet" do
-      expect { formatter.close(nil) }.to change { File.directory?(File.dirname(sink)) }.to(true)
+      expect { formatter.close(nil) }.to change { File.directory?(File.dirname(local_sink)) }.to(true)
     end
 
     # JSONL, not JSON: a second run must not truncate the first.
@@ -693,15 +701,15 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
-      expect(sink_lines.length).to eq(2)
-      expect(sink_lines).to all(satisfy { |line| JSON.parse(line).key?("specs") })
+      expect(local_sink_lines.length).to eq(2)
+      expect(local_sink_lines).to all(satisfy { |line| JSON.parse(line).key?("specs") })
     end
 
     it "still writes a well-formed envelope for a run with no examples at all" do
       formatter.stop(nil)
       formatter.close(nil)
 
-      expect(JSON.parse(sink_lines.first)).to include("specs" => [], "branch" => "main")
+      expect(JSON.parse(local_sink_lines.first)).to include("specs" => [], "branch" => "main")
     end
 
     # `stop` is where the duration is sealed, but a run that never reaches it
@@ -709,7 +717,28 @@ RSpec.describe SpecGuard::RSpecFormatter do
     it "still reports a duration when close is reached without stop" do
       formatter.close(nil)
 
-      expect(JSON.parse(sink_lines.first)["duration_seconds"]).to be_a(Float).and be >= 0
+      expect(JSON.parse(local_sink_lines.first)["duration_seconds"]).to be_a(Float).and be >= 0
+    end
+
+    # SPGD-810 criterion 1, both halves: written to the local sink, and the
+    # replay queue is neither created nor written.
+    it "writes a keyless run to the local sink, not the replay queue" do
+      finish(build_example)
+      formatter.close(nil)
+
+      expect(local_sink_lines.length).to eq(1)
+      expect(File.exist?(sink)).to be(false)
+    end
+
+    # SPGD-810 escape hatch: pointing both paths at one file reproduces the
+    # pre-split single-file behaviour exactly.
+    it "writes to the replay queue too when both paths name the same file" do
+      SpecGuard::RSpec.configure { |config| config.local_output_path = config.output_path }
+
+      finish(build_example)
+      formatter.close(nil)
+
+      expect(sink_lines.length).to eq(1)
     end
   end
 
@@ -957,6 +986,29 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
+    # SPGD-810 criterion (c), pinned from both sides: a key with no endpoint,
+    # and a blank commit, are *failed deliveries* — recoverable, and therefore
+    # replay-queue material. Only the keyless branch moved to the local sink.
+    describe "the replay queue's membership (SPGD-810)" do
+      it "keeps a keyless-endpoint run on the replay queue, off the local sink" do
+        SpecGuard::RSpec.configure { |config| config.api_key = "sgk_abc123" }
+
+        formatter.close(nil)
+
+        expect(sink_lines.length).to eq(1)
+        expect(File.exist?(local_sink)).to be(false)
+      end
+
+      it "keeps a blank-commit run on the replay queue, off the local sink" do
+        StubIngestEndpoint.run do |server|
+          deliver_to(server, commit_sha: nil)
+
+          expect(sink_lines.length).to eq(1)
+          expect(File.exist?(local_sink)).to be(false)
+        end
+      end
+    end
+
     # The fallback's own failure mode. Both sinks are gone, the run really is
     # lost — but the process must still exit on the suite's own terms, and the
     # one warning the run is allowed must be the specific one.
@@ -1033,7 +1085,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       finish(build_example)
       formatter.close(nil)
 
-      expect(sink_lines.length).to eq(1)
+      expect(local_sink_lines.length).to eq(1)
     end
 
     context "when RSpec is in dry-run mode" do
@@ -1300,7 +1352,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         finish(build_example)
         formatter.close(nil)
 
-        expect(sink_lines.length).to eq(1)
+        expect(local_sink_lines.length).to eq(1)
         expect(errors.string).to be_empty
       end
     end
@@ -1328,7 +1380,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     def unwritable_sink!
       blocker = File.join(tmpdir, "blocker")
       File.write(blocker, "not a directory")
-      SpecGuard::RSpec.configure { |config| config.output_path = File.join(blocker, "results.jsonl") }
+      SpecGuard::RSpec.configure { |config| config.local_output_path = File.join(blocker, "results.jsonl") }
     end
 
     it "swallows an unwritable output path instead of raising out of close" do
@@ -1347,7 +1399,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     it "swallows a sink that raises IOError" do
       allow(File).to receive(:open).and_call_original
-      allow(File).to receive(:open).with(sink, "a").and_raise(IOError, "closed stream")
+      allow(File).to receive(:open).with(local_sink, "a").and_raise(IOError, "closed stream")
 
       expect { formatter.close(nil) }.not_to raise_error
       expect(errors.string).to include("IOError")
@@ -1357,7 +1409,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # blowing up raises ScriptError, and would sail straight past it.
     it "swallows a ScriptError, which a bare rescue would miss" do
       allow(File).to receive(:open).and_call_original
-      allow(File).to receive(:open).with(sink, "a").and_raise(NotImplementedError, "nope")
+      allow(File).to receive(:open).with(local_sink, "a").and_raise(NotImplementedError, "nope")
 
       expect { formatter.close(nil) }.not_to raise_error
       expect(errors.string).to include("NotImplementedError")
@@ -1502,7 +1554,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # its own small lie, and would make a long suite harder to stop.
     it "does NOT swallow an interrupt" do
       allow(File).to receive(:open).and_call_original
-      allow(File).to receive(:open).with(sink, "a").and_raise(Interrupt)
+      allow(File).to receive(:open).with(local_sink, "a").and_raise(Interrupt)
 
       expect { formatter.close(nil) }.to raise_error(Interrupt)
     end

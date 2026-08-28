@@ -461,7 +461,8 @@ the one on the next line.
 # report their checkout too, without being configured to. A detached checkout
 # reports no branch rather than the string "HEAD".
 # SPECGUARD_COMMIT_SHA / SPECGUARD_BRANCH / SPECGUARD_RUN_ID /
-# SPECGUARD_SHARD_ID / SPECGUARD_OUTPUT_PATH override any of it.
+# SPECGUARD_SHARD_ID / SPECGUARD_OUTPUT_PATH / SPECGUARD_LOCAL_OUTPUT_PATH
+# override any of it.
 #
 # Assign a value here only when it is one neither source can know:
 SpecGuard::RSpec.configure do |config|
@@ -492,15 +493,18 @@ end
 ```
 
 **The API key is the switch.** With no key nothing is sent anywhere and the run
-is written to `log/test_results.jsonl` exactly as before — so local development
-needs no opt-out, and a fork with no secret configured behaves like a laptop
-rather than like a broken build.
+is written to `log/test_results.local.jsonl` — the local development record,
+kept apart from the replay queue — so local development needs no opt-out, and a
+fork with no secret configured behaves like a laptop rather than like a broken
+build. The local file's name is configurable via `SPECGUARD_LOCAL_OUTPUT_PATH`
+(or `SpecGuard::RSpec.configure { |c| c.local_output_path = ... }`).
 
 **A failed delivery is never silent, and never lost.** If the endpoint refuses
 the run (a `401` from a rotated key, a `400`, a `500`) or cannot be reached at
 all (connection refused, DNS failure, timeout), the formatter prints **one**
 line to stderr naming the status or the error, and writes the payload to
-`log/test_results.jsonl` so the run can be replayed later with
+`log/test_results.jsonl` — the **replay queue**: runs offered to the endpoint
+and not accepted — so the run can be replayed later with
 [`specguard-ingest`](#replaying-a-saved-run--specguard-ingest):
 
 ```
@@ -609,16 +613,24 @@ once the secret is fixed, with the shard folding described in
 [If you shard your suite](#if-you-shard-your-suite) applying exactly as it would
 have during the run.
 
-> **It re-delivers *every* line in the file you give it.** The formatter writes
-> to `log/test_results.jsonl` when a delivery **failed** *and* when no API key
-> was configured at all — and the two are indistinguishable on the line, because
-> nothing in the payload records which sink it was destined for. So a laptop's
-> file is a file of ordinary local runs, and this command will send all of them.
-> There is no filter and no heuristic: guessing which lines "were failures" from
-> data that does not say would be confidently wrong about which of your runs
-> reach the platform. Check the file first with
+> **It re-delivers *every* line in the file you give it.** Two kinds of line can
+> be sitting in the file you point it at. In files written by **an earlier
+> version of the gem**, and in `log/test_results.local.jsonl` — the local
+> development record the formatter now writes when no API key is configured —
+> ordinary local runs and genuinely failed deliveries are indistinguishable on
+> the line, because nothing in the payload records which sink it was destined
+> for: the writer split into two files precisely so this could not happen on
+> new replay-queue files, and a line from before that split carries no marker.
+> So this command will send every line in such a file, and no filter or
+> heuristic can change that: guessing which lines "were failures" from data
+> that does not say would be confidently wrong about which of your runs reach
+> the platform. Check the file first with
 > [`--list`](#checking-a-file-before-you-send-it----list), and check it before
-> you replay one you did not write.
+> you replay one you did not write. A `log/test_results.jsonl` written entirely
+> by this version or later holds only genuine failed deliveries by
+> construction — but verify that before you rely on it. If you deliberately
+> want one file for both roles, set `local_output_path` to the same value as
+> `output_path` and the formatter reproduces the old single-file behaviour.
 
 #### Checking a file before you send it — `--list`
 
@@ -1071,8 +1083,10 @@ export SPECGUARD_ENDPOINT=https://specguard.internal.example.com
   no others: the ones named in the envelope table above, which fill
   `commit_sha`, `branch`, `ci_run_id` and `shard_id`; plus four that configure
   the gem itself rather than describing your suite — `SPECGUARD_ENDPOINT` (where
-  to send the run), `SPECGUARD_OUTPUT_PATH` (where to write the local file when
-  there is no key), `SPECGUARD_TIMEOUT` (how long to wait), and
+  to send the run), `SPECGUARD_OUTPUT_PATH` (where to write the replay queue —
+  runs the endpoint refused or could not be reached for), `SPECGUARD_LOCAL_OUTPUT_PATH`
+  (where to write the local development record when there is no key),
+  `SPECGUARD_TIMEOUT` (how long to wait), and
   `SPECGUARD_API_KEY`, which leaves the machine only as the bearer token
   described above. The other three are never sent, and there is no general
   environment capture to be caught by. (The linter is a separate program that
