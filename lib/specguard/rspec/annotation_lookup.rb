@@ -177,18 +177,15 @@ module SpecGuard
 
       private
 
-      # The validator backend, or nil when `SPECGUARD_VALIDATE_INTENT` is unset
-      # — memoized, including when resolving RAISES.
+      # The validator backend, or nil — memoized, including when resolving
+      # RAISES.
       #
-      # WHY THIS CLASS RESOLVES ONE AT ALL. `CLI` has routed the LINTER through
-      # the backend since SPGD-247 while this half stayed on the Ruby chain, so
-      # one gem was validating the same annotation with two parsers: CI ratified
-      # an annotation the formatter then shipped as `unannotated`, silently, on
-      # both ends. Whatever the backend accepted is what the platform must
-      # receive, so this asks the same binary the same question.
-      #
-      # WITH THE VARIABLE UNSET NOTHING CHANGES. `resolve` returns nil, the Ruby
-      # path below runs exactly as it always has, and no subprocess is started.
+      # WHY THIS CLASS RESOLVES ONE AT ALL. `CLI` routes the linter through the
+      # backend, and since the SPGD-867 cutover the backend is the ONLY
+      # validator: the gem no longer carries a Ruby validation arm. Whatever
+      # the backend accepts is what the platform must receive, so this asks
+      # the same binary the same question rather than a second parser that
+      # could disagree with it.
       #
       # Lazily, not in the constructor: {Formatter} builds this at suite start,
       # and `resolve` verifies the binary (two probes, and a raise when it is
@@ -198,19 +195,21 @@ module SpecGuard
       #
       # A {ValidatorError} HERE IS NOT FATAL AND IS NOT nil-THE-ANNOTATION. An
       # unusable binary means this class cannot ask the backend what an
-      # annotation says; it does NOT mean the annotation is bad. The Ruby chain
-      # below is still perfectly capable of answering, and it is the answer
-      # every user without the variable set already gets — so a broken backend
-      # degrades to the PREVIOUS behaviour rather than to no telemetry at all.
+      # annotation says; it does NOT mean the annotation is bad. Since the
+      # cutover there is no Ruby arm to fall back to, so probe failure is
+      # memoized as nil and `#verdicts_for` answers `unverified_verdicts` for
+      # every file: local line discovery keeps working and every annotation is
+      # reported as `unannotated` — the honest answer under the formatter's
+      # never-fail-the-run contract, while the linter half makes the failure
+      # loud (it exits 2 when no binary can be resolved, naming the
+      # remediations).
       #
-      # The alternative was letting it reach {Formatter}'s `never_fail_the_run`
-      # envelope. That envelope keeps the RUN alive, which is why it exists, but
-      # it does so by abandoning the example's annotation — so a mistyped path
-      # in `SPECGUARD_VALIDATE_INTENT` would ship an entire suite as
-      # `unannotated` while every one of those annotations was valid and locally
-      # checkable. Losing the whole run's telemetry to a misconfiguration is
-      # strictly worse than the state before the backend existed. The envelope
-      # stays as the last resort; it is not the first.
+      # The alternative was letting the raise reach {Formatter}'s
+      # `never_fail_the_run` envelope. That envelope keeps the RUN alive, but
+      # it does so by abandoning the example's annotation. Degrading HERE
+      # instead means ONE swallowed probe per suite rather than one per
+      # example, with `unverified_verdicts` as the single consistent answer
+      # for every file.
       #
       # Cached, including on failure, for the reason {#schema} is: the probe is
       # a subprocess, and re-running it per example is the O(examples) cost this
@@ -223,8 +222,8 @@ module SpecGuard
         @backend = ValidatorBackend.resolve(env: @env)
       rescue ValidatorError
         # Deliberately swallowed rather than re-raised: @backend is already nil,
-        # which is the same state an unset variable produces, so #verdicts_for
-        # takes the Ruby arm and the memo keeps this from being re-probed.
+        # so #verdicts_for takes the unverified_verdicts arm and the memo keeps
+        # this from being re-probed.
         @backend = nil
       end
 
