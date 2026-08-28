@@ -145,7 +145,9 @@ module SpecGuard
   # == Where the run goes
   #
   # `api_key` set  → one `POST <endpoint>/api/v1/ingest`.
-  # `api_key` unset → appended to `output_path`, one JSON object per line.
+  # `api_key` unset → appended to `local_output_path`, one JSON object per
+  #                   line — a local development record, not a replay queue.
+  # delivery refused → appended to `output_path`, the replay queue.
   #
   # The credential is the switch on purpose: local development is then the
   # default and needs no opt-out. See {#deliver} for what happens when the POST
@@ -673,7 +675,7 @@ module SpecGuard
     # discard the run. A 401 with no file left behind loses the whole run's
     # telemetry for a mistake — a rotated key, a typo'd URL — that is fixed in
     # thirty seconds and cannot be re-run afterwards, because the suite is over.
-    # Writing the payload to the local sink turns silent loss into recoverable
+    # Writing the payload to the replay queue turns silent loss into recoverable
     # loss, which is the same thing `output_path` already exists for ("supports
     # a future replay-from-file ingestion path").
     #
@@ -687,7 +689,7 @@ module SpecGuard
       return skip_dry_run if dry_run?
 
       configuration = SpecGuard::RSpec.configuration
-      return append(data) if blank?(configuration.api_key)
+      return append_local(data) if blank?(configuration.api_key)
 
       obstacle = undeliverable_reason(configuration, data)
       return fall_back(data, obstacle) if obstacle
@@ -1035,6 +1037,18 @@ module SpecGuard
     # whole runs rather than halves of one.
     def append(data)
       path = SpecGuard::RSpec.configuration.output_path
+      append_to(data, path)
+    end
+
+    # The keyless branch's sink: `local_output_path`, a local development
+    # record deliberately kept apart from {#append}'s replay queue so that
+    # `specguard-ingest log/test_results.jsonl` re-delivers only genuine
+    # failed deliveries. See {Configuration#local_output_path}.
+    def append_local(data)
+      append_to(data, SpecGuard::RSpec.configuration.local_output_path)
+    end
+
+    def append_to(data, path)
       directory = File.dirname(path)
       FileUtils.mkdir_p(directory) unless directory == "." || File.directory?(directory)
 

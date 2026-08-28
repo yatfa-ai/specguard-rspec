@@ -141,10 +141,12 @@ module SpecGuard
     #
     # `endpoint`, `api_key` and `timeout` configure the POST to SpecGuard's
     # ingest endpoint. `api_key` is the switch: set it and the run is delivered
-    # over HTTP, leave it unset and the run is appended to `output_path` exactly
-    # as before. Local development is therefore the default, and it needs no
-    # opt-out — which is the whole reason the switch is the credential rather
-    # than a separate `enabled` flag nobody would remember to turn off.
+    # over HTTP, leave it unset and the run is appended to `local_output_path`,
+    # a local development record kept apart from the `output_path` replay queue
+    # (a run offered to the endpoint and not accepted). Local development is
+    # therefore the default, and it needs no opt-out — which is the whole
+    # reason the switch is the credential rather than a separate `enabled`
+    # flag nobody would remember to turn off.
     #
     # There is deliberately **no default endpoint**. SpecGuard is self-hostable
     # and there is no address that is right for everybody; guessing one would
@@ -154,6 +156,10 @@ module SpecGuard
       # Relative to the working directory the suite was started from, which is
       # the project root for every normal `bundle exec rspec` invocation.
       DEFAULT_OUTPUT_PATH = "log/test_results.jsonl"
+
+      # The keyless branch's sink: a local development record, deliberately
+      # separate from the replay queue. See {DEFAULT_OUTPUT_PATH}.
+      DEFAULT_LOCAL_OUTPUT_PATH = "log/test_results.local.jsonl"
 
       # Applied to opening the connection and to reading the response.
       #
@@ -309,6 +315,7 @@ module SpecGuard
       BLANK_MEANS_FIRST_SHARD_KEY = "TEST_ENV_NUMBER"
 
       OUTPUT_PATH_KEYS = %w[SPECGUARD_OUTPUT_PATH].freeze
+      LOCAL_OUTPUT_PATH_KEYS = %w[SPECGUARD_LOCAL_OUTPUT_PATH].freeze
       ENDPOINT_KEYS = %w[SPECGUARD_ENDPOINT].freeze
       API_KEY_KEYS = %w[SPECGUARD_API_KEY].freeze
       TIMEOUT_KEYS = %w[SPECGUARD_TIMEOUT].freeze
@@ -326,10 +333,15 @@ module SpecGuard
       # Which shard of that build this process is. `nil` when nothing said.
       # See {SHARD_ID_KEYS}.
       attr_accessor :shard_id
-      # Where the run's JSON payload is appended, one object per line — the
-      # local sink when there is no API key, and the fallback when delivery
-      # fails.
+      # Where a run that was *offered to the endpoint and not accepted* is
+      # appended, one object per line — the replay queue. `specguard-ingest`
+      # pointed at this file re-delivers genuine failed deliveries by
+      # construction.
       attr_accessor :output_path
+      # Where a keyless run (no `api_key` configured) is appended — a local
+      # development record, not a replay queue. Setting this to the same value
+      # as {#output_path} reproduces the pre-split single-file behaviour.
+      attr_accessor :local_output_path
       # The SpecGuard installation to POST to, scheme and host only:
       # `https://specguard.example.com`. The `/api/v1/ingest` path is the
       # platform's contract, not a setting. `nil` when nothing said.
@@ -359,6 +371,7 @@ module SpecGuard
         @run_id = first_present(env, RUN_ID_KEYS)
         @shard_id = resolve_shard_id(env)
         @output_path = first_present(env, OUTPUT_PATH_KEYS) || DEFAULT_OUTPUT_PATH
+        @local_output_path = first_present(env, LOCAL_OUTPUT_PATH_KEYS) || DEFAULT_LOCAL_OUTPUT_PATH
         @endpoint = first_present(env, ENDPOINT_KEYS)
         @api_key = first_present(env, API_KEY_KEYS)
         @timeout = seconds(first_present(env, TIMEOUT_KEYS)) || DEFAULT_TIMEOUT_SECONDS
