@@ -1,0 +1,47 @@
+# The gem's own suite, reported through the very formatter this gem ships. A client that does not
+# run behind its own telemetry cannot notice when its formatter breaks: the suite would stay green
+# while every consumer's run silently stopped being delivered.
+#
+# The formatter is registered through SPEC_OPTS rather than .rspec so a local `bundle exec rspec`
+# is untouched — same arrangement as yatfa-ai/specguard's ci.yml.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    env:
+      SPECGUARD_ENDPOINT: https://specguard.yatfa.com
+      # Repository-scoped ingest key for yatfa-ai/specguard-rspec. Absent on fork pull requests —
+      # the telemetry step below is conditional on it.
+      SPECGUARD_API_KEY: ${{ secrets.SPECGUARD_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.5"
+          bundler-cache: true
+
+      # The gem is on the load path in its own repository (Gemfile -> gemspec -> lib/), so the
+      # --require resolves to the local lib/specguard/rspec/formatter.rb — the code under test is
+      # also the code reporting the run. With no key (a fork PR) SPEC_OPTS stays unset and the
+      # suite runs exactly as a developer sees it.
+      - name: Enable SpecGuard telemetry when a key is configured
+        if: env.SPECGUARD_API_KEY != ''
+        run: |
+          {
+            echo "SPEC_OPTS=--require specguard/rspec/formatter --format SpecGuard::RSpecFormatter"
+            echo "SPECGUARD_COMMIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "SPECGUARD_BRANCH=${{ github.head_ref || github.ref_name }}"
+            echo "SPECGUARD_RUN_ID=${{ github.run_id }}-${{ github.run_attempt }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run the suite
+        run: bundle exec rspec
