@@ -1699,6 +1699,106 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
   end
 
   # ------------------------------------------------------------------------ #
+  # The surrogate-recovery path in `Runner`'s `#decode`
+  # (validator_backend.rb): a report whose TEXT carries an unpaired HIGH
+  # surrogate escape, which `JSON.parse` refuses outright.
+  #
+  # NO BINARY THIS GEM SHIPS AGAINST CAN EMIT ONE — PROTOCOL.md §1.1(a),
+  # landed by SPGD-403, refuses an unpaired surrogate at parse time, so the
+  # port reports it as `kind: "parse"`, `intent: null`. The recovery is kept
+  # anyway because `SPECGUARD_VALIDATE_INTENT` names an ARBITRARY path: an
+  # older build or a third-party implementation of the vendor-neutral
+  # protocol must not turn one annotation's contents into a batch-wide exit
+  # 2 — every file in the batch reported as "the validator is broken" over
+  # text the gem could not read.
+  #
+  # This block is the ONLY coverage that path has. Without it the recovery
+  # machinery — the regex, the rewrite, `#drop_every_payload` — is
+  # unverifiable by the suite, which is KB SPGD-78's vacuous-green shape:
+  # code nothing can fail is code nobody has to keep honest.
+  describe "recovering a report that carries an unpaired high surrogate" do
+    def results_for(stdout)
+      described_class::Runner.new(stub_validator(stdout: stdout, exit_code: 0))
+                            .tap(&:verify!)
+                            .check(["a_spec.rb"])
+    end
+
+    let(:intent) do
+      { "entity" => "Order", "action" => "checkout",
+        "behavior" => "returns 402 payment required on expired card", "layer" => "request" }
+    end
+
+    # `document` cannot build this report: the payload must be written as a
+    # `\ud800` ESCAPE in the text, which `JSON.generate` cannot produce from
+    # any Ruby value. So the mark is a real, representable payload, and the
+    # sub puts the unrepresentable one in its place after generation.
+    let(:raw) do
+      JSON.generate(
+        schema: "open-test-intent.v1.json", mode: "source", ok: true,
+        summary: { files: 1, annotations: 2, failed: 0 },
+        findings: [
+          { file: "a_spec.rb", line: 1, ok: true, kind: nil, errors: [],
+            intent: { "entity" => "MARK" } },
+          { file: "a_spec.rb", line: 5, ok: true, kind: nil, errors: [],
+            intent: intent }
+        ]
+      ).sub('"entity":"MARK"', '"entity":"\ud800Or"')
+    end
+
+    it "is a document Ruby cannot parse — the premise of everything below" do
+      expect { JSON.parse(raw) }.to raise_error(JSON::ParserError, /surrogate/)
+    end
+
+    it "keeps every verdict rather than failing the batch" do
+      results = results_for(raw)
+
+      expect(results.length).to eq(2)
+      expect(results).to all(be_ok)
+      expect(results.map(&:line)).to eq([1, 5])
+    end
+
+    # Both halves matter. Dropping the OFFENDING payload is the point; also
+    # dropping the innocent one in the same document is the conservative
+    # direction, because the recovery rewrites TEXT and cannot tell a real
+    # escape from an author who literally typed a backslash before `ud800`.
+    # A dropped annotation is a lie nobody acts on; a corrupted one is a lie
+    # everybody does.
+    it "drops every payload in that document, and repairs none" do
+      results = results_for(raw)
+
+      expect(results.map(&:intent)).to eq([nil, nil])
+      expect(results.map(&:representable_intent)).to eq([nil, nil])
+    end
+
+    # Non-vacuity: the same two findings WITHOUT the surrogate keep their
+    # payload, so the example above is about the surrogate and not about the
+    # report builder having dropped them all along.
+    it "is not how it treats a document it can read" do
+      clean = JSON.generate(
+        schema: "open-test-intent.v1.json", mode: "source", ok: true,
+        summary: { files: 1, annotations: 2, failed: 0 },
+        findings: [
+          { file: "a_spec.rb", line: 1, ok: true, kind: nil, errors: [],
+            intent: { "entity" => "Order" } },
+          { file: "a_spec.rb", line: 5, ok: true, kind: nil, errors: [],
+            intent: intent }
+        ]
+      )
+
+      expect(results_for(clean).map(&:intent))
+        .to eq([{ "entity" => "Order" }, intent])
+    end
+
+    # A parse failure that is NOT a surrogate must still be an exit 2. The
+    # recovery is for one named class, not a general "try harder" that would
+    # turn a broken binary into a clean-looking run.
+    it "does not rescue a document that is simply broken" do
+      expect { results_for("this is not JSON at all") }
+        .to raise_error(SpecGuard::RSpec::ValidatorError, /did not emit a JSON document/)
+    end
+  end
+
+  # ------------------------------------------------------------------------ #
   # Exit 1 means "an annotation is malformed" and nothing else. A backend that
   # could not produce a verdict must not borrow it — and must not land on the
   # `internal error:` backstop either, which reads as a bug in the linter
