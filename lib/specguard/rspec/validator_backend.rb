@@ -372,6 +372,45 @@ module SpecGuard
         # by name in the spec, so widening it stays a decision someone makes.
         NON_ANNOTATION_KINDS = KINDS.select { |_kind, mapped| mapped == Finding::KIND_READ }.keys.freeze
 
+        # The report used to be all ASCII: paths, a fixed kind vocabulary, and
+        # error prose the tool wrote itself. Since SPGD-340 it also carries
+        # `intent` — WHAT THE PAYLOAD PARSED TO — so the DOCUMENT now inherits
+        # the PAYLOAD's parser-compatibility domain, and a payload the port
+        # accepts can be one Ruby's default reader will not read.
+        #
+        # ONE OF THE TWO OPTIONS IS LOAD-BEARING; THE OTHER IS BELT AND BRACES.
+        # Measured against the binary this gem is shipped alongside:
+        #
+        #   max_nesting: false  LOAD-BEARING. PROTOCOL.md §1.1(c) admits a
+        #                       payload nested to depth 100, and a finding WRAPS
+        #                       it, so the report nests two deeper than the
+        #                       payload while `JSON.parse` defaults to 100.
+        #                       Measured: payload depth 98 -> report nests 100,
+        #                       parses; depth 99 -> nests 101, raises
+        #                       JSON::NestingError. So depths 99-100 are
+        #                       PROTOCOL-LEGAL payloads whose report a default
+        #                       reader cannot parse at all.
+        #
+        #   allow_nan: true     NOT reachable from a current binary, and kept
+        #                       deliberately. An earlier revision of this
+        #                       comment said `1e400` decodes to inf and is
+        #                       re-emitted as `Infinity`; that was true of the
+        #                       CPython reference and is FALSE of the port,
+        #                       which now echoes a number from its own literal
+        #                       (`1e400` stays `1e400`) precisely because
+        #                       `Infinity` is not JSON and §1.1(b) refuses it.
+        #                       Measured: no probe payload produces a bare
+        #                       NaN/Infinity token anywhere in a report.
+        #
+        # Both are enabled rather than left to raise, because the alternative is
+        # a batch-wide exit 2 over one annotation's payload — and it would be an
+        # exit 2 for a payload the schema was going to REJECT anyway (a
+        # non-finite is a number and a deep nest is a container; neither can
+        # occupy a schema-legal slot, all of which are strings). Parsing them
+        # permissively changes no verdict. Refusing to parse them changes every
+        # verdict in the batch.
+        PARSE_OPTIONS = { allow_nan: true, max_nesting: false }.freeze
+
         # A full audit passes every spec file in the repository — thousands of
         # arguments on a large suite — and an argument vector has two separate
         # kernel limits on Linux: `ARG_MAX` caps the TOTAL vector (a quarter of
@@ -934,7 +973,7 @@ module SpecGuard
         end
 
         def parse_document(stdout, stderr)
-          document = JSON.parse(stdout)
+          document = decode(stdout)
           unless document.is_a?(Hash)
             raise ValidatorError, "#{describe} emitted a #{document.class} where a JSON object was expected"
           end
@@ -950,6 +989,121 @@ module SpecGuard
         rescue JSON::ParserError => e
           raise ValidatorError,
                 "#{describe} did not emit a JSON document: #{e.message}#{trailing(stderr)}"
+        end
+
+        # An unpaired HIGH surrogate escape in the report text, e.g. `\ud800`
+        # not followed by a low surrogate. Ruby's parser refuses it outright.
+        #
+        # NO CURRENT BINARY CAN EMIT ONE, and this is kept anyway. An earlier
+        # revision of this comment said "CPython decodes it and keeps it, so the
+        # port emits it" — that was true of the deleted Python reference and is
+        # FALSE of the port since SPGD-403, which refuses an unpaired surrogate
+        # escape at PARSE time under PROTOCOL.md §1.1(a) and reports the finding
+        # with `intent: null`. Measured against the shipped binary: a payload
+        # carrying `\ud800` yields `"kind": "parse"`, `"intent": null`, and a
+        # report that parses with a plain `JSON.parse` and no options at all.
+        #
+        # It stays because the gem does not choose which binary it is pointed
+        # at. `SPECGUARD_VALIDATE_INTENT` names an arbitrary path, and a report
+        # from an OLDER build — or from a third-party implementation of the
+        # protocol, which the vendor-neutral wording invites — is exactly the
+        # input this class must not turn into a batch-wide exit 2. The recovery
+        # is unreachable from the binary in this repository and cheap to keep;
+        # deleting it would be trading a real safety net for tidiness.
+        UNPAIRED_HIGH_SURROGATE = /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/
+        private_constant :UNPAIRED_HIGH_SURROGATE
+
+        # What the escape above is rewritten to: U+FFFD REPLACEMENT CHARACTER,
+        # chosen because it is always valid and is the same six characters wide
+        # as the `\udXXX` it stands in for, so byte offsets in any parser error
+        # still point where they did.
+        UNREADABLE_ESCAPE = "\\ufffd"
+        private_constant :UNREADABLE_ESCAPE
+
+        # Parse the report, recovering the VERDICTS from a document whose
+        # PAYLOADS Ruby cannot read.
+        #
+        # Since the report began carrying `intent`, the document inherits the
+        # payload's parser domain, and an unpaired high surrogate makes the
+        # whole thing unparseable here. Letting that raise would cost the batch
+        # an exit 2 — up to MAX_BATCH_FILES files reported as "the validator is
+        # broken" — over one annotation that the port validated successfully and
+        # that this gem, before the key existed, simply shipped as
+        # `unannotated`. That is strictly worse than the behaviour the `intent`
+        # key was added to improve, so it is not allowed to happen.
+        #
+        # THE RECOVERY DROPS EVERY PAYLOAD IN THE DOCUMENT AND KEEPS EVERY
+        # VERDICT. Both halves are deliberate:
+        #
+        # * Keeping the verdicts is safe. `file`, `line`, `ok`, `kind` and
+        #   `errors` are the tool's own vocabulary and its own prose — no author
+        #   text reaches them — so they are unaffected by whatever the payload
+        #   contained. The exit code, the FAIL blocks and the counts come out
+        #   exactly as they would have.
+        #
+        # * Dropping ALL the payloads, rather than just the offending one, is
+        #   the conservative direction and the only one that cannot corrupt.
+        #   The substitution below operates on TEXT, and JSON text can contain
+        #   an escaped backslash — an author who literally wrote `\\ud800`
+        #   inside their annotation has a perfectly valid payload whose bytes
+        #   this regex cannot distinguish from a real escape without
+        #   re-implementing the scanner's backslash accounting. Rewriting that
+        #   author's payload and then SHIPPING it would put an annotation on the
+        #   platform that is not the one they wrote, undetectably (KB SPGD-78 in
+        #   value form). Dropping is a lie nobody acts on; corrupting is one
+        #   everybody does.
+        #
+        # The blast radius is bounded by never being worse than the status quo:
+        # every annotation in such a document was ALREADY arriving unannotated
+        # before this key existed, so the recovery costs nothing that was
+        # previously being delivered.
+        #
+        # The rewrite SUBSTITUTES an equal-length escape rather than DELETING
+        # the match, and that is structural rather than cosmetic. Where the
+        # regex has landed on an author's literal `\\ud800`, the match begins at
+        # the SECOND backslash — so deleting it strands the first, and an orphan
+        # backslash escapes whatever now follows. Measured on a document
+        # carrying a real lone surrogate and author-typed text together:
+        # `lit\\ud800Xtail` deletes to `lit\Xtail` (`invalid escape character in
+        # string`), and a match at the end of a value strands the backslash onto
+        # the closing quote (`unexpected end of input`). Both raise HERE, inside
+        # the recovery, and so become precisely the exit 2 the recovery exists
+        # to prevent. Substituting keeps the backslash paired; all three cases
+        # parse.
+        #
+        # The corruption objection above does not reach the substituted value,
+        # because {#drop_every_payload} nils every `intent` on the very next
+        # line: the rewritten text is read for its VERDICTS, and the value the
+        # substitution produced is never shipped and never seen. Substitution is
+        # strictly safer than deletion structurally and identical to it on
+        # corruption — so the trade that bullet describes is not being re-made
+        # here, only carried out without the self-inflicted parse error.
+        def decode(stdout)
+          JSON.parse(stdout, **PARSE_OPTIONS)
+        rescue JSON::ParserError
+          # Only a document that actually carries one gets rewritten. A parse
+          # failure with no unpaired surrogate in it is a real one and is
+          # re-raised for the handler above to report.
+          raise unless stdout.match?(UNPAIRED_HIGH_SURROGATE)
+
+          # Block form: in a replacement STRING the backslash would be read as
+          # the start of a backreference escape, which is the same class of bug
+          # as the one being fixed.
+          rewritten = stdout.gsub(UNPAIRED_HIGH_SURROGATE) { UNREADABLE_ESCAPE }
+          drop_every_payload(JSON.parse(rewritten, **PARSE_OPTIONS))
+        end
+
+        # Sets every finding's `intent` to nil in place. Written over the parsed
+        # document rather than by not-parsing the key, because the findings are
+        # what the rest of this class reads and `nil` is already its word for
+        # "no payload here" — so nothing downstream needs to know a recovery
+        # happened.
+        def drop_every_payload(document)
+          findings = document.is_a?(Hash) ? document["findings"] : nil
+          return document unless findings.is_a?(Array)
+
+          findings.each { |finding| finding["intent"] = nil if finding.is_a?(Hash) }
+          document
         end
 
         def fetch_findings(document)
@@ -987,10 +1141,17 @@ module SpecGuard
 
           kind = finding["kind"]
           errors = finding_errors(finding, file)
+          # Absent on a binary too old to carry it, which reads as nil — the
+          # same answer as "this finding had no payload". That is the intended
+          # behaviour and not a gap to guard: an annotation whose payload could
+          # not be obtained is `unannotated`, whatever the reason. There is no
+          # Ruby re-parse to fall back to (SPGD-340 owner decision), so there is
+          # no fallback to get wrong.
+          intent = finding["intent"]
 
-          return passing_result(finding, file, kind, errors) if finding["ok"] == true
+          return passing_result(finding, file, kind, errors, intent) if finding["ok"] == true
 
-          failing_result(finding, file, kind, errors, originals)
+          failing_result(finding, file, kind, errors, originals, intent)
         end
 
         def finding_errors(finding, file)
@@ -1002,17 +1163,17 @@ module SpecGuard
           errors
         end
 
-        def passing_result(finding, file, kind, errors)
+        def passing_result(finding, file, kind, errors, intent)
           unless kind.nil? && errors.empty?
             raise ValidatorError,
                   "#{describe} emitted a passing finding on #{file} carrying kind #{kind.inspect} " \
                   "and #{errors.length} error(s)"
           end
 
-          Linter::Result.new(file: file, line: line_of(finding, file))
+          Linter::Result.new(file: file, line: line_of(finding, file), intent: intent)
         end
 
-        def failing_result(finding, file, kind, errors, originals)
+        def failing_result(finding, file, kind, errors, originals, intent)
           mapped = KINDS[kind]
           # An unknown kind is a vocabulary the port grew and this file has not
           # been taught. Guessing would render it under whichever branch of
@@ -1021,14 +1182,18 @@ module SpecGuard
           raise ValidatorError, "#{describe} emitted the unknown kind #{kind.inspect} on #{file}" if mapped.nil?
           raise ValidatorError, "#{describe} emitted a failing finding on #{file} with no errors" if errors.empty?
 
-          return schema_result(finding, file, errors) if kind == "schema"
+          return schema_result(finding, file, errors, intent) if kind == "schema"
 
+          # Extraction, parse, read and no-match findings have no payload by
+          # construction — the port emits null for all four — so the intent is
+          # not threaded past here. Reading it anyway would invent a case the
+          # producer cannot produce.
           problem_result(finding, file, kind, errors, originals)
         end
 
-        def schema_result(finding, file, errors)
+        def schema_result(finding, file, errors, intent)
           Linter::Result.new(file: file, line: line_of(finding, file),
-                             kind: Finding::KIND_SCHEMA, reasons: errors)
+                             kind: Finding::KIND_SCHEMA, reasons: errors, intent: intent)
         end
 
         def problem_result(finding, file, kind, errors, originals)

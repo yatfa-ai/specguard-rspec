@@ -31,7 +31,7 @@ module SpecGuard
     # (open-test-intent, `cmd/validate-intent/report.go`) key for key:
     #
     #   {"schema", "mode", "ok", "summary": {"files", "annotations", "failed"},
-    #    "findings": [{"file", "line", "ok", "kind", "errors"}, ...]}
+    #    "findings": [{"file", "line", "ok", "kind", "errors", "intent"}, ...]}
     #
     # The gem is already a *consumer* of exactly this document —
     # {ValidatorBackend::Runner} runs `--source --json` and reconstructs
@@ -138,7 +138,14 @@ module SpecGuard
           "line" => result.line_scoped? ? result.line : nil,
           "ok" => result.ok?,
           "kind" => result.kind&.to_s,
-          "errors" => errors(result)
+          "errors" => errors(result),
+          # {Linter::Result#representable_intent}, not `intent`: a payload
+          # holding a lone low surrogate parses in Ruby and then cannot be
+          # GENERATED, so emitting it raw would raise here and take the whole
+          # document with it — a `--json` run that dies rendering a finding it
+          # had already decided about. Null is the same answer this document
+          # gives for every other payload it does not have.
+          "intent" => result.representable_intent
         }
       end
 

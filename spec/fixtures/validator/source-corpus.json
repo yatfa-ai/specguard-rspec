@@ -13,49 +13,91 @@
       "line": 10,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "returns 402 payment required on expired card",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 17,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "returns 402 payment required on expired card",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 24,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "returns 402 payment required on expired card",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 32,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "reports the card's expiry date in the decline notice",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 41,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "renders the gateway's decline reason in the {error} slot",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 49,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "checkout",
+        "behavior": "returns 400 when the JSON body is truncated after the opening {",
+        "layer": "request"
+      }
     },
     {
       "file": "spec/fixtures/order_spec.rb",
       "line": 57,
       "ok": true,
       "kind": null,
-      "errors": []
+      "errors": [],
+      "intent": {
+        "entity": "Order",
+        "action": "refund",
+        "behavior": "restores stock levels when a paid order is refunded",
+        "layer": "unit"
+      }
     },
     {
       "file": "spec/fixtures/broken_intent_spec.rb",
@@ -65,7 +107,13 @@
       "errors": [
         "<root>: missing required property 'entity'",
         "<root>: additional property 'entiity' is not allowed"
-      ]
+      ],
+      "intent": {
+        "entiity": "Order",
+        "action": "total",
+        "behavior": "sums line item prices after the discount",
+        "layer": "unit"
+      }
     },
     {
       "file": "spec/fixtures/broken_intent_spec.rb",
@@ -74,7 +122,13 @@
       "kind": "schema",
       "errors": [
         "layer: value 'model' is not one of ['unit', 'integration', 'request', 'system']"
-      ]
+      ],
+      "intent": {
+        "entity": "Order",
+        "action": "total",
+        "behavior": "sums line item prices after the discount",
+        "layer": "model"
+      }
     },
     {
       "file": "spec/fixtures/broken_intent_spec.rb",
@@ -84,7 +138,12 @@
       "errors": [
         "<root>: missing required property 'layer'",
         "behavior: string is 4 char(s), minLength is 15"
-      ]
+      ],
+      "intent": {
+        "entity": "Order",
+        "action": "total",
+        "behavior": "sums"
+      }
     },
     {
       "file": "spec/fixtures/broken_intent_spec.rb",
@@ -93,7 +152,8 @@
       "kind": "extraction",
       "errors": [
         "unterminated object literal (an annotation must fit on one line)"
-      ]
+      ],
+      "intent": null
     },
     {
       "file": "spec/fixtures/broken_intent_spec.rb",
@@ -102,7 +162,8 @@
       "kind": "extraction",
       "errors": [
         "no '{...}' object literal follows the @intent: token"
-      ]
+      ],
+      "intent": null
     }
   ]
 }

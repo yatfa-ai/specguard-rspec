@@ -316,6 +316,220 @@ RSpec.describe SpecGuard::RSpec::AnnotationLookup do
     end
   end
 
+  # SPGD-340. The formatter's half used to run the Ruby chain unconditionally
+  # while `CLI` had routed the LINTER through the backend since SPGD-247, so one
+  # gem validated the same annotation with two parsers — and when they disagreed
+  # CI ratified an annotation the formatter then shipped as `unannotated`,
+  # silently, on both ends. This block is that seam.
+  describe "when a validator backend is configured" do
+    # A Runner is a subprocess wrapper; what this class depends on is the shape
+    # of its answer, which is a list of Linter::Results. Stubbing at `resolve`
+    # tests the wiring — the thing that was missing — without making these
+    # examples require a binary. `validator_backend_spec.rb` drives a real
+    # stub binary end to end.
+    def with_backend(results)
+      runner = instance_double(SpecGuard::RSpec::ValidatorBackend::Runner)
+      allow(runner).to receive(:check).and_return(results)
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_return(runner)
+      runner
+    end
+
+    def result(line:, intent: nil, kind: nil, problem: nil, reasons: [])
+      SpecGuard::RSpec::Linter::Result.new(file: "sample_spec.rb", line: line, intent: intent,
+                                           kind: kind, problem: problem, reasons: reasons)
+    end
+
+    let(:backend_env) { { "SPECGUARD_VALIDATE_INTENT" => "/usr/local/bin/validate-intent" } }
+    subject(:lookup) { described_class.new(env: backend_env) }
+
+    it "ships the intent the backend validated" do
+      with_backend([result(line: 1, intent: valid_intent)])
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+    end
+
+    # The property the whole ticket is for: what the formatter ships is what the
+    # BACKEND said, not what a second parser in this process would have said.
+    # Asserted with a payload the two cannot agree on by accident — the Ruby
+    # chain reads this file and finds a valid annotation, and the backend is
+    # made to disagree — so a lookup that quietly re-derived the answer locally
+    # would return the Scanner's intent and fail here.
+    it "does not re-derive the verdict locally" do
+      with_backend([result(line: 1, kind: SpecGuard::RSpec::Finding::KIND_SCHEMA,
+                           reasons: ["<root>: layer is not one of ..."], intent: valid_intent)])
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to be_nil
+    end
+
+    it "takes the payload from the backend even when the Ruby chain could not parse it" do
+      # The motivating shape: a payload this process cannot read and the port
+      # can. The file is deliberately unparseable to Ruby's JSON, so a non-nil
+      # answer here can only have come from the backend.
+      with_backend([result(line: 1, intent: valid_intent)])
+      path = write_spec("# @intent: { entity: Order }\nit 'x' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+    end
+
+    # The lookback rule is the formatter's own and is NOT in the report: a
+    # finding says `file:line`, and nothing in it says whether that line was a
+    # comment. So the rule still has to be applied here, over the backend's
+    # answers, and these are the two halves of it.
+    it "still applies the comment-form rule to the backend's findings" do
+      with_backend([result(line: 1, intent: valid_intent)])
+      # Line 1 is CODE, not a comment, so line 2 may not claim it.
+      path = write_spec("it 'a' do # @intent: #{valid_annotation}\nit 'b' do\n")
+
+      expect(lookup.intent_for(file: path, line: 1)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 2)).to be_nil
+    end
+
+    it "still lets a line's own rejected annotation beat the comment above it" do
+      with_backend([
+        result(line: 1, intent: valid_intent),
+        result(line: 2, kind: SpecGuard::RSpec::Finding::KIND_PARSE,
+               problem: "could not parse annotation")
+      ])
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do # @intent: {\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to be_nil
+    end
+
+    # Read failures and no-matches arrive line-scoped to 0, which is not a line
+    # anyone can claim — the same sentinel the Ruby path filters out.
+    it "never lets a line-0 finding become line 1's annotation" do
+      with_backend([result(line: 0, kind: SpecGuard::RSpec::Finding::KIND_READ,
+                           problem: "could not read file: no file at this path")])
+
+      expect(lookup.intent_for(file: write_spec("it 'x' do\n"), line: 1)).to be_nil
+    end
+
+    # The cost bound is the same bound, one process out: `--source` takes FILES,
+    # so this is one shell-out per file. Per example would be O(examples)
+    # subprocesses on somebody's critical path, which is the cost this class
+    # exists to refuse.
+    it "invokes the backend once per file, however many examples come from it" do
+      runner = with_backend([result(line: 1, intent: valid_intent)])
+      path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\nit 'b' do\nit 'c' do\n")
+
+      (1..4).each { |line| lookup.intent_for(file: path, line: line) }
+
+      expect(runner).to have_received(:check).once
+    end
+
+    it "does not consult the Ruby schema at all" do
+      with_backend([result(line: 1, intent: valid_intent)])
+      allow(SpecGuard::RSpec::Schema).to receive(:load).and_call_original
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      lookup.intent_for(file: path, line: 2)
+
+      expect(SpecGuard::RSpec::Schema).not_to have_received(:load)
+    end
+
+    # The other half of the ticket's non-negotiable: with the variable UNSET,
+    # nothing changes and no subprocess is started. Asserted rather than assumed
+    # — it is the behaviour every existing user has.
+    it "is not resolved at all when the variable is unset" do
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_call_original
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      expect(described_class.new(env: {}).intent_for(file: path, line: 2)).to eq(valid_intent)
+    end
+
+    # THE NON-NEGOTIABLE (ticket step 3): a backend that cannot answer falls
+    # back to the RUBY PATH, and never to nil.
+    #
+    # This example previously asserted the opposite — that the raise escapes to
+    # {Formatter}'s `never_fail_the_run` envelope. That envelope keeps the RUN
+    # alive, which is why it exists, but it does so by abandoning the example's
+    # annotation. So a single mistyped path in `SPECGUARD_VALIDATE_INTENT` shipped
+    # an ENTIRE SUITE as `unannotated` while every one of those annotations was
+    # valid and locally checkable — losing the whole run's telemetry to a
+    # misconfiguration, which is strictly worse than the state before the backend
+    # existed. An unusable binary means the backend cannot say what an annotation
+    # is; it does not mean the annotation is bad.
+    #
+    # Asserted with a REAL intent rather than `not_to raise_error`, because the
+    # latter passes just as happily if the fallback returns nil for everything —
+    # which is the failure this is about.
+    it "falls back to the Ruby path when the configured binary is unusable" do
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
+      path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\n# @intent: #{valid_annotation}\nit 'b' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+      expect(lookup.intent_for(file: path, line: 4)).to eq(valid_intent)
+    end
+
+    # ...and it probes ONCE. The resolve is a subprocess, so re-probing per
+    # example is the O(examples) cost this class exists to refuse — reappearing
+    # on exactly the unhappy path where somebody's CI is already having a bad
+    # day. Memoized on failure, which is what makes that true.
+    it "probes the unusable binary only once" do
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve)
+        .and_raise(SpecGuard::RSpec::ValidatorError, "nope")
+      path = write_spec("# @intent: #{valid_annotation}\nit 'a' do\n# @intent: #{valid_annotation}\nit 'b' do\n")
+
+      [2, 4].each { |line| lookup.intent_for(file: path, line: line) }
+
+      expect(SpecGuard::RSpec::ValidatorBackend).to have_received(:resolve).once
+    end
+
+    # The same rule one layer in: a backend that resolved and then died MID-RUN
+    # has still told us nothing about the annotation, so the file falls back
+    # rather than costing every annotation in it its payload.
+    it "falls back to the Ruby path when the backend dies mid-run" do
+      runner = instance_double(SpecGuard::RSpec::ValidatorBackend::Runner)
+      allow(runner).to receive(:check).and_raise(SpecGuard::RSpec::ValidatorError, "died")
+      allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_return(runner)
+      path = write_spec("# @intent: #{valid_annotation}\nit 'x' do\n")
+
+      expect(lookup.intent_for(file: path, line: 2)).to eq(valid_intent)
+    end
+
+    # An unreadable file is answered without starting a subprocess: the read
+    # happens first on both paths, and there is nothing for a validator to say
+    # about a file this process cannot open.
+    it "does not shell out for a file it cannot read" do
+      runner = with_backend([])
+
+      expect(lookup.intent_for(file: File.join(tmpdir, "gone_spec.rb"), line: 2)).to be_nil
+      expect(runner).not_to have_received(:check)
+    end
+  end
+
+  # A payload can clear the schema and still be unshippable: `JSON.parse`
+  # accepts a lone low surrogate and returns a String that `JSON.generate` then
+  # refuses. Shipping it would take the whole run's telemetry down at the
+  # transport rather than costing one example its annotation — and substituting
+  # a repaired character would put an annotation on the platform that the author
+  # did not write, undetectably. Unshippable means unannotated.
+  describe "an intent it could parse but could not hand on" do
+    it "downgrades a payload holding a lone low surrogate" do
+      annotation = %q({ "entity": "\udc00Or", "action": "create", ) +
+                   %q("behavior": "creates an order from a valid cart", "layer": "unit" })
+      intent = intent_at("# @intent: #{annotation}\nit 'x' do\n", 2)
+
+      expect(intent).to be_nil
+    end
+
+    # Non-vacuity, and the boundary: the same annotation with a WELL-FORMED
+    # surrogate pair is representable and is shipped. Without this the example
+    # above would pass just as happily if the rule were "any surrogate escape"
+    # or, worse, "any annotation at all".
+    it "still ships the same annotation with a well-formed pair" do
+      annotation = %q({ "entity": "😀Or", "action": "create", ) +
+                   %q("behavior": "creates an order from a valid cart", "layer": "unit" })
+      intent = intent_at("# @intent: #{annotation}\nit 'x' do\n", 2)
+
+      expect(intent["entity"]).to eq("\u{1F600}Or")
+      expect { JSON.generate(intent) }.not_to raise_error
+    end
+  end
+
   # Criterion 5. `AnnotationScanner.each_intent` walks every line of the file it
   # is handed, so scanning per example turns a 20,000-example suite into 20,000
   # reads and 20,000 full-file walks — on the critical path of somebody's test

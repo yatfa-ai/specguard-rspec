@@ -325,6 +325,52 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # README.md:65-67 claims this document is "key-, type- and value-identical"
+    # to `validate-intent --source --json`. The port grew an `intent` key
+    # (SPGD-340) carrying WHAT THE PAYLOAD PARSED TO, so this renderer has to
+    # grow it too or that claim quietly stops being true — and it would stop
+    # being true in the direction nobody notices, since a consumer reading the
+    # port's document and then this one finds a key missing rather than wrong.
+    describe "`intent` — what the payload parsed to" do
+      it "carries the parsed annotation on a passing finding" do
+        finding = findings_for(fixture_path("order_spec.rb")).first
+
+        expect(finding["intent"]).to include(
+          "entity" => "Order", "action" => "checkout", "layer" => "request"
+        )
+      end
+
+      # Same rule as the port's: `ok` says whether it is good, `intent` says
+      # what it is, and a schema-rejected annotation still says something.
+      it "carries it on a schema-rejected finding too" do
+        finding = findings_for(fixture_path("broken_intent_spec.rb")).first
+
+        expect(finding["ok"]).to be(false)
+        expect(finding["kind"]).to eq("schema")
+        expect(finding["intent"]).to be_a(Hash)
+      end
+
+      it "is null, and present, where there was no payload" do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, "typo_spec.rb")
+          File.write(path, "# @intent:\n")
+          finding = findings_for(path).first
+
+          expect(finding).to have_key("intent")
+          expect(finding["intent"]).to be_nil
+        end
+      end
+
+      # Key ORDER, not just presence: the claim is key-for-key with a document
+      # whose order is positional, and Ruby preserves insertion order, so this
+      # is assertable rather than merely hoped for.
+      it "is the last key, matching the port's order" do
+        finding = findings_for(fixture_path("order_spec.rb")).first
+
+        expect(finding.keys).to eq(%w[file line ok kind errors intent])
+      end
+    end
+
     describe "the document's own consistency" do
       # `ok` is derived from the exit code the text path would also have
       # produced rather than recomputed from the findings, following
