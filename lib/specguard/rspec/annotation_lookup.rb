@@ -6,7 +6,7 @@
 # It is the formatter's half of the annotation story. The linter's half already
 # exists and is not duplicated here — {SpecGuard::RSpec::Scanner} finds every
 # `@intent:` in a file, captures its payload string-aware and parses it, and
-# {SpecGuard::RSpec::Schema} decides whether the result is valid. This class
+# the `validate-intent` binary decides whether the result is valid. This class
 # consumes both. Writing a second extractor would guarantee that the tool
 # telling an author their annotation is wrong and the tool reporting it to the
 # platform eventually disagree about what an annotation *is*.
@@ -119,8 +119,8 @@ module SpecGuard
       #
       # The values are the INTENT TO SHIP or nil — the verdict already applied —
       # rather than a Finding, because the two paths that build this index reach
-      # a verdict by different routes (the Ruby Scanner plus Schema, or the
-      # port's report) and only agree on the answer. Storing the answer is what
+      # a verdict by different routes (the local Scanner for the LINES, or the
+      # port's report for the verdicts) and only agree on the answer. Storing the answer is what
       # keeps `#intent_for` from having to know which one ran.
       #
       # A line's own annotation always wins: the trailing form is written *on*
@@ -148,17 +148,11 @@ module SpecGuard
       # path cannot drift apart.
       EMPTY_INDEX = Index.new({}.freeze, {}.freeze).freeze
 
-      # @param schema_path [String] the vendored OpenTestIntent schema. Injected
-      #   so a spec can point at a broken one without stubbing the loader. Used
-      #   only on the Ruby path; the backend enforces its own copy and reports
-      #   which one at resolution time.
       # @param env [Hash, ENV] where `SPECGUARD_VALIDATE_INTENT` is read from.
-      #   Injected for the same reason, and read LAZILY — see {#backend}.
-      def initialize(schema_path: SCHEMA_PATH, env: ENV)
-        @schema_path = schema_path
+      #   Injected for testing, and read LAZILY — see {#backend}.
+      def initialize(env: ENV)
         @env = env
         @indexes = {}
-        @verdicts = {}
       end
 
       # The intent to attach to one example, or nil when it is unannotated.
@@ -183,18 +177,15 @@ module SpecGuard
 
       private
 
-      # The validator backend, or nil when `SPECGUARD_VALIDATE_INTENT` is unset
-      # — memoized, including when resolving RAISES.
+      # The validator backend, or nil — memoized, including when resolving
+      # RAISES.
       #
-      # WHY THIS CLASS RESOLVES ONE AT ALL. `CLI` has routed the LINTER through
-      # the backend since SPGD-247 while this half stayed on the Ruby chain, so
-      # one gem was validating the same annotation with two parsers: CI ratified
-      # an annotation the formatter then shipped as `unannotated`, silently, on
-      # both ends. Whatever the backend accepted is what the platform must
-      # receive, so this asks the same binary the same question.
-      #
-      # WITH THE VARIABLE UNSET NOTHING CHANGES. `resolve` returns nil, the Ruby
-      # path below runs exactly as it always has, and no subprocess is started.
+      # WHY THIS CLASS RESOLVES ONE AT ALL. `CLI` routes the linter through the
+      # backend, and since the SPGD-867 cutover the backend is the ONLY
+      # validator: the gem no longer carries a Ruby validation arm. Whatever
+      # the backend accepts is what the platform must receive, so this asks
+      # the same binary the same question rather than a second parser that
+      # could disagree with it.
       #
       # Lazily, not in the constructor: {Formatter} builds this at suite start,
       # and `resolve` verifies the binary (two probes, and a raise when it is
@@ -204,19 +195,21 @@ module SpecGuard
       #
       # A {ValidatorError} HERE IS NOT FATAL AND IS NOT nil-THE-ANNOTATION. An
       # unusable binary means this class cannot ask the backend what an
-      # annotation says; it does NOT mean the annotation is bad. The Ruby chain
-      # below is still perfectly capable of answering, and it is the answer
-      # every user without the variable set already gets — so a broken backend
-      # degrades to the PREVIOUS behaviour rather than to no telemetry at all.
+      # annotation says; it does NOT mean the annotation is bad. Since the
+      # cutover there is no Ruby arm to fall back to, so probe failure is
+      # memoized as nil and `#verdicts_for` answers `unverified_verdicts` for
+      # every file: local line discovery keeps working and every annotation is
+      # reported as `unannotated` — the honest answer under the formatter's
+      # never-fail-the-run contract, while the linter half makes the failure
+      # loud (it exits 2 when no binary can be resolved, naming the
+      # remediations).
       #
-      # The alternative was letting it reach {Formatter}'s `never_fail_the_run`
-      # envelope. That envelope keeps the RUN alive, which is why it exists, but
-      # it does so by abandoning the example's annotation — so a mistyped path
-      # in `SPECGUARD_VALIDATE_INTENT` would ship an entire suite as
-      # `unannotated` while every one of those annotations was valid and locally
-      # checkable. Losing the whole run's telemetry to a misconfiguration is
-      # strictly worse than the state before the backend existed. The envelope
-      # stays as the last resort; it is not the first.
+      # The alternative was letting the raise reach {Formatter}'s
+      # `never_fail_the_run` envelope. That envelope keeps the RUN alive, but
+      # it does so by abandoning the example's annotation. Degrading HERE
+      # instead means ONE swallowed probe per suite rather than one per
+      # example, with `unverified_verdicts` as the single consistent answer
+      # for every file.
       #
       # Cached, including on failure, for the reason {#schema} is: the probe is
       # a subprocess, and re-running it per example is the O(examples) cost this
@@ -229,8 +222,8 @@ module SpecGuard
         @backend = ValidatorBackend.resolve(env: @env)
       rescue ValidatorError
         # Deliberately swallowed rather than re-raised: @backend is already nil,
-        # which is the same state an unset variable produces, so #verdicts_for
-        # takes the Ruby arm and the memo keeps this from being re-probed.
+        # so #verdicts_for takes the unverified_verdicts arm and the memo keeps
+        # this from being re-probed.
         @backend = nil
       end
 
@@ -264,40 +257,6 @@ module SpecGuard
         index_from(verdicts_for(file, text), text)
       end
 
-      # One entry per annotation, in discovery order, as `[line, intent_or_nil]`
-      # — the verdict already applied.
-      #
-      # The two arms answer the same question against the same protocol, and the
-      # whole point of the backend arm is that its answer is the one CI reached.
-      #
-      # A {ValidatorError} RAISED MID-RUN FALLS BACK TO THE RUBY ARM, for the
-      # reason {#backend} gives about an unusable binary: a validator that dies
-      # partway through a suite has told us nothing about the annotation, so the
-      # right answer is the one the gem would have given without it — not "this
-      # example is unannotated". The fallback is per FILE, which is the unit
-      # `check` is called on, so one bad file does not cost the rest of the run
-      # its backend.
-      def verdicts_for(file, text)
-        resolved = backend
-        return backend_verdicts(file, resolved, text) if resolved
-
-        ruby_verdicts(file, text)
-      end
-
-      # {Scanner} finds and parses; {Schema} decides. This is the path every
-      # existing user is on, and it is unchanged apart from where the verdict is
-      # reached — see the note on memoization in {#validated}.
-      def ruby_verdicts(file, text)
-        Scanner.scan_text(text, file: file).map do |finding|
-          # {Finding#extracted?} is the discovery layer's own word for "this
-          # yielded a Hash" — and, pointedly, "not a claim that it is valid".
-          # Everything it excludes (KIND_EXTRACTION, KIND_PARSE, KIND_READ) is
-          # an annotation the linter fails the build over and this half must
-          # not.
-          [finding.line, finding.extracted? ? validated(finding.intent) : nil]
-        end
-      end
-
       # One shell-out per FILE, which is the cost model this class already
       # commits to: {#index_for} is O(files), `--source` takes files, and the
       # port reports every annotation in one pass with the `file:line` scoping
@@ -306,19 +265,33 @@ module SpecGuard
       #
       # `#check` returns one {Linter::Result} per finding. A result that is not
       # `ok?` is an annotation the linter fails the build over, so it ships
-      # nothing — the same rule the Ruby arm applies from the other side. Read
-      # failures and no-matches arrive line-scoped to 0 and are filtered by
-      # {#index_from}.
-      def backend_verdicts(file, resolved, text)
+      # nothing. Read failures and no-matches arrive line-scoped to 0 and are
+      # filtered by {#index_from}.
+      #
+      # A {ValidatorError} here means the backend could not answer about THIS
+      # file's annotations. Since the cutover there is no Ruby arm to fall back
+      # to, the honest answer is the one this class already gives for anything
+      # it could not verify: every annotation in the file ships `unannotated`.
+      # The never-block-CI contract forbids anything louder from the formatter,
+      # and the linter — which CAN be loud — is the tool that catches it.
+      def verdicts_for(file, text)
+        resolved = backend
+        return unverified_verdicts(file, text) if resolved.nil?
+
         resolved.check([file]).map do |result|
           [result.line, result.ok? ? result.representable_intent : nil]
         end
       rescue ValidatorError
-        # See #verdicts_for. The backend could not answer, so the gem answers
-        # the way it does with no backend at all — which is a real verdict,
-        # rather than the "unannotated" a re-raise would turn every annotation
-        # in this file into.
-        ruby_verdicts(file, text)
+        unverified_verdicts(file, text)
+      end
+
+      # The lines the scanner still finds, every one answered `nil`. Discovery
+      # is a property of the FILE (which lines carry annotations, which are
+      # comment-form) and stays local — it is validation that needed the
+      # backend. Keeping the lines lets {#index_from} apply the comment-form
+      # rule exactly as it does for verdicts the backend did answer.
+      def unverified_verdicts(file, text)
+        Scanner.scan_text(text, file: file).map { |finding| [finding.line, nil] }
       end
 
       # @return [Index]
@@ -372,9 +345,9 @@ module SpecGuard
       end
 
       # Keyed by the intent itself, so an annotation repeated across a suite is
-      # compiled against the schema once rather than once per example that
-      # carries it. json_schemer is not free, and this class is explicitly about
-      # not paying O(examples) for work that is O(annotations).
+      # checked once rather than once per example that carries it. The
+      # shell-out is the expensive stage, and this class is explicitly about
+      # not paying O(examples) for work that is O(files).
       #
       # The verdict is now reached while the index is BUILT rather than when an
       # example first claims the line, which makes the cost O(annotations in the
@@ -385,42 +358,6 @@ module SpecGuard
       # annotation rather than the first lookup that lands on one; both are
       # inside the formatter's envelope, and {#index_for}'s pessimistic
       # pre-caching already guarantees the second example does not raise again.
-      #
-      # @return [Hash, nil] the intent when the schema accepts it
-      def validated(intent)
-        return @verdicts[intent] if @verdicts.key?(intent)
-
-        @verdicts[intent] = validate(intent)
-      end
-
-      def validate(intent)
-        loaded = schema
-        return nil if loaded.nil?
-        return nil unless loaded.violations(intent).empty?
-
-        # Schema-valid is not the same as shippable. `JSON.parse` accepts a lone
-        # low surrogate and hands back a String that `JSON.generate` then
-        # refuses, so an annotation can clear the schema and still take the
-        # transport down at the point of use. {Linter::Result} owns that rule
-        # for the backend arm; this is the same rule on this one, applied at the
-        # same place the schema verdict is.
-        Linter::Result.new(file: nil, line: nil, intent: intent).representable_intent
-      end
-
-      # Loaded on first use, and at most once — including when loading fails.
-      #
-      # {Schema.load} raises {SchemaError} when the vendored document cannot be
-      # read, parsed or compiled. Under the linter that is a deliberate exit 2.
-      # Here it must not be an exit anything, so the raise is left to the
-      # formatter's envelope and the nil that gets cached in its place turns
-      # every subsequent annotation into an honest `unannotated` — the same
-      # answer this class gives for every other thing it could not verify.
-      def schema
-        return @schema if defined?(@schema)
-
-        @schema = nil
-        @schema = Schema.load(@schema_path)
-      end
     end
   end
 end

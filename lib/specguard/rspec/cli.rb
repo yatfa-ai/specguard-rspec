@@ -30,10 +30,10 @@ module SpecGuard
     # bug, a gate whose failure states are indistinguishable, and for a linter
     # the exit code *is* the product.
     #
-    # {#run} therefore rescues in three bands and returns rather than exits:
-    # {UsageError} and {SchemaError} are named, and everything else that is not
-    # a deliberate interruption is caught by a backstop. Exit 1 is produced in
-    # exactly one place — a failed {Linter::Result} — so it means that and
+    # {#run} therefore rescues in two bands and returns rather than exits:
+    # {UsageError} and {ValidatorError} are named, and everything else that is
+    # not a deliberate interruption is caught by a backstop. Exit 1 is produced
+    # in exactly one place — a failed {Linter::Result} — so it means that and
     # nothing else.
     #
     # `Interrupt`, `SignalException` and `SystemExit` are deliberately *not*
@@ -50,13 +50,16 @@ module SpecGuard
     # decision recorded on SPGD-82); the "first" wording is a known spec defect
     # with a correction filed against SPGD-12 §1 and the SPGD-73 roadmap text.
     #
-    # == Two validators, one report
+    # == One validator, one report
     #
-    # {#run} has exactly one branch on which validator produced the verdicts —
-    # the in-gem {Linter}, or the Go port shelled out to by {ValidatorBackend}
-    # when `SPECGUARD_VALIDATE_INTENT` names a binary. Both arms return
-    # {Linter::Result}s, so the branch closes immediately and the reporting and
-    # exit-code logic below is shared rather than duplicated.
+    # Since the SPGD-867 cutover there is exactly one validator: the
+    # `validate-intent` binary {ValidatorBackend} resolves (an explicit
+    # `SPECGUARD_VALIDATE_INTENT` path, or the first-run auto-install). The
+    # Ruby hand-rolled validation arm is gone — when no binary can be resolved
+    # the run exits 2 naming both remediations, and it NEVER silently
+    # validates some other way. The verdicts arrive as {Linter::Result}s, and
+    # the reporting and exit-code logic is shared with nothing because there
+    # is nothing to share it with.
     #
     # Because both arms produce the same bytes, the run has to SAY which one it
     # was, or the answer is unrecoverable from the output — see
@@ -85,8 +88,8 @@ module SpecGuard
     #
     # No exit-2 path emits a document, and that is a decision rather than an
     # omission. Every `rescue` below means the linter produced NO VERDICTS —
-    # bad flags, `--changed` outside a repository, an unloadable schema, an
-    # unmet `--require-validator`. A document is a report about what was
+    # bad flags, `--changed` outside a repository, a validator that could not
+    # be resolved or produced no verdict. A document is a report about what was
     # checked; emitting `{"ok": false, "findings": []}` for a run that checked
     # nothing would hand a stdout-reading consumer the project's signature
     # defect — an empty clean-looking report standing in for "could not check" —
@@ -104,7 +107,8 @@ module SpecGuard
       # {Linter::Result}.
       EXIT_MALFORMED = 1
       # The linter could not do its job: bad flags, `--changed` outside a git
-      # repository, an unloadable schema, or an unexpected internal error.
+      # repository, a validator that could not be resolved, or an unexpected
+      # internal error.
       EXIT_MISUSE = 2
 
       def initialize(stdout: $stdout, stderr: $stderr, env: ENV)
@@ -120,44 +124,21 @@ module SpecGuard
         options = parse_options(argv)
         return EXIT_OK if options.nil? # --help / --version already printed
 
-        # nil unless SPECGUARD_VALIDATE_INTENT names a usable binary, in which
-        # case this raises rather than returning one that is not. Resolved
-        # before anything is selected or scanned, for the same reason the
-        # schema is: "the validator you asked for is not there" must never
-        # surface as a run that checked nothing and called itself clean.
+        # Resolved — or the run has already exited 2 — before anything is
+        # selected or scanned, for the same reason it always was: "the
+        # validator could not be obtained" must never surface as a run that
+        # checked nothing and called itself clean. There is no Ruby arm to
+        # fall back to, so a resolution failure IS the run's failure.
         backend = ValidatorBackend.resolve(env: @env)
 
-        # Immediately after resolution and before selection: the line is above
-        # the empty-selection warnings, it costs the `--version` probe at most
-        # once per run, and a run that dies later still said what was about to
-        # validate it. See #report_backend.
+        # One line per run naming the implementation that produced the
+        # verdicts. Since the cutover there is exactly one implementation.
         report_backend(backend)
-
-        # After the provenance line, so stderr carries what DID validate the
-        # run before the reason that was not good enough, and before selection,
-        # so an unmet assertion selects, scans and reports nothing.
-        #
-        # Being before #select also fixes a precedence, and it was chosen
-        # rather than inherited: `--changed --require-validator foo_spec.rb`
-        # with the variable unset reports the missing backend and never reaches
-        # the "--changed cannot be combined with explicit files" UsageError
-        # below. Both are exit 2, and the backend is the earlier question —
-        # which files to check does not matter when nothing is going to check
-        # them with the implementation that was asked for.
-        require_backend!(backend) if options[:require_validator]
-
-        # Only on the Ruby path. When the backend is active the binary carries
-        # its own schema and this gem's vendored copy governs nothing, so
-        # loading it would let an unrelated packaging accident fail a run that
-        # never reads it. The guard the load provides is not lost — the port
-        # exits 2 on a schema it cannot load, and #run maps that to a
-        # ValidatorError.
-        schema = Schema.load if backend.nil?
 
         selection = select(options)
         report_selection(selection, json: options[:json])
 
-        results = check(selection.files, backend: backend, schema: schema)
+        results = backend.check(selection.files)
 
         # Computed once, here, and handed to whichever renderer runs. `--json`
         # is a second renderer over this list, not a second code path: the exit
@@ -171,11 +152,6 @@ module SpecGuard
       rescue UsageError, ValidatorError => e
         @stderr.puts "specguard-lint: error: #{e.message}"
         EXIT_MISUSE
-      rescue SchemaError => e
-        # Wording and stream follow the binary's `schemaLoadError`
-        # (open-test-intent, cmd/validate-intent/main.go) exactly.
-        @stderr.puts "error: #{e.message}"
-        EXIT_MISUSE
       rescue ScriptError, StandardError => e
         # The backstop that makes exit 1 mean one thing. Anything reaching here
         # is a bug in the linter, not a verdict about anyone's annotations, so
@@ -187,95 +163,16 @@ module SpecGuard
       private
 
       # One line per run naming the implementation that produced the verdicts.
+      # Since the SPGD-867 cutover there is exactly one implementation — the
+      # resolved `validate-intent` binary — and the line says which one,
+      # including its identity and schema contract, so "which validator did
+      # this CI job actually run" stays answerable from the output.
       #
-      # Two validators can now answer for this tool, and until this line existed
-      # a report from the Go port and a report from {Linter} were the same
-      # bytes. That is the same hole {ValidatorBackend} closes by making a
-      # missing binary a hard exit 2 and refusing a bare command name — "which
-      # validator did this CI job actually run" must not be unanswerable — left
-      # open for every binary that does resolve.
-      #
-      # Three things about it are deliberate:
-      #
-      #   * it is on STDERR. The findings and the two `checked …` lines are the
-      #     product and are pinned byte-for-byte across the two backends
-      #     (`spec/specguard/rspec/validator_backend_spec.rb`); a line about the
-      #     linter's own configuration belongs where the warnings are, and
-      #     putting it on stdout would make the backends' stdout differ for the
-      #     first time.
-      #   * BOTH arms speak. "Validated in Ruby" as a positive statement is the
-      #     whole point: a line that appeared only when the backend was on would
-      #     leave its absence meaning either "the Ruby path" or "an older gem
-      #     that never printed one", which is not an answer.
-      #   * the off arm distinguishes unset from blank. {ValidatorBackend.resolve}
-      #     deliberately collapses them — a blank `SPECGUARD_VALIDATE_INTENT=` in
-      #     a CI environment file is somebody turning the backend off — and
-      #     returns nil for both, so the distinction is unrecoverable from the
-      #     backend and is read from `@env` here instead. Somebody who set the
-      #     variable and got the Ruby path anyway needs to see that the value,
-      #     not the wiring, is why.
+      # It is on STDERR: the findings and the two `checked …` lines are the
+      # product and are pinned byte-for-byte; a line about the linter's own
+      # configuration belongs where the warnings are.
       def report_backend(backend)
-        @stderr.puts "specguard-lint: #{backend ? backend.provenance : ruby_provenance}"
-      end
-
-      def ruby_provenance
-        "validated in Ruby (#{ruby_reason})"
-      end
-
-      # Why {ValidatorBackend.resolve} returned nil, in the words the
-      # provenance line uses. Shared with {#require_backend!} on purpose: the
-      # two sentences describe the same two states, and a run that says "is set
-      # but blank, which means off" on one line and something else on the next
-      # would be two vocabularies for one fact. There is one, and it is here.
-      def ruby_reason
-        var = ValidatorBackend::ENV_VAR
-        return "#{var} is unset" if @env[var].nil?
-
-        "#{var} is set but blank, which means off"
-      end
-
-      # `--require-validator`: turn "I asked for the binary and silently did
-      # not get it" into an exit 2.
-      #
-      # The named-but-broken cases were already hard failures — {Runner#verify!}
-      # raises and #run rescues it. The gap this closes is the case where the
-      # variable never arrived: a mistyped name, a conditional CI step that did
-      # not run, an environment file that was not loaded. The run then succeeds,
-      # validated by the OTHER implementation, and the only trace is a stderr
-      # line nothing reads.
-      #
-      # That is not "same answer, different engine". The two JSON parsers do not
-      # accept the same language (see {ValidatorBackend}'s ratified differences),
-      # and where such a payload is schema-valid the two backends return
-      # different EXIT CODES for the same file with nothing in the output to say
-      # so. A gate whose failure states are indistinguishable is the defect this
-      # tool exists to remove, met here for the third time.
-      #
-      # A flag rather than a second environment variable, and that is the point
-      # of the feature rather than a style call: `SPECGUARD_VALIDATE_INTENT_REQURED=1`
-      # would be silently no assertion at all — the same bug, one level up.
-      # `--requre-validator` cannot fail open; OptionParser raises, and
-      # #parse_options turns that into a UsageError and an exit 2.
-      #
-      # A blank value here is a contradiction, not a quiet win: asking for the
-      # binary and turning it off in the same breath is a 2, and the message
-      # says which of the two happened in {#ruby_reason}'s words.
-      def require_backend!(backend)
-        return if backend
-
-        raise ValidatorError,
-              "--require-validator was given, but #{ruby_reason}, " \
-              "so this run would have been validated in Ruby"
-      end
-
-      # The one branch. Both arms produce the same {Linter::Result} list, so
-      # everything downstream — the FAIL blocks, the summary line, the exit
-      # code — is literally the same code rather than two renderers that have
-      # to be kept in step.
-      def check(files, backend:, schema:)
-        return backend.check(files) if backend
-
-        Linter.new(schema).check(Scanner.scan_files(files))
+        @stderr.puts "specguard-lint: #{backend.provenance}"
       end
 
       # Naming files and asking for the diff are contradictory instructions,
@@ -443,7 +340,7 @@ module SpecGuard
       end
 
       def parse_options(argv)
-        options = { changed: false, base: nil, root: Dir.pwd, files: [], require_validator: false, json: false }
+        options = { changed: false, base: nil, root: Dir.pwd, files: [], json: false }
 
         parser = OptionParser.new do |o|
           o.banner = BANNER
@@ -451,10 +348,6 @@ module SpecGuard
                "Only spec files changed against BASE (default: the merge base with the default branch)") do |base|
             options[:changed] = true
             options[:base] = base
-          end
-          o.on("--require-validator",
-               "Fail (exit 2) unless #{ValidatorBackend::ENV_VAR} named a usable validator binary") do
-            options[:require_validator] = true
           end
           o.on("--json", "Emit one JSON document on stdout instead of the human report") do
             options[:json] = true

@@ -123,11 +123,13 @@ RSpec.describe "the vendored OpenTestIntent schema" do
       expect(@spec.files.grep(%r{^spec/})).to be_empty
     end
 
-    it "declares json_schemer, the gem's first runtime dependency" do
-      dependency = @spec.runtime_dependencies.find { |d| d.name == "json_schemer" }
-
-      expect(dependency).not_to be_nil
-      expect(dependency.requirement.to_s).to eq("~> 2.5")
+    # SPGD-867 INVERTED this pin: json_schemer was the gem's first runtime
+    # dependency and is now FORBIDDEN in lib/ (validation is the binary's
+    # job; it survives only as a development dependency for the offline spec
+    # stub). A runtime dependency creeping back would mean the hand-rolled
+    # validation path had quietly returned.
+    it "declares no json_schemer runtime dependency" do
+      expect(@spec.runtime_dependencies.map(&:name)).not_to include("json_schemer")
     end
   end
 
@@ -135,12 +137,19 @@ RSpec.describe "the vendored OpenTestIntent schema" do
   # loadable, standing outside the source checkout so no stray relative path
   # can rescue it.
   describe "the schema as the installed gem would see it" do
-    it "loads from the packaged copy" do
+    # SPGD-867: nothing loads the schema any more — the digest the
+    # schema-contract check computes is the only runtime reader, and it needs
+    # BYTES. So the packaged copy is proven by digest: parseable JSON whose
+    # bytes match the checkout's copy, which is what the contract check
+    # compares against the binary's.
+    it "matches the checkout's copy byte for byte, from outside the checkout" do
       Dir.mktmpdir do |dir|
         packaged = File.join(dir, "open-test-intent.v1.json")
         FileUtils.cp(SpecGuard::RSpec::SCHEMA_PATH, packaged)
 
-        expect(SpecGuard::RSpec::Schema.load(packaged).document).to eq(schema)
+        expect(JSON.parse(File.read(packaged))).to eq(schema)
+        expect(Digest::SHA256.file(packaged).hexdigest)
+          .to eq(Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest)
       end
     end
   end

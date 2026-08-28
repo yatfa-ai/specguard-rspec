@@ -50,9 +50,12 @@ module SpecGuard
     # the spec fixtures deliberately do not, so nothing here may be
     # load-bearing at runtime.
     #
-    # {Schema.load} reads it, and treats every way that can fail as exit 2 —
-    # if a packaging accident leaves it out of the gem, the linter must say so
-    # rather than blame someone's annotations.
+    # Since the SPGD-867 cutover nothing VALIDATES against this copy — every
+    # verdict comes from the `validate-intent` binary's own compiled-in
+    # schema. It survives because {ValidatorBackend}'s schema-contract check
+    # digests it at runtime and refuses a binary that would enforce different
+    # bytes: the two halves of the seam must keep meeting somewhere, and this
+    # file is where the gem's half lives.
     SCHEMA_PATH = File.expand_path("rspec/schemas/open-test-intent.v1.json", __dir__).freeze
   end
 end
@@ -62,8 +65,6 @@ require_relative "rspec/annotation_scanner"
 require_relative "rspec/payload_normalizer"
 require_relative "rspec/scanner"
 require_relative "rspec/file_selector"
-require_relative "rspec/violation_renderer"
-require_relative "rspec/schema"
 require_relative "rspec/linter"
 require_relative "rspec/json_reporter"
 require_relative "rspec/validator_backend"

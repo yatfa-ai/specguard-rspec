@@ -3,6 +3,7 @@
 require "tmpdir"
 require "fileutils"
 require "open3"
+require_relative "../../support/validator_stub"
 
 # The 0/1/2 exit contract (SPGD-12 §1), and the defence around it.
 #
@@ -19,6 +20,12 @@ RSpec.describe "the specguard-lint exit contract" do
 
   def out = stdout.string
   def err = stderr.string
+
+  # SPGD-867: with `SPECGUARD_VALIDATE_INTENT` unset the CLI resolves the
+  # validator through the first-run installer. The suite must not download, so
+  # resolution is stubbed to the offline replay stub — see
+  # spec/support/validator_stub.rb.
+  before { allow(SpecGuard::RSpec::ValidatorBackend::Installer).to receive(:obtain).and_return(ValidatorStub.install_stubbable) }
 
   describe "0 — clean" do
     it "exits 0 on a file whose annotations are all valid" do
@@ -46,31 +53,24 @@ RSpec.describe "the specguard-lint exit contract" do
   end
 
   describe "1 — malformed annotation" do
-    # Criterion 1.
+    # Criterion 1. Pinned against the RECORDED real-binary report for the
+    # corpus fixture (spec/fixtures/validator/source-corpus.json) rather than
+    # a temp file: since the SPGD-867 cutover the suite's validator is an
+    # offline replay of recordings, and a temp file would be answered by no
+    # recording at all. The fixture's line-15 annotation is the truncated
+    # behavior this criterion is about.
     it "exits 1 on a truncated behavior, naming file, line and the violation" do
-      Dir.mktmpdir do |dir|
-        path = File.join(dir, "short_spec.rb")
-        File.write(path, <<~RUBY)
-          RSpec.describe Order do
-            # @intent: { entity: "Order", action: "total", behavior: "sums", layer: "unit" }
-            it "sums" do
-            end
-          end
-        RUBY
+      path = fixture_path("broken_intent_spec.rb")
 
-        expect(cli.run([path])).to eq(1)
-        expect(out).to include("FAIL  #{path}:2")
-        expect(out).to include("-> behavior: string is 4 char(s), minLength is 15")
-      end
+      expect(cli.run([path])).to eq(1)
+      expect(out).to include("FAIL  #{path}:15")
+      expect(out).to include("-> behavior: string is 4 char(s), minLength is 15")
     end
 
+    # Line 34 of the same recorded corpus is the extraction failure shape.
     it "exits 1 on an annotation that could not be extracted at all" do
-      Dir.mktmpdir do |dir|
-        path = File.join(dir, "typo_spec.rb")
-        File.write(path, "# @intent:\n")
-
-        expect(cli.run([path])).to eq(1)
-      end
+      expect(cli.run([fixture_path("broken_intent_spec.rb")])).to eq(1)
+      expect(out).to include(":34 — no '{...}' object literal")
     end
 
     # Criterion 8. Stopping at the first would turn this one file into five CI
@@ -136,42 +136,35 @@ RSpec.describe "the specguard-lint exit contract" do
       expect(out).not_to include("checked")
     end
 
-    # Criterion 5 — parity with the binary's `schemaLoadError`
-    # (open-test-intent, cmd/validate-intent/main.go), which prints
-    # `error: could not load schema ...` and returns 2.
-    describe "an unloadable vendored schema" do
-      it "exits 2 when the schema file is missing" do
-        stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
+    # Criterion 5, post-cutover. The Ruby schema-load path is gone, and the
+    # way "the linter could not do its job" now arrives from the resolution
+    # seam: no binary could be obtained (first run with no network, an
+    # unsupported platform, a corrupted cache). That must be a 2, with a
+    # message naming BOTH remediations, and it must happen before anything is
+    # selected or scanned — the same fail-early rule the schema load used to
+    # carry. See ValidatorBackend::Installer.
+    describe "a validator that cannot be resolved" do
+      before do
+        allow(SpecGuard::RSpec::ValidatorBackend::Installer)
+          .to receive(:obtain).and_raise(SpecGuard::RSpec::ValidatorError,
+                                         "could not obtain validate-intent: no network")
+      end
 
+      it "exits 2 when no binary can be obtained" do
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
 
-      # The wording and the stream, not the position: the run also names the
-      # validator that was about to produce the verdicts (CLI#report_backend),
-      # and that line is emitted before the schema is loaded.
-      it "says so on stderr, in the validator's words" do
-        stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
+      it "says so on stderr" do
         cli.run([fixture_path("order_spec.rb")])
 
-        expect(err.lines).to include(a_string_starting_with("error: could not load schema /nonexistent/"))
-      end
-
-      it "exits 2 when the schema file is present but unparseable" do
-        Dir.mktmpdir do |dir|
-          broken = File.join(dir, "open-test-intent.v1.json")
-          File.write(broken, "{ not json")
-          stub_const("SpecGuard::RSpec::SCHEMA_PATH", broken)
-
-          expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
-        end
+        expect(err).to start_with("specguard-lint: error: could not obtain")
       end
 
       # The failure has to happen BEFORE anything is checked. A linter that
-      # scans first and only then discovers it has no schema could report
+      # scans first and only then discovers it has no validator could report
       # "0 malformed" over a file full of violations — this project's signature
       # vacuous-green defect, arrived at from the other side.
       it "fails before it validates anything, rather than reporting a vacuous clean run" do
-        stub_const("SpecGuard::RSpec::SCHEMA_PATH", "/nonexistent/open-test-intent.v1.json")
         cli.run([fixture_path("broken_intent_spec.rb")])
 
         expect(out).not_to include("malformed")
@@ -182,13 +175,13 @@ RSpec.describe "the specguard-lint exit contract" do
     # Criterion 6. The backstop: whatever breaks, it is never a 1.
     describe "an unexpected internal exception" do
       it "exits 2 rather than letting Ruby's default 1 stand" do
-        allow(SpecGuard::RSpec::Scanner).to receive(:scan_files).and_raise("boom")
+        allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise("boom")
 
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
 
       it "reports it as an internal error, not as a malformed annotation" do
-        allow(SpecGuard::RSpec::Scanner).to receive(:scan_files).and_raise("boom")
+        allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise("boom")
         cli.run([fixture_path("order_spec.rb")])
 
         expect(err).to include("specguard-lint: internal error: RuntimeError: boom")
@@ -196,7 +189,7 @@ RSpec.describe "the specguard-lint exit contract" do
       end
 
       it "catches a NoMethodError from deep inside the pipeline too" do
-        allow(SpecGuard::RSpec::Linter).to receive(:new).and_raise(NoMethodError, "undefined method")
+        allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(NoMethodError, "undefined method")
 
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
@@ -204,7 +197,7 @@ RSpec.describe "the specguard-lint exit contract" do
       # ScriptError is not a StandardError, so a bare `rescue` misses it and
       # Ruby exits 1 again.
       it "catches a ScriptError, which a bare rescue would miss" do
-        allow(SpecGuard::RSpec::Scanner).to receive(:scan_files).and_raise(NotImplementedError, "nope")
+        allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(NotImplementedError, "nope")
 
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
@@ -212,7 +205,7 @@ RSpec.describe "the specguard-lint exit contract" do
       # Ctrl-C must stay Ctrl-C. Mapping a signal onto "the linter is broken"
       # would be its own small lie, and would make the tool un-interruptible.
       it "does NOT swallow an interrupt" do
-        allow(SpecGuard::RSpec::Scanner).to receive(:scan_files).and_raise(Interrupt)
+        allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(Interrupt)
 
         expect { cli.run([fixture_path("order_spec.rb")]) }.to raise_error(Interrupt)
       end
