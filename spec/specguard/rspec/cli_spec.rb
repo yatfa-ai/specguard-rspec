@@ -32,6 +32,38 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).to include("checked 1 spec file")
     end
 
+    # A recursive fallback (:all) and an explicitly named file (:explicit)
+    # checked the same count must not read identically — before the scope
+    # clause they were byte-identical, and a silently widened scan (an empty
+    # glob expansion) was indistinguishable from "the files you named".
+    it "names the directory a recursive :all selection scanned" do
+      Dir.mktmpdir do |dir|
+        FileUtils.cp(fixture_path("order_spec.rb"), dir)
+        Dir.chdir(dir) { cli.run([]) }
+        expect(out).to include("checked 1 spec file under #{dir}")
+      end
+    end
+
+    # The regression guard: same file count on both sides, different stdout.
+    it "distinguishes a :all run from a :explicit run over the same file count" do
+      Dir.mktmpdir do |dir|
+        FileUtils.cp(fixture_path("order_spec.rb"), dir)
+        mk = -> { described_class.new(stdout: StringIO.new, stderr: StringIO.new) }
+        run_in = lambda do |argv|
+          c = mk.call
+          out_line = nil
+          Dir.chdir(dir) { c.run(argv); out_line = c.instance_variable_get(:@stdout).string[/^specguard-lint: checked 1 spec file.*$/] }
+          out_line
+        end
+        all_line = run_in.call([])
+        explicit_line = run_in.call([File.join(dir, "order_spec.rb")])
+
+        expect(all_line).not_to eq(explicit_line)
+        expect(all_line).to eq("specguard-lint: checked 1 spec file under #{dir}")
+        expect(explicit_line).to eq("specguard-lint: checked 1 spec file")
+      end
+    end
+
     it "warns loudly on stderr when the selection is empty" do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { cli.run([]) }

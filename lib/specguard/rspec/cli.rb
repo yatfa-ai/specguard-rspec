@@ -314,7 +314,8 @@ module SpecGuard
           @stderr.puts "specguard-lint: warning: #{selection.note}" if selection.note
         elsif !json
           @stdout.puts "specguard-lint: checked #{selection.count} spec file#{'s' unless selection.count == 1}" \
-                       "#{" changed since #{selection.base}" if selection.mode == :changed}"
+                       "#{" changed since #{selection.base}" if selection.mode == :changed}" \
+                       "#{" under #{Dir.pwd}" if selection.mode == :all}"
         end
       end
 
