@@ -14,22 +14,23 @@ module SpecGuard
     # `additionalProperties` / `properties` / `items` / `minLength`, all of
     # which both implementations support. The *messages* do not agree at all:
     #
-    #   reference   layer: value 'e2e' is not one of ['unit', 'integration', ...]
+    #   validator   layer: value 'e2e' is not one of ['unit', 'integration', ...]
     #   json_schemer  value at `/layer` is not one of: ["unit", "integration", ...]
     #
     # So the text is rebuilt here. It is rebuilt from the **structured** fields
     # of each error (`type`, `data_pointer`, `schema`, `details.missing_keys`)
     # and never by string-munging `error["error"]`: that sentence is
     # gem-version-dependent, so a `json_schemer` bump would silently drift the
-    # output away from the reference. Structured fields are the gem's API;
+    # output away from the validator. Structured fields are the gem's API;
     # the sentence is not.
     #
     # == Three divergences that are not wording
     #
     # 1. **Order.** json_schemer emits in its own traversal order —
     #    `additionalProperties` before `required`, `minLength` before
-    #    `required`. The reference walks the document deliberately (see
-    #    `validate` at `bin/validate-intent:150-210`): per node, `type`, then
+    #    `required`. The validator walks the document deliberately (see
+    #    `Schema#validate` in open-test-intent's
+    #    cmd/validate-intent/validate.go): per node, `type`, then
     #    `enum`, then every missing `required` key in *schema* order, then each
     #    instance property in *insertion* order (recursing, or reporting the
     #    disallowed additional property), then array, string and number
@@ -38,8 +39,8 @@ module SpecGuard
     #    violations in the same sequence.
     #
     # 2. **Cardinality.** Two missing required keys are one json_schemer error
-    #    carrying `details.missing_keys = ["action", "layer"]`; the reference
-    #    prints one line per key (its loop at `bin/validate-intent:163-165`).
+    #    carrying `details.missing_keys = ["action", "layer"]`; the validator
+    #    prints one line per key (that function's `required` loop).
     #    The batch is fanned back out here.
     #
     # 3. **`additionalProperties` does not have the type you would guess.** It
@@ -48,19 +49,19 @@ module SpecGuard
     #    property* — `/entiity`, not the object that disallowed it. A renderer
     #    dispatching on a guessed `"additionalProperties"` would render nothing
     #    for this case, silently. The error is re-attributed to the parent
-    #    object here, which is what makes the reference's `<root>: additional
+    #    object here, which is what makes the validator's `<root>: additional
     #    property 'entiity' is not allowed` come out.
     #
-    # A fourth, smaller one: the reference `return`s as soon as a node's `type`
+    # A fourth, smaller one: the validator `return`s as soon as a node's `type`
     # is wrong ("a type mismatch makes the remaining keywords moot"), while
     # json_schemer reports the type failure *and* every other keyword at that
     # node — a non-string `layer` yields both a type and an `enum` error. See
     # {#drop_shadowed_by_type_mismatch}.
     class ViolationRenderer
-      # What the reference calls the document root in a message.
+      # What the validator calls the document root in a message.
       ROOT = "<root>"
 
-      # Keyword ranks within one node, in the reference's evaluation order.
+      # Keyword ranks within one node, in the validator's evaluation order.
       # Children start at CHILD_BASE so every keyword of a node sorts before
       # any of its descendants — which is exactly what `required`-before-
       # property-iteration means.
@@ -92,16 +93,16 @@ module SpecGuard
 
       # One rendered line, plus where it came from and where it sorts.
       #
-      # `pointer` is the node the *reference* attributes the message to, which
+      # `pointer` is the node the *validator* attributes the message to, which
       # for an additional-property violation is the parent object rather than
       # json_schemer's `data_pointer`.
       Entry = Data.define(:pointer, :sort_key, :message, :type_mismatch)
 
       # @param errors [Enumerable<Hash>] raw `json_schemer` error hashes
       # @param instance [Object] the document that was validated. Needed for
-      #   ordering: the reference iterates an object's properties in insertion
+      #   ordering: the validator iterates an object's properties in insertion
       #   order, which only the instance knows.
-      # @return [Array<String>] reason lines, reference grammar, reference order
+      # @return [Array<String>] reason lines, the validator's grammar and order
       def render(errors, instance)
         entries = errors.each_with_index.flat_map { |error, seq| entries_for(error, instance, seq) }
 
@@ -136,7 +137,7 @@ module SpecGuard
       end
 
       # One line per missing key, ordered by the key's position in the schema's
-      # own `required` array — the order the reference's loop visits them in.
+      # own `required` array — the order the validator's loop visits them in.
       def required_entries(error, pointer, instance, seq)
         schema = error["schema"]
         declared = schema.is_a?(Hash) ? Array(schema[REQUIRED_KEYWORD]) : []
@@ -176,7 +177,7 @@ module SpecGuard
         allowed = error.dig("schema", "enum")
 
         entry(pointer, instance, [RANK_ENUM, seq],
-              "#{label(pointer, instance)}: value #{py_repr(error['data'])} is not one of #{py_repr(allowed)}")
+              "#{label(pointer, instance)}: value #{render_value(error['data'])} is not one of #{render_value(allowed)}")
       end
 
       def length_entry(error, keyword, pointer, instance, seq)
@@ -189,7 +190,7 @@ module SpecGuard
 
       def pattern_entry(error, pointer, instance, seq)
         entry(pointer, instance, [RANK_PATTERN, seq],
-              "#{label(pointer, instance)}: string does not match pattern #{py_repr(error.dig('schema', 'pattern'))}")
+              "#{label(pointer, instance)}: string does not match pattern #{render_value(error.dig('schema', 'pattern'))}")
       end
 
       def items_entry(error, keyword, pointer, instance, seq)
@@ -206,8 +207,8 @@ module SpecGuard
         direction = keyword == "minimum" ? "below minimum" : "above maximum"
 
         entry(pointer, instance, [rank, seq],
-              "#{label(pointer, instance)}: value #{py_repr(error['data'])} is " \
-              "#{direction} #{py_repr(error.dig('schema', keyword))}")
+              "#{label(pointer, instance)}: value #{render_value(error['data'])} is " \
+              "#{direction} #{render_value(error.dig('schema', keyword))}")
       end
 
       def type_entry(error, pointer, instance, seq)
@@ -232,7 +233,7 @@ module SpecGuard
                   sort_key: prefix_for(pointer, instance) + tail)
       end
 
-      # The reference bails out of a node the moment its `type` is wrong
+      # The validator bails out of a node the moment its `type` is wrong
       # ("a type mismatch makes the remaining keywords moot"), so nothing else
       # at that node — or anywhere beneath it — is ever printed. json_schemer
       # keeps going. Without this, a `layer: 123` would emit both
@@ -252,7 +253,7 @@ module SpecGuard
       # the position of that step among its parent's children. Two errors under
       # the same parent therefore order by where their properties appear in the
       # instance — insertion order for a Hash, index order for an Array —
-      # which is the order the reference's property loop visits them in.
+      # which is the order the validator's property loop visits them in.
       def prefix_for(pointer, instance)
         node = instance
 
@@ -288,7 +289,7 @@ module SpecGuard
         pointer_tokens(pointer).reduce(instance) { |node, token| child_of(node, token) }
       end
 
-      # The reference's name for a node: `<root>`, `behavior`, `a.b`,
+      # The validator's name for a node: `<root>`, `behavior`, `a.b`,
       # `preconditions[0]` — dotted for object properties, bracketed for array
       # indices. Array-ness is read off the instance, not guessed from the
       # token, so an object whose key happens to be `"0"` still renders dotted.
@@ -334,15 +335,66 @@ module SpecGuard
         end
       end
 
-      PY_ESCAPES = { "\\" => "\\\\", "\n" => "\\n", "\r" => "\\r", "\t" => "\\t" }.freeze
+      QUOTED_ESCAPES = { "\\" => "\\\\", "\n" => "\\n", "\r" => "\\r", "\t" => "\\t" }.freeze
 
-      # Python's `%r`, which is what the reference interpolates values with.
-      # Getting this wrong is not cosmetic: `value 'e2e' is not one of [...]`
-      # is a line CI logs get diffed on.
-      def py_repr(value)
+      # The ecosystem's shared vocabulary for interpolating a VALUE into a
+      # violation message. `validate-intent` renders the same values the same
+      # way (its `RenderValue`) BY CONVENTION — neither program is generated
+      # from the other — but EDITING THIS METHOD IS PINNED, so expect red.
+      # validator_backend_spec.rb asserts this path's rendered stdout, byte for
+      # byte, against reports RECORDED from the binary and committed as
+      # spec/fixtures/validator/source-corpus.json, which carries the binary's
+      # own text; message_parity_spec.rb asserts four payloads through
+      # `Schema#violations` against strings hand-copied from the binary (its
+      # header refuses to be read as a proof about two programs, and is right —
+      # four hand-copied strings are not a second process). Change the String
+      # arm and BOTH SNAPSHOTS fail, quoting the binary's spelling back at you:
+      # message_parity_spec.rb, and validator_backend_spec.rb on both stdout
+      # and `--json`. (This gem's own unit and regression specs go red as well,
+      # but those are the gem checking itself, not the binary.) That is the
+      # coupling working, not unrelated breakage.
+      #
+      # The pin runs ONE WAY. Both are snapshots taken from the binary, and no
+      # SPEC in this gem executes it — validator_backend_spec.rb replays the
+      # recorded stdout through a shell stub it writes to a tmpdir. The gem
+      # itself does execute the binary, but only on the `ValidatorBackend` arm
+      # that `SPECGUARD_VALIDATE_INTENT` selects INSTEAD of this renderer: `CLI`
+      # loads the `Schema` only when that backend is absent, and returns the
+      # backend's results before it would ever build a `Linter`, so a LINT run
+      # on that arm does not reach this method. That arm reports the binary's
+      # own rendered strings, so it substitutes Go's spelling for this method's
+      # rather than checking one against the other. Note the env var takes this
+      # method out of the LINTER only, not out of service: `AnnotationLookup`
+      # reaches it through the same `Schema#violations` on the formatter's
+      # annotation path, which does not consult the backend at all.
+      #
+      # So a change on THIS side is caught immediately, while a change on the Go
+      # side is caught only once someone re-records the corpus. Getting it wrong
+      # is not cosmetic either way, because `value 'e2e' is not one of [...]` is
+      # a line CI logs get diffed on.
+      #
+      # Only the String and Array arms are reachable from `Schema#violations`:
+      # the schema types every property `string` or array-of-`string`, carries
+      # no numeric bounds (`minimum`/`maximum`/`multipleOf` are all absent;
+      # `minLength` is present, but its message reports a character count, not
+      # the value), and sets `additionalProperties: false`, so a non-string
+      # value produces a type-mismatch line and the one message that would
+      # interpolate the instance value (`enum_entry`) is dropped by
+      # `drop_shadowed_by_type_mismatch`. Neither snapshot above can reach the
+      # remaining arms, so nothing pins THOSE against the binary — but they are
+      # not all unheld. violation_renderer_spec.rb drives some of them from this
+      # side, with expectations phrased the validator's way: a bare `enum`
+      # property with no `type` (so there is no type-mismatch line to shadow the
+      # enum message) asserts `None` and `True`, and a hypothetical grown schema
+      # carrying `minimum`/`maximum` asserts `value 3 is below minimum 5`. Edit
+      # the nil, `true` or Integer arm and that file goes red — this gem holding
+      # itself to Go's spelling, with the binary not consulted at all. The
+      # `false` arm and the `inspect` fallback have no such example: blanking
+      # both leaves the suite green.
+      def render_value(value)
         case value
-        when String then py_repr_string(value)
-        when Array then "[#{value.map { |item| py_repr(item) }.join(', ')}]"
+        when String then render_quoted(value)
+        when Array then "[#{value.map { |item| render_value(item) }.join(', ')}]"
         when true then "True"
         when false then "False"
         when nil then "None"
@@ -351,14 +403,15 @@ module SpecGuard
         end
       end
 
-      # Python prefers single quotes, and switches to double only when the
-      # string contains a `'` but no `"`. Non-ASCII is left as written (Python 3
-      # does not escape printable non-ASCII); C0 controls become `\xNN`.
-      def py_repr_string(string)
+      # Single quotes, switching to double only when the string contains a `'`
+      # but no `"`, so the result never needs escaping to stay readable.
+      # Printable non-ASCII is left as written, so a `behavior` sentence keeps
+      # its em dash; C0 controls become `\xNN`.
+      def render_quoted(string)
         quote = string.include?("'") && !string.include?('"') ? '"' : "'"
 
         body = string.each_char.map do |char|
-          next PY_ESCAPES[char] if PY_ESCAPES.key?(char)
+          next QUOTED_ESCAPES[char] if QUOTED_ESCAPES.key?(char)
           next "\\#{char}" if char == quote
           next format("\\x%02x", char.ord) if char.ord < 0x20 || char.ord == 0x7f
 

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://specguard.dev/schemas/open-test-intent.v1.json",
+  "$id": "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json",
   "title": "OpenTestIntent v1",
   "type": "object",
   "additionalProperties": false,

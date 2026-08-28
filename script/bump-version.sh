@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump the patch version, commit, tag vX.Y.Z, and push to main.
+# Bump the patch version, commit, push to main, and tag vX.Y.Z on what landed.
 #
 # Mirrors yatfa's script/bump-version.sh, adapted for a gem:
 #   - the version source is lib/specguard/rspec/version.rb (the gemspec reads
@@ -78,20 +78,32 @@ fi
 git add "$VERSION_FILE"
 git commit -m "bump: $CURRENT_VERSION -> $NEW_VERSION"
 
-# Tag the release. The GitHub Release and the pushed .gem both correspond to it.
-git tag "v$NEW_VERSION"
-
 # Pull with rebase to incorporate any commits that landed on main since checkout,
 # then push the branch and the tag. Retry up to 3 times to handle concurrent pushes.
+#
+# The tag is created INSIDE the loop, after `git push origin main` succeeds, and
+# never before the rebase. `git pull --rebase` replays the bump commit onto the
+# advanced main and gives it a new SHA; tags do not follow a rebase, so a tag
+# created beforehand would name an abandoned object that is not an ancestor of
+# main — while the workflow builds the gem from the post-rebase tree. A published
+# gem version is immutable, so that divergence would be permanent.
+#
+# `-f` makes a retry idempotent when an earlier attempt created the local tag but
+# failed to push it. It cannot clobber a published tag: the tag-reuse guard above
+# already refused that case before any work started.
 MAX_RETRIES=3
 RETRY_COUNT=0
 PUSH_SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     if git pull --rebase origin main; then
-        if git push origin main && git push origin "v$NEW_VERSION"; then
-            PUSH_SUCCESS=true
-            break
+        # HEAD is now the rebased bump commit — the object the tag must name.
+        if git push origin main; then
+            git tag -f "v$NEW_VERSION" HEAD
+            if git push origin "v$NEW_VERSION"; then
+                PUSH_SUCCESS=true
+                break
+            fi
         fi
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))

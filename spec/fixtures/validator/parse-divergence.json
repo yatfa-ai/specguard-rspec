@@ -13,13 +13,7 @@
       "line": 20,
       "ok": true,
       "kind": null,
-      "errors": [],
-      "intent": {
-        "entity": "Order",
-        "action": "create",
-        "behavior": "creates an order from a valid cart",
-        "layer": "unit"
-      }
+      "errors": []
     },
     {
       "file": "spec/fixtures/parse_divergence_spec.rb",
@@ -27,9 +21,8 @@
       "ok": false,
       "kind": "parse",
       "errors": [
-        "could not parse annotation: Expecting value: line 1 column 102 (char 101)"
-      ],
-      "intent": null
+        "could not parse annotation: expected a JSON value (line 1, column 102)"
+      ]
     },
     {
       "file": "spec/fixtures/parse_divergence_spec.rb",
@@ -37,9 +30,8 @@
       "ok": false,
       "kind": "parse",
       "errors": [
-        "could not parse annotation: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
-      ],
-      "intent": null
+        "could not parse annotation: expected a double-quoted property name (line 1, column 2)"
+      ]
     }
   ]
 }

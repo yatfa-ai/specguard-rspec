@@ -8,37 +8,37 @@
 # The corpus is open-test-intent's own `examples/` and `examples/invalid/`,
 # copied byte-for-byte into `spec/fixtures/payloads/` (from `c8f5b6d`). Copies,
 # deliberately: the roadmap forbids a cross-repo runtime dependency and the
-# same reasoning applies to the suite — a spec that shells out to the Python
-# validator would pass on this container and be unrunnable anywhere else.
+# same reasoning applies to the suite — a spec that shells out to the validator
+# would pass on this container and be unrunnable anywhere else.
 #
 # Every expected string below was captured by **executing**
-# `python3 bin/validate-intent <fixture>` against the reference, not
-# transcribed from a spec document. If json_schemer changes its wording on a
-# gem bump, these fail — which is the point: the renderer builds text from the
-# gem's structured fields precisely so that drift is impossible, and this is
-# the assertion that proves it stayed impossible.
+# `validate-intent <fixture>`, not transcribed from a spec document, and
+# re-verified against the binary after SPGD-403 rewrote its internals. If
+# json_schemer changes its wording on a gem bump, these fail — which is the
+# point: the renderer builds text from the gem's structured fields precisely so
+# that drift is impossible, and this is the assertion that proves it stayed
+# impossible.
 #
 # WHAT THIS FILE IS NOT, and where the rest lives
 # ===============================================
 # Four payloads through `Schema#violations`. No scanner, no CLI, no exit code,
 # no second process — by the constraint above, which stands. Reading this file
-# as "Ruby ≡ the reference" would be reading four hand-copied strings as a
-# proof about two programs.
+# as "the gem is equivalent to the binary" would be reading four hand-copied
+# strings as a proof about two programs.
 #
-# The executable cross-tool comparison lives in the other repo, where it can
-# shell out without making this suite unrunnable:
-# `open-test-intent/tests/parity/run_ruby_parity.sh` runs `bin/specguard-lint`
-# and the Go port over the shared corpus and requires their findings, their
-# ordering and their exit codes to agree. Nothing here needs to change to
-# accommodate it, and nothing here should be "improved" into shelling out.
-RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
+# The executable cross-tool comparison lives in
+# spec/specguard/rspec/validator_backend_spec.rb, which replays the binary's
+# own recorded reports through the CLI and compares them with the Ruby path's
+# findings, ordering and exit codes. Nothing here should be "improved" into
+# shelling out.
+RSpec.describe "message parity with open-test-intent's validate-intent" do
   subject(:schema) { SpecGuard::RSpec::Schema.load }
 
   def payload(name) = payload_fixture(name)
 
-  # The four invalid payloads, with the reference's exact output for each —
+  # The four invalid payloads, with the validator's exact output for each —
   # text AND order.
-  REFERENCE_OUTPUT = {
+  VALIDATOR_OUTPUT = {
     "invalid/bad-layer.json" => [
       "layer: value 'e2e' is not one of ['unit', 'integration', 'request', 'system']"
     ],
@@ -48,7 +48,7 @@ RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
     "invalid/short-behavior.json" => [
       "behavior: string is 5 char(s), minLength is 15"
     ],
-    # Order matters and is the opposite of json_schemer's: the reference emits
+    # Order matters and is the opposite of json_schemer's: the validator emits
     # every missing `required` key before it iterates the instance's own
     # properties, so `required` precedes `additionalProperties`. Raw
     # json_schemer emits the additional property first.
@@ -58,8 +58,8 @@ RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
     ]
   }.freeze
 
-  REFERENCE_OUTPUT.each do |name, expected|
-    it "renders #{name} exactly as the reference does" do
+  VALIDATOR_OUTPUT.each do |name, expected|
+    it "renders #{name} exactly as the validator does" do
       expect(schema.violations(payload(name))).to eq(expected)
     end
   end
@@ -73,21 +73,22 @@ RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
     request-orders-checkout.json
     system-checkout-flow.json
   ].each do |name|
-    it "accepts #{name}, as the reference does" do
+    it "accepts #{name}, as the validator does" do
       expect(schema.violations(payload(name))).to be_empty
     end
   end
 
-  REFERENCE_OUTPUT.each_key do |name|
-    it "rejects #{name}, as the reference does" do
+  VALIDATOR_OUTPUT.each_key do |name|
+    it "rejects #{name}, as the validator does" do
       expect(schema.violations(payload(name))).not_to be_empty
     end
   end
 
   describe "the two divergences that are not wording" do
     # json_schemer batches every missing key into ONE error carrying
-    # `details.missing_keys = ["action", "layer"]`. The reference loops
-    # (bin/validate-intent:163-165) and prints one line each. Passing the
+    # `details.missing_keys = ["action", "layer"]`. The validator loops
+    # (`Schema#validate`'s `required` loop, open-test-intent,
+    # cmd/validate-intent/validate.go) and prints one line each. Passing the
     # batched error through would under-report, and a developer would fix
     # `action`, re-run CI, and only then learn about `layer`.
     it "fans a batched missing_keys error out to one line per key" do
@@ -112,7 +113,7 @@ RSpec.describe "message parity with open-test-intent's bin/validate-intent" do
                                ])
     end
 
-    # `broken_intent_spec.rb:21` — the reference emits `required` then
+    # `broken_intent_spec.rb:21` — the validator emits `required` then
     # `minLength`; json_schemer emits them the other way round.
     it "puts a missing required key before a violation of a property that IS present" do
       violations = schema.violations("entity" => "Order", "action" => "total", "behavior" => "sums")

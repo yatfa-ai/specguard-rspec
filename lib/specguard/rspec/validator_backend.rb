@@ -62,14 +62,13 @@ module SpecGuard
     #
     # == `no-match`: the gem's arguments are PATHS, the binary's are GLOBS
     #
-    # `bin/validate-intent` expands its arguments with Python's
-    # `glob.glob(..., recursive=True)`; `specguard-lint`'s are paths, checked as
+    # `validate-intent` expands its arguments as GLOB PATTERNS, recursive `**`
+    # included; `specguard-lint`'s are paths, checked as
     # given (`CLI#select`, `Scanner.scan_file`). Handing a path straight through
     # would silently re-expand it: `spec/fixtures/bracket[1]_spec.rb` becomes a
     # character class, and a file containing `*` becomes a wildcard that may
     # match *other* files. Every path is therefore escaped with {escape_glob},
-    # the port of Python's `glob.escape`, so each argument matches exactly the
-    # file it names or nothing at all.
+    # so each argument matches exactly the file it names or nothing at all.
     #
     # "Or nothing at all" is Go's `no-match` kind, which the gem has no
     # `Finding::KIND_*` for. It is mapped to {Finding::KIND_READ}, because that
@@ -86,44 +85,51 @@ module SpecGuard
     #     does not have, and whose text would carry the escaped form.
     #
     # This is one of the ratified differences between the backends, all of
-    # which are asserted in `spec/specguard/rspec/validator_backend_spec.rb`
-    # and in open-test-intent's `tests/parity/run_ruby_parity.sh`. That harness
-    # counts them two ways and both are right, so expect it: its header GROUPS
-    # them as four mechanisms, (a)-(d), while the section that asserts them is
-    # headed "8b. the six enumerated backend differences" and numbers them
-    # (i)-(vi) — this one and the acceptance set each cover two cases. Follow
-    # the cross-reference and you are reading the six.
+    # which are asserted in `spec/specguard/rspec/validator_backend_spec.rb`.
     #
     # The other three mechanisms are below. Only the first two are about TEXT —
-    # the backend passing the port's wording through where the Ruby path spells
-    # it its own way. The third is not a wording difference at all, which is why
-    # this list no longer calls the group "text differences" as an earlier
-    # revision did:
+    # the backend passing the binary's wording through where the Ruby path
+    # spells it its own way. The third is not a wording difference at all,
+    # which is why this list does not call the group "text differences":
     #
-    #   * the read-failure tail — see {Scanner.scan_text}, which records why
-    #     the gem emits a fixed string where CPython and the port emit a
-    #     decoder diagnostic;
+    #   * the read-failure tail — see {Scanner.scan_text}, which records the
+    #     ratified difference and both spellings. Both refuse the file;
+    #     PROTOCOL.md §1.1 requires that much and specifies no prose.
     #   * the parse-failure tail — see {Scanner#parse} (1). A payload that
     #     survives normalisation and still is not JSON is described by
     #     whichever JSON parser saw it, so the Ruby path carries Ruby's
-    #     `JSON::ParserError#message` and the backend carries CPython's. This
-    #     is the most commonly hit of the three: `parse` is one of the three
-    #     things the linter exists to report.
+    #     `JSON::ParserError#message` and the backend carries the binary's.
+    #     This is the most commonly hit of the three: `parse` is one of the
+    #     three things the linter exists to report.
     #   * THE ACCEPTANCE SET — see {Scanner#parse} (2), and note that this one
-    #     is not a wording difference at all. The two JSON parsers do not
-    #     accept the same language: CPython takes non-finite literals, lone
-    #     high surrogates and unbounded nesting, and Ruby takes none of the
-    #     three. For such a payload the backend does not merely word the
-    #     failure differently, it does not have one — it parses the payload and
-    #     validates it, so the finding arrives as KIND_SCHEMA against the Ruby
-    #     path's KIND_PARSE, and where the payload is schema-VALID the backend
-    #     reports nothing at all and the two exit codes disagree.
+    #     is not a wording difference at all. It used to be a three-member set
+    #     in which the BINARY was the permissive side; PROTOCOL.md §1.1 states
+    #     the accepted JSON language now, and the binary refuses all three, so
+    #     those have converged. What survives runs the other way: this gem's
+    #     `JSON.parse` accepts a LONE LOW surrogate escape that §1.1(a)
+    #     refuses, and its nesting boundary sits a little deeper than
+    #     §1.1(c)'s 100. For such a payload the backend does not merely word
+    #     the failure differently — it HAS one where the Ruby path does not,
+    #     so the backend exits 1 where the Ruby path exits 0.
     #
     # That last case is the only known input on which the two backends return
     # different verdicts for the same file, and it is ratified rather than
     # closed for reasons {Scanner#parse} sets out. Nothing here can detect it:
     # a document reporting no findings is exactly what a clean run looks like,
     # so the mapping below is correct and the disagreement is upstream of it.
+    #
+    # It has NOT always been the only one, and the other one ran the DANGEROUS
+    # way round. Until SPGD-512 the binary's `@intent:` payload search was
+    # unbounded where {AnnotationScanner#payload_brace} bounds it at the next
+    # token, so on a line carrying a malformed token followed by a well-formed
+    # one the binary adopted the neighbour's literal, reported it valid and
+    # exited 0 where the Ruby path reported no-payload and exited 1 — backend
+    # permissive, Ruby strict, the reverse of the surviving case above. That is
+    # the direction that costs something: opting into the backend bought a
+    # false green. SPGD-512 ported the bound, which is why the claim above
+    # holds again; it is recorded rather than deleted because the shape can
+    # recur any time a scanner-stage rule lands in one implementation only, and
+    # a reader who sees only the surrogate case will not think to look for it.
     #
     # == Everything that can go wrong here is exit 2
     #
@@ -189,10 +195,10 @@ module SpecGuard
     #
     # Every drift guard in this ecosystem compares a matched pair inside ONE
     # checkout: `schema_test.go` digests the Go embed against the Go tree's
-    # `schemas/`, `spec/specguard/rspec/schema_packaging_spec.rb` digests this
-    # gem's vendored copy against this gem's pin, `tests/parity/` compares two
-    # files in two checkouts. None of them looks at an INSTALLED artifact, and
-    # none of them can. The seam is ordinary, not contrived: `install.sh` fetches
+    # `schemas/`, and `spec/specguard/rspec/schema_packaging_spec.rb` digests
+    # this gem's vendored copy against this gem's pin. Neither looks at an
+    # INSTALLED artifact, and neither can. The seam is ordinary, not contrived:
+    # `install.sh` fetches
     # a released binary by version with nothing tying that release's vintage to
     # the gem beside it, and {ENV_VAR} accepts any path on the host.
     #
@@ -225,7 +231,7 @@ module SpecGuard
     #   * the mirror: a binary whose embedded schema differs from ours but whose
     #     on-disk schema IS ours gets refused, for a run that would have been
     #     correct. Planting a schema beside the binary is not exotic — it is how
-    #     open-test-intent's own `tests/parity/run_parity.sh` operates.
+    #     open-test-intent's own release and cross-build checks operate.
     #
     # open-test-intent slice 19 added `--schema-source`, which calls the REAL
     # loader and prints `schema <origin> sha256:<hex>` for the bytes a verdict
@@ -328,10 +334,10 @@ module SpecGuard
         Runner.new(path).tap(&:verify!)
       end
 
-      # Python's `glob.escape` for POSIX paths: wrap each of `*`, `?` and `[`
-      # in a character class, which makes it match itself literally. `]` is not
-      # escaped and does not need to be — outside a class it is already a
-      # literal — and CPython does not escape it either.
+      # Escapes a POSIX path so the binary's globber matches it literally: wrap
+      # each of `*`, `?` and `[` in a character class, which makes it match
+      # itself. `]` is not escaped and does not need to be — outside a class it
+      # is already a literal.
       #
       # @param path [String]
       # @return [String] a glob pattern matching exactly `path`
@@ -355,7 +361,16 @@ module SpecGuard
         # annotation site. They contribute nothing to `summary.annotations`,
         # exactly as `CLI#summary_line` keeps unread files out of the gem's own
         # annotation count.
-        NON_ANNOTATION_KINDS = %w[read no-match].freeze
+        #
+        # DERIVED from {KINDS}, not transcribed beside it: folding into
+        # KIND_READ is what "about a file, not about a site" MEANS here, so the
+        # filter is the rule rather than a copy of it. The copy could only go
+        # one way — {#failing_result} raises by name on a kind {KINDS} has not
+        # been taught, so the port growing its vocabulary forces an edit there
+        # and none here, and that one-line edit is exactly what would silence
+        # the guard while leaving a hand-written list behind. The set is pinned
+        # by name in the spec, so widening it stays a decision someone makes.
+        NON_ANNOTATION_KINDS = KINDS.select { |_kind, mapped| mapped == Finding::KIND_READ }.keys.freeze
 
         # The report used to be all ASCII: paths, a fixed kind vocabulary, and
         # error prose the tool wrote itself. Since SPGD-340 it also carries
@@ -950,10 +965,10 @@ module SpecGuard
             raise ValidatorError, "#{describe} emitted a #{document.class} where a JSON object was expected"
           end
 
-          # `--source` is the only mode this asks for and the only one the port
-          # implements `--json` for. A document announcing anything else means
-          # the argument vector above no longer says what this code thinks it
-          # says.
+          # `--source` is the only mode this asks for. A document announcing
+          # anything else means the argument vector above no longer says what
+          # this code thinks it says — and a report read under the wrong mode's
+          # counting rules is worse than no report.
           mode = document["mode"]
           raise ValidatorError, "#{describe} reported mode #{mode.inspect}, expected \"source\"" unless mode == "source"
 

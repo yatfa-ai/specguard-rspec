@@ -31,37 +31,41 @@ module SpecGuard
     #
     # `Finding::KIND_READ` — a spec file that could not be opened or is not
     # valid UTF-8 — is also reported as a failure, and therefore also exits 1.
-    # That is a deliberate parity choice, not an oversight: the reference tool
-    # classifies it separately (its own `KIND_READ`, `bin/validate-intent:91`)
-    # and still reports it as `FAIL` with exit 1.
+    # That is a deliberate choice, not an oversight: `validate-intent`
+    # classifies it separately (its own `read` kind) and still reports it as
+    # `FAIL` with exit 1.
     #
-    # The CLASSIFICATION and the EXIT CODE are what match, and both are now
-    # asserted rather than described: open-test-intent's
-    # `tests/parity/run_ruby_parity.sh` runs this linter and the Go port over
-    # the same inputs and compares them. Its sections named "ratified
-    # difference (a)", "ratified difference (b)" and "an unreadable file" cover
-    # the three read-failure shapes. (Cited by name, not by number — that file
-    # renumbers, and a number nothing checks across two repositories is a
-    # citation waiting to point somewhere else.)
+    # The CLASSIFICATION and the EXIT CODE are what match, and both are asserted
+    # rather than described, in spec/specguard/rspec/validator_backend_spec.rb —
+    # which runs this linter and the binary's recorded report over the same
+    # inputs and compares them. Each read-failure shape below has its own
+    # two-sided block there, so the shared half and the surviving difference are
+    # both pinned: converging either one fails that file.
     #
-    # The MESSAGE TEXT does not match on two of those three, and an earlier
-    # version of this comment claimed it did — it quoted a `FAIL bad_spec.rb —
-    # could not read file: ...` line as if the two tools emitted the same
-    # bytes. They do not, and the harness now says so out loud:
+    # The MESSAGE TEXT does not match on any of the three read-failure shapes,
+    # and an earlier version of this comment claimed it did — it quoted a
+    # `FAIL bad_spec.rb — could not read file: ...` line as if the two tools
+    # emitted the same bytes. They do not:
     #
-    #   * a file that is not valid UTF-8 — the reference reproduces CPython's
-    #     `'utf-8' codec can't decode byte 0xe9 in position 117: invalid
-    #     continuation byte`; `Scanner.scan_text` emits a fixed string.
-    #   * a file that does not exist — the reference reports it on *stderr* as
+    #   * a file that is not valid UTF-8 — the binary says `input is not
+    #     well-formed UTF-8 (PROTOCOL.md §1.1 requires it)`;
+    #     `Scanner.scan_text` says `invalid UTF-8 byte sequence`. Both name the
+    #     condition rather than an offset, and both refuse the file, which is
+    #     what PROTOCOL.md §1.1 requires; neither wording is specified.
+    #   * a file that does not exist — the binary reports it on *stderr* as
     #     `error: no file(s) match '<path>'` (its arguments are glob patterns);
     #     `Scanner.scan_file` reports it on stdout as a read failure of that
     #     path (its arguments are paths).
-    #
-    # Both differences are RATIFIED, with the reasoning written down in that
-    # script's header and asserted there — including the assertion that they
-    # still differ, so closing either one fails the harness and forces the
-    # ratification to be retired rather than left to rot the way this comment
-    # did.
+    #   * a path that exists and is not a regular file — the binary's glob
+    #     filters it away, so it answers exactly as it does for a name matching
+    #     nothing: a `no-match` finding under `--json`. `no file at this path`
+    #     is not the binary's wording but this gem's, minted in
+    #     `ValidatorBackend#no_match_result`, because Go's "no file(s) match
+    #     <pattern>" is a statement about a glob pattern this CLI does not
+    #     have. `Scanner.scan_file` opened it and has an errno, so it reports
+    #     `Is a directory @ io_fread - <path>`. The distinction between a
+    #     missing path and a non-regular one is Ruby's alone; the binary does
+    #     not draw it and the backend cannot recover it.
     #
     # The line the contract actually draws is *the linter is broken* (2) versus
     # *the input it was pointed at is bad* (1). An unopenable file named on the
@@ -100,9 +104,10 @@ module SpecGuard
 
         # A read failure is not line-scoped: nothing in the file was ever seen,
         # and slice 1's `line` is a 0 sentinel rather than a location. The
-        # reference drops the line for exactly these findings
-        # (`bin/validate-intent:521` — "when a finding is not line-scoped ...
-        # kind is null"), and `:0` is not somewhere a reader can go: anything
+        # binary drops the line for exactly these findings (`JSONFinding` in
+        # open-test-intent's cmd/validate-intent/report.go — "`line` is null
+        # where a finding is not line-scoped, `kind` is null on a passing
+        # finding"), and `:0` is not somewhere a reader can go: anything
         # parsing `file:line` — CI annotations, editor quickfix, review
         # comments — would point at a line that does not exist.
         #

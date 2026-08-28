@@ -37,8 +37,7 @@ module SpecGuard
     # {ValidatorBackend::Runner} runs `--source --json` and reconstructs
     # {Linter::Result}s from it — so emitting a different shape would mean a
     # consumer of both tools needs two parsers for one protocol. It does not
-    # try to be byte-identical to the port (Ruby's generator does not escape
-    # non-ASCII where Python's `json.dumps` does), only key-, type- and
+    # try to be byte-identical to the binary's document, only key-, type- and
     # value-identical, which is what a parser sees.
     #
     # Three properties are load-bearing for a consumer and are asserted rather

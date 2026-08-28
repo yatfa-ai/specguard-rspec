@@ -437,6 +437,63 @@ RSpec.describe SpecGuard::RSpec::Transport do
         expect(transport_to(server).deliver(payload)).to be_success
       end
     end
+
+    # SPGD-631. The 202 body used to be dropped on the floor, which left a
+    # replayed line unable to say WHICH run it had landed on — the one fact
+    # that makes "these two deliveries folded onto one row" an observation
+    # rather than a guess. It is carried now, and every assertion above this
+    # one is unchanged, which is the whole of what "additively" claims.
+    describe "the body it now carries back" do
+      it "parses the endpoint's answer, so a caller can name the run it landed on" do
+        StubIngestEndpoint.run(status: 202, body: '{"test_run_id":"tr_42","annotated_ratio":0.5}') do |server|
+          result = transport_to(server).deliver(payload)
+
+          expect(result.body).to eq("test_run_id" => "tr_42", "annotated_ratio" => 0.5)
+          expect(result.test_run_id).to eq("tr_42")
+        end
+      end
+
+      # A numeric id is still an id. Stringified so two deliveries can be
+      # compared without the caller caring how the platform spells one.
+      it "stringifies a numeric id rather than dropping it" do
+        StubIngestEndpoint.run(status: 202, body: '{"test_run_id":42}') do |server|
+          expect(transport_to(server).deliver(payload).test_run_id).to eq("42")
+        end
+      end
+
+      # The mirror of `#refusal_reasons`' degradation, and the more important
+      # half: the platform has STORED the run by the time it writes this body,
+      # so a proxy that rewrote the 202 must cost the caller the decoration and
+      # nothing else. Relabelling it would report a stored run as lost.
+      [
+        ["an empty body", ""],
+        ["a body that is not JSON", "<html>accepted</html>"],
+        ["a JSON scalar", "202"],
+        ["a JSON array", '[{"test_run_id":"tr_42"}]']
+      ].each do |description, body|
+        it "stays a success with no body for #{description}" do
+          StubIngestEndpoint.run(status: 202, body: body) do |server|
+            result = transport_to(server).deliver(payload)
+
+            expect(result).to have_attributes(success?: true, outcome: :success, code: 202, reason: nil)
+            expect(result.body).to be_nil
+            expect(result.test_run_id).to be_nil
+          end
+        end
+      end
+
+      # A refusal has no body to carry, and reading one off a rejection would
+      # be the same relabelling in the other direction.
+      it "leaves the body nil on a refusal, where `reasons` is the field that speaks" do
+        StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
+          result = transport_to(server).deliver(payload)
+
+          expect(result.body).to be_nil
+          expect(result.test_run_id).to be_nil
+          expect(result.reasons).to eq(["no"])
+        end
+      end
+    end
   end
 
   # FIND 2, at its source. None of these raise, which is why a `rescue` alone
@@ -475,6 +532,144 @@ RSpec.describe SpecGuard::RSpec::Transport do
     it "does not raise, so nothing above it can be relying on one" do
       StubIngestEndpoint.run(status: 500) do |server|
         expect { transport_to(server).deliver(payload) }.not_to raise_error
+      end
+    end
+  end
+
+  # The platform already names the offending spec by index, file and line in
+  # the body it refuses with — `Api::BaseController#render_bad_request` puts
+  # every validation failure in `details` and repeats the first in `message`,
+  # with a comment saying it is shaped that way *for a client to read*. Until
+  # this, the client read none of it, so an operator got `HTTP 400 — the
+  # endpoint rejected the payload` and had to reproduce the run to find out
+  # which of 20,000 specs was wrong.
+  #
+  # Everything below still has to fit on one line and still has to leave the
+  # `outcome` alone, which is what most of these examples are actually about.
+  describe "the reasons the endpoint gave for refusing" do
+    # The 400 body, verbatim in the shape `Ingest::Payload` produces it.
+    let(:detail) do
+      "spec 3 (spec/foo_spec.rb:9): line_number is required and must be a positive integer"
+    end
+
+    def reason_for(status:, body:)
+      StubIngestEndpoint.run(status: status, body: body) do |server|
+        transport_to(server).deliver(payload).reason
+      end
+    end
+
+    it "names the offending spec, so the run does not have to be reproduced to find it" do
+      reason = reason_for(status: 400, body: JSON.generate("details" => [detail]))
+
+      expect(reason).to include(detail)
+    end
+
+    # Appended to, not replacing: the status is the part that says whose
+    # problem this is, and it stays first.
+    it "keeps the status and the advice it already printed" do
+      reason = reason_for(status: 400, body: JSON.generate("details" => [detail]))
+
+      expect(reason).to start_with("HTTP 400 — the endpoint rejected the payload")
+    end
+
+    # The 401 body has no `details` at all — `render_unauthorized` carries
+    # `message` alone — so the fallback is the whole of what that status can
+    # say, not a defensive extra.
+    it "falls back to `message` for a body that has no details, which is every 401" do
+      reason = reason_for(status: 401,
+                          body: JSON.generate("error" => "unauthorized",
+                                              "message" => "A valid Bearer API key is required."))
+
+      expect(reason).to include("A valid Bearer API key is required.")
+    end
+
+    it "prefers the full details over the first-error echo in `message`" do
+      reason = reason_for(status: 400,
+                          body: JSON.generate("message" => detail, "details" => [detail, "spec 7: name is required"]))
+
+      expect(reason).to include("spec 7: name is required")
+    end
+
+    # `Ingest::Payload` appends one error *per bad spec* and the response caps
+    # nothing (`RETAINED_REASONS_PER_ROW` bounds only the persisted row), so a
+    # systemic client bug on a 20k suite answers with ~20,000 strings. Splicing
+    # that list into the warning would bury the suite's own output — which is
+    # the failure mode the formatter's one-warning budget exists to prevent,
+    # reintroduced one layer down.
+    describe "a refusal with more reasons than a line can hold" do
+      let(:reason) do
+        reason_for(status: 400,
+                   body: JSON.generate("details" => Array.new(500) { |i| "spec #{i}: name is required" }))
+      end
+
+      it "spells out the first few" do
+        expect(reason).to include("spec 0: name is required", "spec 2: name is required")
+      end
+
+      it "counts the rest rather than printing them" do
+        expect(reason).to include("and 497 more")
+        expect(reason).not_to include("spec 3: name is required")
+      end
+
+      it "is still one line" do
+        expect(reason.lines.length).to eq(1)
+      end
+    end
+
+    # A 413 from a proxy or a 502 from a load balancer never reaches the
+    # platform's renderer, so the body is HTML, or empty, or a truncated
+    # fragment of JSON. None of that is a *delivery* failure — the request
+    # plainly arrived and was refused — so it must not reach {#deliver}'s
+    # `rescue` and relabel the outcome as `:failed`, which would tell the
+    # operator something untrue for the sake of a decoration.
+    describe "a body that cannot be read" do
+      {
+        "empty" => "",
+        "HTML from a proxy" => "<html><head><title>413 Request Entity Too Large</title></head></html>",
+        "truncated JSON" => '{"details":["spec 3 (spec',
+        "a JSON scalar" => '"nope"',
+        "JSON with details of the wrong shape" => '{"details":[{"spec":3}]}',
+        "JSON with no key this cares about" => '{"error":"bad_request"}'
+      }.each do |description, body|
+        context "when the body is #{description}" do
+          it "still reports a rejection rather than a failure" do
+            StubIngestEndpoint.run(status: 400, body: body) do |server|
+              expect(transport_to(server).deliver(payload))
+                .to have_attributes(outcome: :rejected, code: 400)
+            end
+          end
+
+          it "degrades to exactly the line it printed before" do
+            expect(reason_for(status: 400, body: body))
+              .to eq("HTTP 400 — the endpoint rejected the payload")
+          end
+        end
+      end
+    end
+
+    # Whatever answered is on the network, and the warning goes to a CI log
+    # that later gets read as lines. A body carrying newlines could otherwise
+    # forge output that looks like it came from the suite, or from this gem.
+    describe "a reason carrying things a log line cannot hold" do
+      it "flattens newlines instead of emitting a second line" do
+        reason = reason_for(status: 400,
+                            body: JSON.generate("details" => ["spec 3 failed\nSpecGuard: everything is fine"]))
+
+        expect(reason.lines.length).to eq(1)
+        expect(reason).to include("spec 3 failed SpecGuard: everything is fine")
+      end
+
+      it "strips control characters, so a colour escape cannot survive" do
+        reason = reason_for(status: 400,
+                            body: JSON.generate("details" => ["spec 3 \e[31mred\e[0m"]))
+
+        expect(reason).not_to include("\e")
+      end
+
+      it "caps a single enormous reason rather than printing all of it" do
+        reason = reason_for(status: 400, body: JSON.generate("details" => ["x" * 5_000]))
+
+        expect(reason.length).to be < 400
       end
     end
   end

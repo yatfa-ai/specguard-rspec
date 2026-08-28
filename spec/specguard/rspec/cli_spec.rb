@@ -85,6 +85,36 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).not_to include("FAIL")
       expect(out).to include("checked 7 @intent annotations, 0 malformed")
     end
+
+    # The end of the false green. A malformed `@intent:` followed on the same
+    # line by a well-formed one used to have its neighbour's payload attributed
+    # to it, so the whole run reported "checked 1 @intent annotation, 0
+    # malformed" and exited 0 — the gate reporting success having checked
+    # nothing that was actually wrong. Asserted through the CLI because the
+    # exit code is what a CI job reads; the scanner-level assertions live in
+    # annotation_scanner_spec.rb.
+    #
+    # The neighbour payload must be schema-**valid** for this example to pin
+    # anything. With an incomplete one the adopted payload fails validation on
+    # its own missing properties, so the run already exits non-zero before the
+    # fix and both the exit-code and "1 malformed" assertions hold either way —
+    # green for a reason that has nothing to do with the bound. Measured on
+    # this fixture: pre-fix "0 malformed", exit 0; post-fix "1 malformed",
+    # exit 1. All three assertions below discriminate.
+    it "fails the run on a malformed annotation that is followed by a well-formed one" do
+      code = Dir.mktmpdir do |dir|
+        path = File.join(dir, "adopted_payload_spec.rb")
+        File.write(path, %(# @intent: (entity: Order) - superseded by @intent: ) +
+                         %({ entity: "Order", action: "checkout", ) +
+                         %(behavior: "returns 402 payment required on expired card", ) +
+                         %(layer: "request" }\n))
+        cli.run([path])
+      end
+
+      expect(code).to eq(SpecGuard::RSpec::CLI::EXIT_MALFORMED)
+      expect(out).to include("checked 1 @intent annotation, 1 malformed")
+      expect(out).to include("no '{...}' object literal")
+    end
   end
 
   describe "options" do
@@ -175,7 +205,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     # There are TWO `checked …` lines, not one — a leading spec-file count from
     # #report_selection and a trailing annotation count from #summary_line. The
-    # parity harness in open-test-intent warns in its header that handling only
+    # open-test-intent's own linter warns that handling only
     # the trailing one is the trap here, so both are asserted gone.
     it "removes BOTH `checked ...` lines, the leading one as well as the trailing" do
       run_json(fixture_path("order_spec.rb"))
@@ -466,8 +496,9 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # `file:0` leaks the sentinel into the product: `:0` is not somewhere a
     # reader can go, and anything parsing `file:line` (CI annotations, editor
     # quickfix, review comments) would point at a line that does not exist.
-    # The reference drops the line for exactly these findings
-    # (bin/validate-intent:521), and this is the one output shape the suite
+    # The binary drops the line for exactly these findings (`JSONFinding`,
+    # open-test-intent, cmd/validate-intent/report.go: "`line` is null where a
+    # finding is not line-scoped"), and this is the one output shape the suite
     # did not pin to the byte, which is how `:0` shipped.
     it "names the file WITHOUT a line number, which it does not have" do
       Dir.mktmpdir do |dir|
@@ -487,7 +518,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     # Slice 1 classified an unreadable file as KIND_EXTRACTION, which under the
     # exit contract would read as a claim about an annotation. It is now
-    # KIND_READ — the reference tool's own name for it — so the decision to
+    # KIND_READ — the validator's own name for it — so the decision to
     # nonetheless fail the run (reference parity: `FAIL ... — could not read
     # file`, exit 1) is visible and reversible in one place.
     it "classifies it as a read failure, not as a malformed annotation" do
@@ -597,6 +628,35 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
 
       expect(err).to include("1 changed spec file")
+    end
+
+    # Two filters emptied this selection, and naming only the first is the
+    # exact failure this whole block exists to prevent. "2 changed spec files
+    # … but 1 is outside" reads as complete arithmetic: 2 matched, 1 excluded,
+    # so the reader concludes the remaining one was checked. It was not. The
+    # unreadable file is the reason the run linted nothing, and it has to
+    # appear alongside the other cause, not behind it.
+    it "names the unreadable files too when both filters emptied the selection" do
+      repo_with_nested_spec do |dir|
+        # A symlink to a missing target: git tracks it (so it survives
+        # `--diff-filter=d` and is counted as a changed spec) but `File.file?`
+        # refuses it, which is the `unreadable` branch.
+        File.symlink("missing_target.rb", File.join(dir, "sub/broken_spec.rb"))
+        git("add", "-A", chdir: dir)
+        git("commit", "-q", "-m", "add a broken symlink spec", chdir: dir)
+
+        Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
+      end
+
+      expect(err).to include("selected 0 spec files")
+      # Asserted as one shape rather than three independent `include`s: the
+      # point of this example is that the two clauses appear TOGETHER and in
+      # order. Separate matchers stay green if a refactor split them onto
+      # their own lines, reversed them, or repeated a count — which is
+      # precisely the regression this example exists to catch.
+      expect(err).to match(
+        /2 changed spec files against \S+, but 1 is outside \S+ \(--changed selects only files under the current directory\) and 1 could not be read/
+      )
     end
   end
 end

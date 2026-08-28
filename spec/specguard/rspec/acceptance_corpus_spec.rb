@@ -28,7 +28,7 @@ RSpec.describe "acceptance corpus" do
 
     it "parses every annotation to a Hash carrying all four required keys" do
       findings.each do |finding|
-        expect(finding.intent).to be_a(Hash), "#{finding.location} did not parse"
+        expect(finding.intent).to be_a(Hash), "#{finding.file}:#{finding.line} did not parse"
         expect(finding.intent.keys).to include("entity", "action", "behavior", "layer")
       end
     end

@@ -10,10 +10,11 @@ Gem::Specification.new do |spec|
 
   spec.summary = "RSpec formatter and @intent annotation linter for SpecGuard."
   spec.description = "SpecGuard's Ruby client. Ships an additive RSpec formatter that posts " \
-                     "test-run telemetry to SpecGuard's ingest endpoint, and a CLI linter " \
+                     "test-run telemetry to SpecGuard's ingest endpoint, a CLI linter " \
                      "(specguard-lint) that validates OpenTestIntent @intent annotations in " \
-                     "*_spec.rb files. Telemetry never blocks CI; the linter blocks only on " \
-                     "malformed annotations."
+                     "*_spec.rb files, and a replayer (specguard-ingest) that re-delivers a run " \
+                     "the formatter saved when the endpoint could not be reached. Telemetry " \
+                     "never blocks CI; the linter blocks only on malformed annotations."
   spec.homepage = "https://github.com/yatfa-ai/specguard-rspec"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
@@ -31,7 +32,11 @@ Gem::Specification.new do |spec|
     end
   end
   spec.bindir = "bin"
-  spec.executables = ["specguard-lint"]
+  # Two commands. `specguard-lint` validates annotations; `specguard-ingest`
+  # replays a saved `log/test_results.jsonl` back through the ingest endpoint,
+  # which is what makes the formatter's fallback file recoverable rather than
+  # only written.
+  spec.executables = %w[specguard-lint specguard-ingest]
   spec.require_paths = ["lib"]
 
   # The linter validates each @intent payload against the vendored
@@ -41,6 +46,15 @@ Gem::Specification.new do |spec|
   # silently drift the wording — but the set of `type` values it dispatches on
   # is still 2.x API surface, so a major bump wants a look.
   spec.add_dependency "json_schemer", "~> 2.5"
+
+  # `json` is a default gem, so without this line the parser follows whatever
+  # the host Ruby happens to ship — and it is not a stable target. 2.9 alone
+  # closed a nesting off-by-one, changed how an unpaired high surrogate is
+  # decoded, and reworded its parse errors. The linter classifies a malformed
+  # annotation by asking this parser, so a silent swap underneath changes what
+  # `specguard-lint` REPORTS, on a machine nobody upgraded on purpose.
+  # Depending on it explicitly makes the parser a version we chose.
+  spec.add_dependency "json", "~> 2.21"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

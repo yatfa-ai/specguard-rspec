@@ -4,6 +4,13 @@ require "tmpdir"
 require "open3"
 require "fileutils"
 
+# {FormatterRunHelpers::HERMETIC_ENV} derives itself from this class's key
+# lists. `specguard/rspec` deliberately does not require it (see the comment on
+# its own require list), and `spec_helper` loads only that — so naming it here
+# is what makes this file safe to run alone, or under `--order random`, rather
+# than dependent on some other spec having pulled it in first.
+require "specguard/rspec/configuration"
+
 require_relative "../../support/stub_ingest_endpoint"
 
 # Everything the out-of-process examples need, in a namespace of its own —
@@ -239,41 +246,34 @@ module FormatterRunHelpers
   # rather than the throwaway root's absence of one. Every example asserting on
   # those fields then passes on a laptop and fails on CI — which is exactly how
   # this list came to be written, when "the commit cannot be determined" turned
-  # red on Actions and green everywhere else. The list mirrors
-  # Configuration's COMMIT_SHA_KEYS / BRANCH_KEYS / RUN_ID_KEYS / SHARD_ID_KEYS;
-  # anything added there wants adding here.
-  HERMETIC_ENV = {
-    "SPECGUARD_API_KEY" => nil,
-    "SPECGUARD_ENDPOINT" => nil,
-    "SPECGUARD_TIMEOUT" => nil,
-    # commit
-    "SPECGUARD_COMMIT_SHA" => nil,
-    "GITHUB_SHA" => nil,
-    "CI_COMMIT_SHA" => nil,
-    "CIRCLE_SHA1" => nil,
-    "BUILDKITE_COMMIT" => nil,
-    "GIT_COMMIT" => nil,
-    # branch
-    "SPECGUARD_BRANCH" => nil,
-    "GITHUB_REF_NAME" => nil,
-    "CI_COMMIT_REF_NAME" => nil,
-    "CIRCLE_BRANCH" => nil,
-    "BUILDKITE_BRANCH" => nil,
-    "GIT_BRANCH" => nil,
-    # run id
-    "SPECGUARD_RUN_ID" => nil,
-    "GITHUB_RUN_ID" => nil,
-    "CI_PIPELINE_ID" => nil,
-    "CIRCLE_WORKFLOW_ID" => nil,
-    "BUILDKITE_BUILD_ID" => nil,
-    "BUILD_TAG" => nil,
-    # shard id
-    "SPECGUARD_SHARD_ID" => nil,
-    "TEST_ENV_NUMBER" => nil,
-    "CI_NODE_INDEX" => nil,
-    "CIRCLE_NODE_INDEX" => nil,
-    "BUILDKITE_PARALLEL_JOB" => nil
-  }.freeze
+  # red on Actions and green everywhere else.
+  #
+  # The list is **derived**, not transcribed. Every variable the gem reads is
+  # named in one of {SpecGuard::RSpec::Configuration}'s `*_KEYS` constants, and
+  # enumerating those constants — rather than the four, or the eight, that
+  # happened to exist the day this was written — means a newly declared list is
+  # cleared here from the moment it exists, with no edit to this file.
+  #
+  # The hand-typed version drifted twice, and the second repair shipped a list
+  # that was still incomplete: it was missing `SPECGUARD_OUTPUT_PATH`, which is
+  # the variable {#run_rspec} resolves its *own* sink from. On a machine that
+  # exported it the child wrote to the exported path while the assertions read
+  # the default one, so every sink-asserting example here failed — green on a
+  # laptop, red on that machine.
+  #
+  # The sibling list in `configuration_spec.rb` is spelled out by hand on
+  # purpose and must stay that way: it *asserts* what the gem reads, and a pin
+  # that derives from the thing it pins can never fail. This hash asserts
+  # nothing — it is harness setup, and it wants to track the code silently.
+  # That pin is also what keeps this derivation honest in the other direction:
+  # it fixes the *set* of matching constants, so an unrelated future constant
+  # ending in `_KEYS` fails there, by name, before it can quietly widen what
+  # this clears.
+  HERMETIC_ENV = SpecGuard::RSpec::Configuration
+                 .constants.grep(/_KEYS\z/)
+                 .flat_map { |list| SpecGuard::RSpec::Configuration.const_get(list) }
+                 .to_h { |key| [key, nil] }
+                 .freeze
 
   # Runs `rspec` as its own process in a throwaway project root, and reads back
   # everything an example might want to assert on before the root is removed.
@@ -481,15 +481,15 @@ end
 # derives `total_specs_count=6 annotated_specs_count=3`. Against slice 1's
 # output, the same file returns one error *per spec*
 # ("status must be one of annotated, unannotated") and the controller
-# (`api/v1/ingests_controller.rb:10`) renders 400.
+# (`Api::V1::IngestsController#create`) renders 400 via `render_bad_request`.
 #
 # Note what the second probe also showed: without `status`, the platform's
-# `annotated_specs` — which *rejects* `"unannotated"` rather than selecting
-# `"annotated"` (`payload.rb:33`) — counted all six as annotated. So the field
+# `Ingest::Payload#annotated_specs` — which *rejects* `"unannotated"` rather
+# than selecting `"annotated"` — counted all six as annotated. So the field
 # is not merely required; it is the one that stops the headline metric being
 # 100% for a suite with no annotations in it at all.
 module IngestContract
-  STATUSES = %w[annotated unannotated].freeze # payload.rb:17
+  STATUSES = %w[annotated unannotated].freeze # Ingest::Payload::STATUSES
 
   module_function
 
@@ -499,23 +499,23 @@ module IngestContract
     label = "specs[#{index}]"
     errors = []
 
-    # payload.rb:101-106
+    # Ingest::Payload#validate_file_path
     unless spec["file_path"].is_a?(String) && !spec["file_path"].to_s.strip.empty?
       errors << "#{label}: file_path is required and must be a non-empty string"
     end
 
-    # payload.rb:108-113
+    # Ingest::Payload#validate_line_number
     unless spec["line_number"].is_a?(Integer) && spec["line_number"].positive?
       errors << "#{label}: line_number is required and must be a positive integer"
     end
 
-    # payload.rb:115-119
+    # Ingest::Payload#validate_status
     errors << "#{label}: status must be one of #{STATUSES.join(', ')}" unless STATUSES.include?(spec["status"])
 
     errors + intent_errors(spec, label)
   end
 
-  # payload.rb:124-141
+  # Ingest::Payload#validate_intent
   def intent_errors(spec, label)
     intent = spec["intent"]
 
@@ -524,8 +524,9 @@ module IngestContract
       return ["#{label}: intent is required when status is \"annotated\""] if intent.nil?
       return ["#{label}: intent must be a JSON object"] unless intent.is_a?(Hash)
 
-      # payload.rb:134 — the platform re-validates every annotated intent
-      # against the same OpenTestIntent schema this gem vendors.
+      # `Ingest::Payload#validate_intent` calls `OpenTestIntent.validation_errors`
+      # — the platform re-validates every annotated intent against the same
+      # OpenTestIntent schema this gem vendors.
       schema.violations(intent).map { |reason| "#{label}: intent is invalid — #{reason}" }
     when "unannotated"
       intent.nil? ? [] : ["#{label}: intent must be null when status is \"unannotated\""]
@@ -1007,9 +1008,10 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         expect(unannotated.map { |spec| spec["intent"] }).to all(be_nil)
       end
 
-      # The counts the platform derives from this payload (`payload.rb:38-46`),
-      # and the reason `status` is load-bearing rather than informational: this
-      # ratio is the headline dashboard metric.
+      # The counts the platform derives from this payload
+      # (`Ingest::Payload#test_run_attributes`), and the reason `status` is
+      # load-bearing rather than informational: this ratio is the headline
+      # dashboard metric.
       it "supports the annotated ratio the platform derives, rather than a vacuous 100%" do
         annotated = specs.count { |spec| spec["status"] == "annotated" }
 
@@ -1556,6 +1558,117 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       it "leaves stdout to the human formatter" do
         expect(@dry.stdout).not_to include("SpecGuard:")
+      end
+    end
+
+    # SPGD-639. The refusal above throws away a verdict the formatter had
+    # already computed: `status` comes from the annotation lookup, which reads
+    # source text, so unlike `duration` and `outcome` it is fabricated by
+    # neither dry-run mechanism. A dry run builds every example, so it holds
+    # the whole numerator and denominator of the adoption metric.
+    #
+    # `ANNOTATED_SUITE` is the fixture for this and needs nothing added to it:
+    # 6 examples, 3 annotated, with the malformed and schema-invalid cases
+    # included precisely because they must count as unannotated in the report
+    # exactly as they do in the payload.
+    describe "reporting local annotation coverage instead of discarding it" do
+      before(:context) do
+        @dry = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE, dry_run: true)
+        @normal = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE)
+      end
+
+      it "names the denominator, the numerator and the gap" do
+        expect(@dry.stderr).to include("6 examples, 3 annotated, 3 unannotated (50% annotated)")
+      end
+
+      # Exactly the three the fixture documents at its definition — the
+      # unannotated one, the unterminated literal, and the `entiity` typo — and
+      # exactly not the three that are annotated. A report that listed the
+      # malformed ones as annotated, or skipped them, would be the same defect
+      # the payload's `status` field exists to prevent.
+      it "lists precisely the unannotated examples, by definition site" do
+        worklist = @dry.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
+
+        expect(worklist.length).to eq(3)
+        expect(worklist[0]).to start_with("sample_spec.rb:7")
+        expect(worklist[1]).to start_with("sample_spec.rb:16")
+        expect(worklist[2]).to start_with("sample_spec.rb:21")
+        expect(worklist.join("\n")).to include("has no annotation", "has a malformed annotation",
+                                               "has a schema-invalid annotation")
+      end
+
+      # The worklist carries `full_description`, not merely the site, so the
+      # local list and the server's `latest_run.unannotated_examples` have the
+      # same shape — and the nested example proves the description is the
+      # example's own and not the file's.
+      it "carries each example's full description alongside its site" do
+        expect(@dry.stderr).to include("user has no annotation")
+      end
+
+      # A fact about the working tree, not about the last delivered run. Those
+      # legitimately differ the moment a spec is edited, which is the entire
+      # point, so the line must not read as the dashboard's headline.
+      it "says which tree it measured, and does not claim to speak for the repository" do
+        expect(@dry.stderr).to include("this working tree")
+        expect(@dry.stderr).not_to include("your repository")
+      end
+
+      # Criterion 6, measured rather than asserted. The local figure is
+      # recomputed here from a payload captured by a *normal* run of the same
+      # fixture, using the platform's own predicate (`annotated_specs` rejects
+      # "unannotated"). Two counters over one source-derived field.
+      it "agrees with the payload a normal run of the same tree produces" do
+        specs = JSON.parse(@normal.lines.fetch(0)).fetch("specs")
+        unannotated = specs.reject { |spec| spec["status"] == "annotated" }
+
+        expect(specs.length).to eq(6)
+        expect(unannotated.length).to eq(3)
+        expect(@dry.stderr).to include("#{specs.length} examples, " \
+                                       "#{specs.length - unannotated.length} annotated, " \
+                                       "#{unannotated.length} unannotated")
+      end
+
+      # SPGD-154 criteria 1 and 2, re-asserted against the suite that now has
+      # something to say. A third destination was added; neither sink moved.
+      it "still publishes nothing — no POST, no line, not even a sink" do
+        expect(@dry.lines).to be_empty
+        expect(@dry.sink_exists).to be(false)
+        expect(@normal.sink_exists).to be(true)
+      end
+
+      it "still leaves the exit status and stdout alone" do
+        expect(@dry.exit_status).to eq(0)
+        expect(@dry.stdout).to include("6 examples, 0 failures")
+        expect(@dry.stdout).not_to include("SpecGuard:")
+      end
+
+      # One `SpecGuard:` voice per run, however many lines the report needs.
+      it "keeps the whole report under a single SpecGuard-prefixed header" do
+        expect(@dry.stderr.scan(/SpecGuard:/).length).to eq(1)
+        expect(@dry.stderr.lines.length).to eq(5)
+      end
+
+      # The control that stops all of the above being vacuously green: without
+      # the flag, this same suite says none of it and writes its line as usual.
+      it "says none of this on a normal run, which delivers as before" do
+        expect(@normal.stderr).to be_empty
+        expect(@normal.lines.length).to eq(1)
+      end
+
+      # The worklist is ordered by definition site, not by the order RSpec
+      # happened to build the examples in — so two runs of the same tree
+      # produce a diffable list.
+      #
+      # This example is only worth its runtime because the seed discriminates:
+      # measured at `FIXED_SEED`, capture order is 7, 21, 16, so an
+      # implementation that emitted the list as captured fails here. (Under the
+      # file's default defined ordering the two orders coincide, which is why
+      # none of the examples above can make this claim.)
+      it "orders the worklist by site even when RSpec ran the examples shuffled" do
+        shuffled = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE, dry_run: true, order: :random)
+        worklist = shuffled.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
+
+        expect(worklist.map { |line| line[/:(\d+)/, 1] }).to eq(%w[7 16 21])
       end
     end
   end

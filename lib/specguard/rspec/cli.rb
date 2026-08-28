@@ -44,9 +44,8 @@ module SpecGuard
     #
     # SPGD-12 §1 step 4 says the linter "exits 1 on the *first* malformed
     # annotation". Its own exit-code table, one paragraph later, says "1 | One
-    # or more annotations are malformed", and the reference tool reports every
-    # one: `bin/validate-intent --source broken_intent_spec.rb` emits 5 FAIL
-    # blocks. Stopping at the first would turn one file into five CI
+    # or more annotations are malformed", and the validator reports every one:
+    # `validate-intent --source broken_intent_spec.rb` emits 5 FAIL blocks. Stopping at the first would turn one file into five CI
     # round-trips. Reporting all of them is the ratified behaviour (human
     # decision recorded on SPGD-82); the "first" wording is a known spec defect
     # with a correction filed against SPGD-12 §1 and the SPGD-73 roadmap text.
@@ -173,7 +172,8 @@ module SpecGuard
         @stderr.puts "specguard-lint: error: #{e.message}"
         EXIT_MISUSE
       rescue SchemaError => e
-        # Wording and stream follow bin/validate-intent:861-862 exactly.
+        # Wording and stream follow the binary's `schemaLoadError`
+        # (open-test-intent, cmd/validate-intent/main.go) exactly.
         @stderr.puts "error: #{e.message}"
         EXIT_MISUSE
       rescue ScriptError, StandardError => e
@@ -342,14 +342,29 @@ module SpecGuard
         elsif stats.spec_matches.zero?
           "#{stats.changed} file#{'s' unless stats.changed == 1} changed against #{base}, " \
             "none matching *_spec.rb"
-        elsif stats.outside_root.positive?
-          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base}, " \
-            "but #{stats.outside_root} #{stats.outside_root == 1 ? 'is' : 'are'} outside #{Dir.pwd} " \
-            "(--changed selects only files under the current directory)"
         else
-          "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base} " \
-            "could not be read"
+          changed_excluded_reason(stats, base)
         end
+      end
+
+      # `outside_root` and `unreadable` are independent counters over disjoint
+      # branches of the same partition (`file_selector.rb`), so both can be
+      # positive at once. Naming only the first one found is the failure the
+      # comment above forbids: the reader does the arithmetic, sees that
+      # `spec_matches - outside_root` files are unaccounted for, and concludes
+      # they were checked. They were not — the selection is empty. So the
+      # clauses are additive, and a selection emptied by both causes says so.
+      def changed_excluded_reason(stats, base)
+        matched = "#{stats.spec_matches} changed spec file#{'s' unless stats.spec_matches == 1} against #{base}"
+
+        # Nothing outside the root: `unreadable` is then the only filter left
+        # that can have emptied the selection, so it needs no count of its own.
+        return "#{matched} could not be read" unless stats.outside_root.positive?
+
+        reason = "#{matched}, but #{stats.outside_root} #{stats.outside_root == 1 ? 'is' : 'are'} " \
+                 "outside #{Dir.pwd} (--changed selects only files under the current directory)"
+        reason += " and #{stats.unreadable} could not be read" if stats.unreadable.positive?
+        reason
       end
 
       # The FAIL block, in the shape `bin/validate-intent --source` emits: two
@@ -390,7 +405,7 @@ module SpecGuard
       # disagree about how much it checked is worse than one that only prints
       # prose: the disagreement is unfalsifiable from outside the process.
       def report_results(results, files:, json:, ok:)
-        annotations, unread = results.partition { |result| result.kind != Finding::KIND_READ }
+        annotations, unread = results.partition(&:line_scoped?)
 
         if json
           @stdout.puts JSONReporter.render(results, files: files, annotations: annotations.length, ok: ok)

@@ -28,23 +28,30 @@ module SpecGuard
       #   carries none. A file that cannot be read yields a single Finding at
       #   line 0 rather than raising — one bad file must not abort the run.
       #
-      #   RATIFIED DIFFERENCE from the reference tool, for a path that does not
-      #   exist. `bin/validate-intent` expands its arguments as glob PATTERNS
-      #   (`bin/validate-intent:493`), so a name matching nothing is a
-      #   statement about the pattern — `error: no file(s) match '<path>'`, on
-      #   stderr, before any file is opened. This linter does no globbing:
-      #   explicit files are checked as given and `--changed` derives its list
-      #   from git, so every argument here is a PATH, and an unopenable one is
-      #   a read failure OF THAT PATH — reported on stdout with the errno the
-      #   reference cannot name. Adopting the reference's wording would mean
-      #   giving this gem a globber first and changing what
-      #   `specguard-lint 'foo*_spec.rb'` means for everyone already using it.
+      #   RATIFIED DIFFERENCE from the binary, for a path that does not exist.
+      #   `validate-intent` expands its arguments as glob PATTERNS, so a name
+      #   matching nothing is a statement about the pattern —
+      #   `error: no file(s) match '<path>'`, on stderr, before any file is
+      #   opened. This linter does no globbing: explicit files are checked as
+      #   given and `--changed` derives its list from git, so every argument
+      #   here is a PATH, and an unopenable one is a read failure OF THAT PATH —
+      #   reported on stdout with the errno the binary never had occasion to
+      #   name. Adopting the binary's wording would mean giving this gem a
+      #   globber first, and changing what `specguard-lint 'foo*_spec.rb'` means
+      #   for everyone already using it.
       #
-      #   Both tools exit 1 and both name the file; that much is asserted, in
-      #   open-test-intent's `tests/parity/run_ruby_parity.sh` under "ratified
-      #   difference (b)", along with the case that matters more — a missing
-      #   file does not stop either tool checking the good files named beside
-      #   it.
+      #   Both tools exit 1 and both name the file; that much is asserted in
+      #   spec/specguard/rspec/validator_backend_spec.rb, along with the case
+      #   that matters more — a missing file does not stop either tool checking
+      #   the good files named beside it.
+      #
+      #   A path that exists and is NOT A REGULAR FILE lands in the same rescue
+      #   and is the same ratified difference one step further out: this rescue
+      #   has an errno and reports it (`Is a directory @ io_fread - <path>`),
+      #   while the binary's glob filters non-regular matches away and answers
+      #   exactly as it does for a name matching nothing. Ruby tells the two
+      #   apart and the backend cannot — asserted under "a path that is not a
+      #   regular file" in that same spec.
       def scan_file(path)
         begin
           text = File.read(path, encoding: "UTF-8")
@@ -63,22 +70,21 @@ module SpecGuard
         # An invalid byte sequence would make every String operation below raise
         # from deep inside the scanner. Report it as this file's one problem.
         #
-        # RATIFIED DIFFERENCE from the reference tool, in the REASON TEXT only.
-        # `bin/validate-intent` lets CPython describe the failure and the Go
-        # port reproduces that description deliberately
-        # (`cmd/validate-intent/fileio.go:69`), so both say `'utf-8' codec
-        # can't decode byte 0xe9 in position 117: invalid continuation byte`
-        # where this says `invalid UTF-8 byte sequence`. Reproducing it would
-        # mean porting CPython's decoder-error classification into a gem whose
-        # whole reason for vendoring the schema is to owe open-test-intent
-        # nothing at runtime — and open-test-intent's own harness already
-        # declines to compare that tail between Python and Go (run_parity.sh,
-        # excluded group 1, "Non-UTF-8 input — the PROSE only").
+        # RATIFIED DIFFERENCE from the binary, in the REASON TEXT only. Both
+        # refuse the file — PROTOCOL.md §1.1 makes UTF-8 part of what a JSON
+        # text IS, and neither side repairs the bytes — and both name the
+        # CONDITION rather than an offset: the binary says `input is not
+        # well-formed UTF-8 (PROTOCOL.md §1.1 requires it)`, this says
+        # `invalid UTF-8 byte sequence`. Neither wording is specified, so
+        # neither is wrong; what matters is that both classify it as a READ
+        # failure and neither substitutes U+FFFD and carries on.
         #
-        # What is shared is asserted in `tests/parity/run_ruby_parity.sh` under
-        # "ratified difference (a)": same classification, same file, same
-        # `FAIL <file> — could not read file: ` prefix, a non-empty reason on
-        # both sides, and exit 1.
+        # What is shared is asserted in spec/specguard/rspec/validator_backend_spec.rb,
+        # under "the not-well-formed-UTF-8 text is each backend's own": same
+        # classification, same file, same `FAIL <file> — could not read file: `
+        # prefix, a non-empty reason on both sides, and exit 1 — and the tails
+        # are asserted to still DIFFER, so converging them fails that file
+        # rather than leaving this comment stale.
         unless text.valid_encoding?
           return [Finding.new(file: file, line: 0, problem: "could not read file: invalid UTF-8 byte sequence",
                               kind: Finding::KIND_READ)]
@@ -93,11 +99,8 @@ module SpecGuard
         end
       end
 
-      # RATIFIED DIFFERENCE from the reference tool. Two of them, and only the
-      # first is a difference in reason TEXT — an earlier revision of this
-      # comment claimed there was just the one, and it was wrong in a way worth
-      # recording, because the mistake was structural rather than careless: it
-      # described a symptom instead of a cause.
+      # RATIFIED DIFFERENCE from the binary. Two of them, and only the first is
+      # a difference in reason TEXT.
       #
       # == (1) The wording, when both parsers reject the payload
       #
@@ -105,96 +108,111 @@ module SpecGuard
       # sides, so a payload it can fix renders identically. What reaches
       # `JSON.parse` still broken — a bare-word VALUE, a key that is not a key
       # — is described by whichever JSON parser is doing the parsing: this
-      # interpolates Ruby's `JSON::ParserError#message`, while
-      # `bin/validate-intent` lets CPython describe it and the Go port
-      # reproduces CPython's wording deliberately (`cmd/validate-intent/
-      # pyjson.go`). So `{bad_key}` is `expected object key, got 'bad_key}' at
-      # line 1 column 2` here and `Expecting property name enclosed in double
-      # quotes: line 1 column 2 (char 1)` there.
+      # interpolates Ruby's `JSON::ParserError#message`, while the binary uses
+      # its own. So `{bad_key}` is `expected object key, got 'bad_key}' at line
+      # 1 column 2` here and `expected a double-quoted property name (line 1,
+      # column 2)` there.
       #
-      # Reproducing that tail would mean porting CPython's JSON diagnostics
-      # into a gem whose entire reason for vendoring the schema is to owe
+      # Reproducing that tail would mean carrying a second parser's diagnostics
+      # in a gem whose entire reason for vendoring the schema is to owe
       # open-test-intent nothing at runtime — the argument `scan_text` makes
-      # about CPython's DECODER classification, applied verbatim to its PARSER.
+      # about the DECODER, applied verbatim to the PARSER. PROTOCOL.md
+      # specifies the accepted LANGUAGE, not the prose a validator refuses in,
+      # so two spellings of one refusal are both conformant.
       #
-      # What is shared is asserted in `tests/parity/run_ruby_parity.sh` under
-      # "ratified difference (c)": same classification, same file, same LINE
-      # (unlike a read failure, this one is line-scoped and both agree on the
-      # line and even the column), same `could not parse annotation: ` prefix,
-      # same counts, and exit 1. Only the tail is unpinned.
+      # What is shared is asserted in
+      # spec/specguard/rspec/validator_backend_spec.rb: same classification,
+      # same file, same LINE (unlike a read failure, this one is line-scoped and
+      # both agree on the line and even the column), same
+      # `could not parse annotation: ` prefix, same counts, and exit 1. Only the
+      # tail is unpinned.
       #
-      # == (2) THE ACCEPTANCE SET: the payloads only ONE parser rejects
+      # == (2) THE ACCEPTANCE SET: where the two parsers take different input
       #
-      # (1) is about how the two spell the same refusal. This is about the
-      # payloads where they do not both refuse — a bigger difference, and the
-      # generator (1) was hiding. CPython's grammar is strictly the more
-      # permissive of the two, so there is a set of payloads `json.loads`
-      # accepts and `JSON.parse` does not, and every member of it diverges.
+      # (1) is about how the two spell the same refusal. This is about payloads
+      # where they do not both refuse — a bigger difference, and the generator
+      # (1) was hiding.
       #
-      # The set was DERIVED rather than guessed, because guessing is what
-      # produced the "only the tail differs" claim: 89,108 documents — the
-      # port's own `pyjson_fuzz_test.go` seed corpus and token alphabet, a
-      # generated well-formed corpus, and every one of the 65,536 single
-      # `\uXXXX` escapes — through both parsers. Widening the sweep did not add
-      # a member. It has exactly THREE:
+      # This USED to be a three-member set in which the binary was the
+      # permissive side, because its parser reproduced a foreign runtime's
+      # grammar that `PROTOCOL.md` had never specified. PROTOCOL.md §1.1 states
+      # the grammar now: an RFC 8259 JSON text, with the three points that RFC
+      # leaves open settled explicitly. The binary refuses the non-finite
+      # literals (§1.1(b)), unpaired surrogate escapes (§1.1(a)) and nesting
+      # past 100 (§1.1(c)), and `JSON.parse` refuses or limits all three too, so
+      # those three have CONVERGED.
       #
-      #   1. the non-finite literals `NaN` / `Infinity` / `-Infinity`. CPython
-      #      accepts them and the port accepts them ON PURPOSE — pyjson.go's
-      #      "WHAT IT BUYS BEYOND THE PROSE" records that an earlier Go
-      #      decoder rejecting them "made Go classify such a document as a
-      #      parse failure where Python reported a schema violation", and that
-      #      retiring that exclusion was the point of the file. The same
-      #      divergence it closed between Go and Python is the one that reopens
-      #      here between Ruby and Go.
-      #   2. a HIGH surrogate escape (`\ud800`-`\udbff`) not followed by a LOW
-      #      one. Ruby raises `incomplete surrogate pair` when NOTHING is
-      #      escaped after it — last in the string, or followed by a literal
-      #      character. Any following `\uXXXX` escape rescues it, low surrogate
-      #      or not. A lone LOW surrogate is accepted by both — the rule is
-      #      narrower than "surrogate escapes diverge".
-      #   3. (RETIRED — `json` narrowed to match) container nesting past Ruby's
-      #      `max_nesting: 100` default, which used to diverge. CPython
-      #      has no document-depth limit short of its recursion limit.
+      # WHAT SURVIVES RUNS THE OTHER WAY: this parser is now the permissive one.
       #
-      # Each produces one of two shapes, depending on whether the payload the
-      # port successfully parses then passes the schema:
+      # Read that as scoped to PARSING, which is all this register has ever
+      # covered. It is not a statement that the two backends agree everywhere
+      # else: the stage BEFORE this one diverged too, and in the opposite
+      # direction. Until SPGD-512 the binary's `@intent:` payload search was
+      # unbounded where {AnnotationScanner#payload_brace} bounds it at the next
+      # token, so a malformed token followed by a well-formed one was captured
+      # as valid by the binary and reported no-payload by this gem — binary
+      # permissive, gem strict. The Go port of that bound closed it. The lesson
+      # worth keeping is that a divergence can live at extraction as easily as
+      # at parse, so "what survives" below is the parser's list, not the
+      # backends' list.
       #
-      #   (v)  NOT schema-valid — the CLASSIFICATION differs. This path reports
-      #        KIND_PARSE and renders one em-dash line; the backend reports
-      #        KIND_SCHEMA and renders a `-> ` line per violation. File, line,
-      #        counts and exit code still agree.
-      #   (vi) schema-valid — the VERDICT differs. This path reports the
-      #        annotation malformed and exits 1; the backend reports nothing
-      #        and exits 0. Only the file agrees.
+      #   * A LONE LOW surrogate escape (`\udc00`-`\udfff`). `JSON.parse`
+      #     accepts it; §1.1(a) refuses it, because a surrogate escape must form
+      #     a pair. Ruby refuses only the HIGH half, which is why the rule here
+      #     is narrower than "surrogate escapes diverge".
+      #   * The nesting BOUNDARY, by exactly one level and only for an EMPTY
+      #     container. §1.1(c) refuses any container deeper than 100. Ruby
+      #     checks the depth when it is about to parse a VALUE, so a container
+      #     sitting at depth 101 with nothing in it is never checked and is
+      #     accepted; put anything inside it and Ruby refuses too. Measured on
+      #     json 2.21.2 and pinned, both halves, in
+      #     `spec/specguard/rspec/validator_backend_spec.rb`.
       #
-      # (vi) is reachable through member 2 alone, and provably so: a
-      # schema-valid payload must put the offending syntax in a value the
-      # schema permits, and every such value is a string or an array of strings
-      # (`SpecGuard::RSpec::SCHEMA_PATH`). A number and a container cannot
-      # occupy a string slot; a surrogate escape lives inside one.
+      # The surrogate one is not merely a verdict difference. What `JSON.parse`
+      # returns for `"\udc00"` is a String whose `valid_encoding?` is FALSE: it
+      # cannot be re-serialised and cannot cross the ingest transport, so a
+      # payload this parser calls valid is one the gem cannot send. That is the
+      # cost §1.1(a) exists to remove, and it is still paid on this path.
       #
-      # RATIFIED, and the reason is scope, not preference. `allow_nan: true`
-      # would close member 1 — an option on the `JSON.parse` call below, as
-      # `max_nesting: false` was for the since-retired member 3 — but member 2 has no
-      # option and would need CPython's string decoder ported into this gem,
-      # which is the trade `scan_text` and (1) above have each already
-      # declined. Closing one of two would leave the set inconsistent, and
-      # either one is a change to the DEFAULT path, which the slice
-      # that introduced `ValidatorBackend` explicitly holds fixed. Whether the
-      # gem should adopt CPython's acceptance grammar wholesale is a question
-      # about this gem's default behaviour, and it is deliberately left open
-      # rather than settled here.
+      # It produces two shapes, depending on whether the payload this parser
+      # accepts then passes the schema. BOTH ARE REACHABLE, one per survivor:
       #
-      # Asserted from both sides — the enumeration itself, the boundary, and
-      # both shapes — in `spec/specguard/rspec/validator_backend_spec.rb` under
-      # "the JSON acceptance-set difference", and against the real binary in
-      # `tests/parity/run_ruby_parity.sh` under "ratified difference (d)" and
-      # section 8b's entries (v) and (vi).
+      #   (v)  NOT schema-valid — the CLASSIFICATION differs. The NESTING
+      #        survivor lands here and only here. A container at depth 101 is
+      #        a container, so it can never occupy a schema-legal slot: every
+      #        value the schema permits is a string or an array of strings. So
+      #        a payload deep enough to diverge is a payload the schema refuses,
+      #        and the two tools refuse it for different stated reasons —
+      #
+      #          binary: "kind": "parse"   nesting is deeper than 100 levels
+      #                                    (PROTOCOL.md §1.1(c))
+      #          gem:    "kind": "schema"  preconditions[0]: expected type
+      #                                    string, got array
+      #
+      #        The VERDICT agrees (both fail, both exit 1); only the `kind` and
+      #        the reason differ.
+      #   (vi) schema-valid — the VERDICT differs. The SURROGATE survivor lands
+      #        here: it lives inside a string, and a string is what the schema
+      #        permits. This path reports nothing and exits 0; the backend
+      #        reports a parse failure and exits 1.
+      #
+      # RATIFIED, and the reason is scope rather than preference. This gem's
+      # hand-rolled validation logic is slated for REMOVAL by the roadmap that
+      # owns the binary, not for repair; and closing the gap here would be a
+      # change to the DEFAULT path, which the slice that introduced
+      # `ValidatorBackend` explicitly holds fixed. Whoever removes this parser
+      # closes it by deletion.
+      #
+      # Asserted from both sides — what this parser accepts, the convergence,
+      # and both surviving divergences — in
+      # `spec/specguard/rspec/validator_backend_spec.rb` under "the JSON
+      # acceptance set".
       #
       # Note that `JSON::NestingError` is a subclass of `JSON::ParserError`, so
-      # a nesting refusal is already carried by the rescue below; it needs no
-      # clause of its own, and adding one would suggest the classification
-      # differs when it does not.
+      # a nesting refusal Ruby DOES make is already carried by the rescue below
+      # and needs no clause of its own. That is about the refusals the two
+      # share; it is not a claim that the classification always agrees, which
+      # at depth 101 it does not — see (v).
       #
       # @return [Finding]
       def parse(raw, file:, line:)

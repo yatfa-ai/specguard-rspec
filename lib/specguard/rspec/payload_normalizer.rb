@@ -20,7 +20,8 @@ module SpecGuard
     # It is a character-scanner rather than a regex substitution **so quoted
     # content is never rewritten** — a `behavior` sentence containing `it's` or
     # `{` is passed through untouched. Any `gsub`-then-`JSON.parse` port
-    # corrupts exactly those values; the fixture suite pins all four cases.
+    # corrupts exactly those values; the examples under "quoted content is
+    # never rewritten" in `payload_normalizer_spec.rb` pin them.
     #
     # The payload is *never* `eval`'d. It is attacker-controllable text taken
     # from a comment in someone's spec file, so it only ever reaches
@@ -35,7 +36,10 @@ module SpecGuard
     # Ported from open-test-intent's `bin/validate-intent`
     # (`normalize_payload` / `_requote`).
     module PayloadNormalizer
-      # Anchored at the scan position (`\G`), mirroring Python's `re.match(s, i)`.
+      # Anchored at the scan position (`\G`), so it matches AT i rather than
+      # searching from it. Explicit ASCII ranges, per PROTOCOL.md §1 — a Unicode
+      # word class would make the accepted surface syntax depend on the regex
+      # engine, which is what one specification exists to prevent.
       BARE_WORD = /\G[A-Za-z_$][A-Za-z0-9_$]*/.freeze
 
       module_function

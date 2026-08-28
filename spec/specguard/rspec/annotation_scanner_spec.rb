@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "timeout"
+
 RSpec.describe SpecGuard::RSpec::AnnotationScanner do
   def intents(text)
     described_class.each_intent(text).to_a
@@ -28,6 +30,19 @@ RSpec.describe SpecGuard::RSpec::AnnotationScanner do
       text = %(# @intent: { behavior: "mentions @intent: {nope} in prose" })
 
       expect(intents(text).length).to eq(1)
+    end
+
+    # The payload-brace search is bounded by the next `@intent:` token, and
+    # that bound is a naive string search — so it finds this line's quoted
+    # token too. It must not matter: a token quoted *inside* a payload is by
+    # definition after that payload's `{`, so the bound is inert and the
+    # capture is unchanged. The example above pins the count; this one pins
+    # that the payload itself still comes back whole.
+    it "captures the whole payload when the payload quotes an @intent: token" do
+      text = %(# @intent: { behavior: "mentions @intent: {nope} in prose" })
+
+      expect(intents(text).map { |_, raw, _| raw })
+        .to eq([%({ behavior: "mentions @intent: {nope} in prose" })])
     end
 
     it "returns an Enumerator without a block" do
@@ -64,7 +79,7 @@ RSpec.describe SpecGuard::RSpec::AnnotationScanner do
 
       # The string scan fails before the object scan can, so the reason names
       # the string rather than the object — the more specific diagnosis, and
-      # what the reference implementation reports too.
+      # what `validate-intent` reports too.
       it "reports an unterminated string inside the payload" do
         _, _, problem = intents(%(# @intent: { entity: "Order })).first
 
@@ -87,6 +102,45 @@ RSpec.describe SpecGuard::RSpec::AnnotationScanner do
         expect(results.length).to eq(2)
         expect(results[0][2]).not_to be_nil
         expect(results[1][1]).to eq("{a: 1}")
+      end
+
+      # The payload search is bounded by the next `@intent:` token. Unbounded,
+      # it read to end of line, so this token adopted its neighbour's literal
+      # and was yielded with problem: nil — a typo'd annotation reported as
+      # VALID, carrying an intent its author never wrote for it, and the
+      # linter exiting 0 having "checked 1 annotation, 0 malformed". A false
+      # green is the one outcome this tool exists to make impossible.
+      context "when a malformed token is followed by a well-formed one" do
+        let(:text) { %(# @intent: (entity: Order) - superseded by @intent: {"entity":"Order"}) }
+
+        it "reports the malformed token rather than passing it" do
+          _, raw, problem = intents(text).first
+
+          expect(problem).to eq("no '{...}' object literal follows the @intent: token")
+          expect(raw).to be_nil
+        end
+
+        # The sharp end of the defect: not merely that it passed, but that it
+        # passed carrying somebody else's payload.
+        it "never attributes the later token's literal to the earlier one" do
+          expect(intents(text).map { |_, raw, _| raw }).not_to include(%({"entity":"Order"}))
+        end
+
+        # One finding, not two: the line-abandonment rule above still holds,
+        # and this fix deliberately does not touch it. The second token goes
+        # unreported because the line's structure is already untrustworthy.
+        it "abandons the rest of the line, as any other capture failure does" do
+          expect(intents(text).length).to eq(1)
+        end
+      end
+
+      # `pos` must strictly advance (or the loop must break) on every path.
+      # A line of nothing but bare tokens is the shape that would hang if a
+      # future change turned a break into a retry without moving `pos`.
+      it "terminates on a line of repeated payload-less tokens" do
+        text = "# #{'@intent: ' * 50}"
+
+        expect { Timeout.timeout(5) { intents(text) } }.not_to raise_error
       end
     end
   end

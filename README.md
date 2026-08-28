@@ -4,6 +4,8 @@
 > and a CLI linter that validates `@intent` annotations.
 
 Two independent tools, one dependency — the [OpenTestIntent](https://github.com/yatfa-ai/open-test-intent) annotation format.
+A third command, [`specguard-ingest`](#replaying-a-saved-run--specguard-ingest), belongs to the first of them: it replays a
+run the formatter saved when the endpoint could not be reached.
 
 ## Install
 
@@ -26,17 +28,17 @@ bundle exec specguard-lint             # one-off audit: every *_spec.rb
 ```
 
 Files are **positional** (`specguard-lint spec/order_spec.rb`); there is no `--source` flag —
-that belongs to the reference tool, not to this one.
+that belongs to `validate-intent`, not to this one.
 
-The linter is an independent implementation of the same protocol, and its agreement with the
-reference is checked by running the two side by side rather than asserted in a comment:
-`tests/parity/run_ruby_parity.sh` in
-[open-test-intent](https://github.com/yatfa-ai/open-test-intent) runs `specguard-lint` and the
-Go validator over a shared corpus and requires identical findings, ordering and exit codes.
-A handful of differences are ratified as such there, each with its reason and each asserted to
-*still* differ; everything else matches byte for byte. They are the same ones described under
-the backend below — two read failures, a parse-failure message, and one that is not about
-wording at all.
+The linter is an independent implementation of the same protocol — written against
+[`PROTOCOL.md`](https://github.com/yatfa-ai/open-test-intent/blob/main/PROTOCOL.md) and the
+canonical schema, which are what decide whether an annotation is valid. Its agreement with
+`validate-intent` is checked by replaying that tool's own recorded reports through this CLI and
+comparing findings, ordering and exit codes, in
+`spec/specguard/rspec/validator_backend_spec.rb`. A handful of differences are ratified as such
+there, each with its reason and each asserted to *still* differ; everything else matches byte for
+byte. They are the same ones described under the backend below — two read failures, a
+parse-failure message, and one that is not about wording at all.
 
 ### Machine-readable output (`--json`)
 
@@ -66,8 +68,8 @@ bundle exec specguard-lint --json spec/models/order_spec.rb
 
 This is the **same document** `validate-intent --json --source` emits, key for key — the gem
 already *consumes* it when the Go backend is on, and a consumer of both tools should not need two
-parsers for one protocol. It is not byte-identical (Ruby does not escape non-ASCII where Python's
-`json.dumps` does); it is key-, type- and value-identical, which is what a parser sees.
+parsers for one protocol. It is not byte-identical; it is key-, type- and value-identical, which is
+what a parser sees.
 
 | field                 | meaning |
 | --------------------- | ------- |
@@ -178,7 +180,7 @@ Because the two backends produce the same report, the report alone cannot tell y
 So `specguard-lint` states it, in one line on **stderr**, on every run and on both arms:
 
 ```
-specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:6535d9ba… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, loaded from /usr/local/schemas/open-test-intent.v1.json
+specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:3760d8f7… at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) — it reports enforcing the schema this gem vendors, loaded from /usr/local/schemas/open-test-intent.v1.json
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
 specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
 ```
@@ -241,7 +243,7 @@ specguard-lint: validated by validate-intent 1.4.0 (…) at /path/to/validate-in
 **It enforces a different one.** Exit `2`, before any file is selected or checked:
 
 ```
-specguard-lint: error: the validator backend at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) reports enforcing schema sha256:9c1e…, loaded from /usr/local/schemas/open-test-intent.v1.json, but this gem vendors sha256:6535… — the two halves would enforce different contracts, so this run would produce a verdict this gem cannot stand behind; the binary identifies itself as validate-intent 1.5.0 (go1.22.12 linux/arm64) schema sha256:6535…
+specguard-lint: error: the validator backend at /path/to/validate-intent (SPECGUARD_VALIDATE_INTENT) reports enforcing schema sha256:9c1e…, loaded from /usr/local/schemas/open-test-intent.v1.json, but this gem vendors sha256:3760… — the two halves would enforce different contracts, so this run would produce a verdict this gem cannot stand behind; the binary identifies itself as validate-intent 1.5.0 (go1.22.12 linux/arm64) schema sha256:3760…
 ```
 
 Both digests are printed in full (elided above only to fit), because one of them lives inside a
@@ -294,77 +296,68 @@ is worth stating precisely rather than reassuringly.
 For every payload both JSON parsers accept, the two backends agree completely: the same finding
 against the same file at the same line, the same classification, the same counts and the same exit
 code. **The messages in the table below differ in their trailing text only** — the rows *are* the
-enumeration, not a sample of it, and each is asserted in both directions, so closing one fails the
-suite rather than leaving a stale claim here — in
-`spec/specguard/rspec/validator_backend_spec.rb` and in the parity harness above:
+enumeration, not a sample of it, and all four are asserted in both directions, so closing one fails
+the suite rather than leaving a stale claim here — in
+`spec/specguard/rspec/validator_backend_spec.rb`, where each row's comparison is labelled
+`ENUMERATED DIFFERENCE n of 4` under the number it carries here:
 
-| input | Ruby path | Go backend |
-|---|---|---|
-| a payload that is still not JSON after normalisation | `unexpected token at '{ "entity": …'` | `Expecting value: line 1 column 102 (char 101)` |
-| a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | the validator's own decoder message |
-| a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
-| a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
+| # | input | Ruby path | Go backend |
+|---|---|---|---|
+| 1 | a payload that is still not JSON after normalisation | Ruby's `JSON::ParserError` text | `expected a JSON value (line 1, column 102)` |
+| 2 | a file that is not valid UTF-8 | `invalid UTF-8 byte sequence` | `input is not well-formed UTF-8 (PROTOCOL.md §1.1 requires it)` |
+| 3 | a path that does not exist | `No such file or directory @ rb_sysopen - …` | `no file at this path` |
+| 4 | a path that is not a regular file | `Is a directory @ io_fread - …` | `no file at this path` |
 
 The first row is the one you are most likely to actually see: `parse` is one of the three things
 the linter reports, and **every** malformed-JSON annotation renders differently under the backend.
-The Ruby path interpolates Ruby's `JSON::ParserError`; the validator reproduces CPython's `json`
-diagnostic, and the backend passes that through unaltered rather than inventing a third spelling.
-Both agree on which annotation broke, and on the line and column — only the prose moves. The other
-rows are read failures and need an unreadable path to reach at all.
+The Ruby path interpolates Ruby's `JSON::ParserError`; the validator has its own prose, and the
+backend passes it through unaltered rather than inventing a third spelling. `PROTOCOL.md` specifies
+the accepted JSON *language*, not the words a validator refuses in, so two spellings of one refusal
+are both conformant. Both agree on which annotation broke, and on the line and column — only the
+prose moves. The other rows are read failures and need an unreadable path to reach at all.
+
+Rows 3 and 4 share a Go column, and that is the substance of row 4 rather than a typo. The
+binary's arguments are glob *patterns* and a match is filtered to regular files, so a directory and
+a name matching nothing reach it as the same answer; the Ruby path opens the path it was given, so
+it has an errno and names which one. Ruby tells the two apart, the backend cannot, and neither
+pretends otherwise.
 
 #### The difference that is not about wording
 
-The two JSON parsers do not accept the same language. CPython's `json` — which the validator
-reproduces deliberately — accepts two things Ruby's `JSON.parse` refuses:
+The two JSON parsers do not accept quite the same language, and the difference is now small and
+runs the *opposite* way from how it used to.
 
-1. the non-finite literals `NaN`, `Infinity` and `-Infinity`;
-2. a high surrogate escape (`\ud800`–`\udbff`) with **nothing escaped after it** — either last in
-   the string, or followed by a literal character. Ruby rescues it as soon as another `\uXXXX`
-   escape follows, without requiring that escape to be a genuine low surrogate.
+`PROTOCOL.md` §1.1 states the accepted language — an RFC 8259 JSON text, with the three points that
+RFC leaves to the implementation settled explicitly. The validator refuses the non-finite literals
+(§1.1(b)), unpaired surrogate escapes (§1.1(a)) and nesting past 100 (§1.1(c)). Ruby's `JSON.parse`
+refuses or limits all three too, so on those three the two now **agree**. (They did not before: the
+validator's parser used to reproduce a foreign runtime's grammar, which the protocol had never
+specified. Removing that is what SPGD-403 did.)
 
-The list was three entries until the `json` gem changed underneath it, and the third is worth
-recording rather than deleting: Ruby used to refuse nesting past `max_nesting: 100` at a depth
-CPython accepted, and used to require a real low surrogate. Both narrowed, so the set shrank —
-which is the direction it is expected to move, and the specs pin the new boundary exactly (see
-`spec/specguard/rspec/validator_backend_spec.rb`) so the next shift is caught the same way.
+**What survives is this gem being the more permissive side**, in two places:
 
-The membership was derived rather than guessed: 89,108 documents, including every
-one of the 65,536 single `\uXXXX` escapes, through both parsers. (A *lone low* surrogate is fine on
-both — the rule is narrower than "surrogate escapes".) The sweep is also **symmetric**: the other
-direction — documents Ruby accepts and CPython refuses — was swept too and is **empty**, so the
-list above is the whole difference between the two parsers and not just the half we went looking
-for. That matters, because a member of the reverse set would show up as the mirror of the first
-shape below: the Ruby path reporting a schema violation where the backend reports a parse failure.
+1. **A lone LOW surrogate escape** (`\udc00`–`\udfff`). `JSON.parse` accepts it; §1.1(a) refuses it,
+   because a surrogate escape must form a pair. Ruby refuses only the HIGH half, which is why the
+   rule is narrower than "surrogate escapes diverge".
+2. **The nesting boundary**, which sits a little deeper here than §1.1(c)'s 100.
 
-On such a payload the backend does not word the failure differently; it does not have the same
-failure. It parses the payload and validates it, so you get a schema violation with `-> ` reason
-lines where the Ruby path gives you one `— could not parse annotation:` line. The file, the line,
-the counts and the exit code still agree.
+The first one is not only a verdict difference. What `JSON.parse` returns for `"\udc00"` is a
+String whose `valid_encoding?` is **false**: it cannot be re-serialised and cannot cross the ingest
+transport, so a payload this gem calls valid is one it cannot send. That is the cost §1.1(a) exists
+to remove, and it is still paid on the Ruby path.
 
-And if that payload is otherwise **schema-valid** — reachable only through the surrogate case,
-since a number and a container cannot fill a slot the schema declares as a string — the backend
-finds nothing wrong and **exits 0 where the Ruby path exits 1**. This is the one input on which
-the two backends disagree about whether your suite passes. It is enumerated and asserted from both
-sides, in the same places as the rows above.
+On such a payload the backend does not word the failure differently; it *has* one where the Ruby
+path does not. And because the only surviving member lives inside a string — a slot the schema
+declares — the payload is otherwise schema-valid, so the backend **exits 1 where the Ruby path
+exits 0**. This is the one input on which the two backends disagree about whether your suite passes.
+It is enumerated and asserted from both sides in
+`spec/specguard/rspec/validator_backend_spec.rb`, along with the convergence above, so a validator
+that went back to accepting a superset of JSON fails there by name.
 
-Both are ratified rather than fixed, and the reason is scope: `allow_nan: true` and
-`max_nesting: false` would close the non-finite case, but the surrogate case has no such option and
-would mean porting CPython's string decoder into this gem — and both would change what the
-**default** Ruby path does, which the slice that added this backend deliberately holds fixed. See
-`Scanner#parse` for the full reasoning; whether the gem should adopt CPython's acceptance grammar
-is left open there rather than settled.
-
-**If you go and count them.** The parity harness numbers this same enumeration two ways, and both
-numbers are correct, so it is worth saying which is which before you follow the link. It *asserts*
-them as six entries, `(i)`–`(vi)`, under "8b. the six enumerated backend differences" — the rows of
-the table above, plus the two shapes the acceptance set takes. It *groups* them in its header as
-four mechanisms, `(a)`–`(d)`, because the two unreadable-path rows share one cause and the two
-acceptance-set shapes share another. Six entries, four mechanisms, one enumeration.
-
-Those two totals live in that harness, which asserts them. This page does not restate them beside
-the table, because a count kept in two places is a count that will eventually disagree with itself
-— which is exactly how an earlier revision of this section came to announce three messages directly
-above four rows.
+Both are ratified rather than fixed, and the reason is scope: this gem's hand-rolled validation
+logic is slated for **removal** by the roadmap that owns the validator rather than for repair, and
+closing the gap here would change what the **default** Ruby path does, which the slice that added
+this backend deliberately holds fixed. See `Scanner#parse` for the full reasoning.
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
@@ -507,12 +500,33 @@ rather than like a broken build.
 the run (a `401` from a rotated key, a `400`, a `500`) or cannot be reached at
 all (connection refused, DNS failure, timeout), the formatter prints **one**
 line to stderr naming the status or the error, and writes the payload to
-`log/test_results.jsonl` so the run can be replayed later:
+`log/test_results.jsonl` so the run can be replayed later with
+[`specguard-ingest`](#replaying-a-saved-run--specguard-ingest):
 
 ```
 SpecGuard: could not deliver test telemetry (HTTP 401 — the API key was not
 accepted). Falling back to log/test_results.jsonl; the test run is unaffected.
 ```
+
+**That line carries the endpoint's own words when it has any.** A `400` refusal
+names the offending spec by index, file and line, so a rejected payload is a
+thing you can fix from the CI log rather than one you have to reproduce
+locally:
+
+```
+SpecGuard: could not deliver test telemetry (HTTP 400 — the endpoint rejected
+the payload — spec 3 (spec/orders_spec.rb:9): line_number is required and must
+be a positive integer; spec 7 (spec/orders_spec.rb:31): outcome must be one of
+passed, failed, pending). Falling back to log/test_results.jsonl; the test run
+is unaffected.
+```
+
+It stays **one** line whatever comes back. A systemic problem can have the
+endpoint refusing every spec in the suite, so at most three reasons are spelled
+out and the rest are counted (`… and 497 more`); anything that arrives without
+a reason it can read — an empty body, or the HTML a proxy answers a `413` with
+— prints the bare status line above and is still reported as a refusal, not as
+an error.
 
 There are **no retries**, and the whole delivery is bounded by `timeout`
 (10 seconds by default, against `Net::HTTP`'s own 60): telemetry is explicitly
@@ -534,7 +548,26 @@ same corruption, deferred until something replays it — and says so once:
 SpecGuard: skipped test telemetry for a dry run (rspec --dry-run executes no
 example bodies, so this run's durations and outcomes would not be
 measurements). Nothing was sent or written; the test run is unaffected.
+Annotation coverage is a fact about source, not about execution, so it
+survives the refusal — this working tree: 6 examples, 3 annotated,
+3 unannotated (50% annotated).
+  the 3 unannotated examples, by definition site:
+    spec/orders_spec.rb:7   Order has no annotation
+    spec/orders_spec.rb:16  Order has a malformed annotation
+    spec/orders_spec.rb:21  Order has a schema-invalid annotation
 ```
+
+The refusal throws away less than it used to. `duration` and `outcome` are
+fabricated by a dry run, which is what makes them unpublishable — but the
+third field the formatter computes per example, `annotated` / `unannotated`,
+comes from scanning the **spec file's source text** and is identical whether or
+not a body ran. Since a dry run still builds every example, it holds the exact
+numerator and denominator of the annotation-coverage metric, so `--dry-run` is
+also the way to ask *"where are we?"* without a commit, a push, and a CI round
+trip. The figure describes **your working tree right now**, so it will differ
+from the dashboard's the moment you edit a spec — that difference is the point.
+
+Nothing is published either way: the report goes to stderr and to nowhere else.
 
 This matters most where you are least likely to look for it: an API key is
 usually an environment-level secret rather than a job-level one, so a lint job
@@ -548,6 +581,331 @@ hook rescues, warns once on stderr, and leaves the exit status to your suite
 alone. A non-2xx response gets the same treatment: `Net::HTTP` returns those as
 ordinary values rather than raising, so they are checked for explicitly instead
 of being left to a `rescue` that would never see them.
+
+### Replaying a saved run — `specguard-ingest`
+
+The suite is over by the time you see the `401`, and re-running it to recover
+the telemetry costs you the whole suite again. So the file the formatter wrote
+is the run: each line is byte-for-byte the body the endpoint refused, and
+`specguard-ingest` is the command that sends it.
+
+```bash
+export SPECGUARD_API_KEY=…            # the key that was rotated, fixed
+bundle exec specguard-ingest log/test_results.jsonl
+```
+
+```
+line 1: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 2: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+specguard-ingest: delivered 2 of 2 runs from log/test_results.jsonl
+specguard-ingest: lines 1, 2 carried ci_run_id 17442 and each came back with
+test_run_id 41f2c9b8 — the endpoint folded them onto one run
+```
+
+It reads the same `SPECGUARD_ENDPOINT`, `SPECGUARD_API_KEY` and
+`SPECGUARD_TIMEOUT` the formatter does, and sends each line through the same
+transport — so a run that was refused for a rotated key appears on the platform
+once the secret is fixed, with the shard folding described in
+[If you shard your suite](#if-you-shard-your-suite) applying exactly as it would
+have during the run.
+
+> **It re-delivers *every* line in the file you give it.** The formatter writes
+> to `log/test_results.jsonl` when a delivery **failed** *and* when no API key
+> was configured at all — and the two are indistinguishable on the line, because
+> nothing in the payload records which sink it was destined for. So a laptop's
+> file is a file of ordinary local runs, and this command will send all of them.
+> There is no filter and no heuristic: guessing which lines "were failures" from
+> data that does not say would be confidently wrong about which of your runs
+> reach the platform. Check the file first with
+> [`--list`](#checking-a-file-before-you-send-it----list), and check it before
+> you replay one you did not write.
+
+#### Checking a file before you send it — `--list`
+
+`--list` prints one row per line and **delivers nothing**:
+
+```bash
+bundle exec specguard-ingest --list log/test_results.jsonl
+```
+
+```
+line 1: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 412 examples, 93.4s
+line 2: branch main, commit_sha 0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2, ci_run_id 17442, 388 examples, 91.2s
+line 3: branch spike/local, commit_sha 9c2e7a10b4d3, no ci_run_id, 6 examples, 0.4s
+line 4: unparseable — could not parse the line as JSON: unexpected end of input
+specguard-ingest: listed 4 lines from log/test_results.jsonl; nothing was delivered
+```
+
+Every field on the row is already on the line — nothing is guessed at, and a
+line the command cannot parse is listed **as unparseable** rather than quietly
+dropped from the preview. `no ci_run_id` is the one to read for: that line has
+no identity for SpecGuard to fold a redelivery onto, so sending it creates a new
+run rather than joining an existing one.
+
+Reading the file yourself is not the alternative. One line is one whole run, and
+at 20,000 examples that is megabytes of JSON on a single physical line.
+
+**It needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`** — deliberately.
+The file most worth checking is the one written *because* no API key was set, so
+requiring a key to look at it would withdraw the instrument in exactly the
+situation that produces the hazard. It composes with `--from-line` and `--lines`
+too, so you can list the exact set you are about to send:
+
+```bash
+bundle exec specguard-ingest --list --from-line 7 log/test_results.jsonl
+bundle exec specguard-ingest --list --lines 3,7,12-15 log/test_results.jsonl
+```
+
+A listing under either selector previews **exactly** the lines the same command
+without `--list` would deliver, by the same numbers.
+
+Listing sends nothing, so it can never be a verdict about a run: it exits `0`
+when it listed the file and `2` when it could not read it or the flags were
+wrong. **`1` is unreachable with `--list`.**
+
+**Each line is reported by its line number**, and `--from-line N` starts at one —
+so a file that was only partly accepted is resumed from the line the report
+named, rather than blindly re-sent:
+
+```bash
+bundle exec specguard-ingest --from-line 7 log/test_results.jsonl
+```
+
+The numbering never shifts: line 7 is line 7 of the file you gave it, both times.
+Re-sending a line that already landed is harmless *only* when it carries a
+`ci_run_id` — that is the identity SpecGuard folds a redelivery onto. A line
+**without** one has nothing to fold onto and becomes a second run, and a keyless
+local file is made entirely of those, so `--from-line` is worth the two seconds
+it takes to read the previous report.
+
+#### Sending a set rather than a suffix — `--lines`
+
+`--from-line` can only express a **suffix**, and the set a per-line report points
+at is a suffix at most once. `--lines` takes the set itself — comma-separated
+numbers and ranges, over the file's own numbering:
+
+```bash
+bundle exec specguard-ingest --lines 3,7,12-15 log/test_results.jsonl
+```
+
+```
+line 3: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 7: accepted — HTTP 202, test_run_id 41f2c9b8, ci_run_id 17442
+line 12: accepted — HTTP 202, test_run_id 5a3d0e91, ci_run_id 17443
+…
+specguard-ingest: delivered 6 of 6 runs from log/test_results.jsonl; 34 lines not selected by --lines
+```
+
+Two things want it. The first is an **interior line that will never be accepted**:
+an HTTP `400` is the one response SpecGuard forms an opinion about your payload
+in, so a line it refuses is refused every time it is offered. Sitting at line 3
+of a 40-line file, no `--from-line` can step over it — the file can never be
+replayed to completion, and the command can never exit `0` over it. Naming the
+set around it can:
+
+```bash
+bundle exec specguard-ingest --lines 1-2,4-40 log/test_results.jsonl
+```
+
+The second is that the sink is **append-only and mixes both sources**, so
+ordinary keyless laptop runs keep landing *after* the CI failures you want to
+replay. Every unwanted keyless line a too-early `--from-line` sweeps up is a
+spurious run on the platform, because a line with no `ci_run_id` has nothing to
+fold onto.
+
+Carving the file up first (`sed -n '21,24p' file > tmp.jsonl`) is not the
+alternative: a carved file **renumbers**, and the whole value of acting on a
+per-line report is that line 12 is still line 12.
+
+The held-back lines are **counted and reported**, exactly as `--from-line`'s and
+the blank ones are — a summary that quietly narrowed what it was summarising
+would be worse than no summary.
+
+A spec is read strictly, and a bad one is a `2` rather than a fallback to the
+whole file — which is the one outcome a selector exists to prevent. `--lines 0`,
+`--lines 5-2`, `--lines abc`, `--lines 12-`, an empty spec and an empty entry
+(`3,,5`) are all refused, naming what was wrong. Whitespace *between* entries is
+fine (`3, 7`); inside one it is a typo, not a range (`5 - 7` is refused).
+
+**`--lines` and `--from-line` do not combine** — giving both is a `2`:
+
+```
+specguard-ingest: error: --from-line and --lines both choose which lines to send; give one or the other
+```
+
+They answer the same question, and intersecting them would silently drop a
+number you typed: `--from-line 5 --lines 3,7` would send only line 7, and the 3
+would vanish without a word. Refusing the pair is the same discipline as the
+rest of this command — it will not quietly narrow what it was asked for.
+
+Repeating **one** selector is a different case and is allowed: the last one
+wins. `--lines 1,2 --lines 4` sends line 4, and `--from-line 2 --from-line 5`
+starts at 5. A repeat replaces rather than intersects, so the set delivered is
+exactly the last one you typed — nothing is combined into something smaller than
+you asked for, which is the objection to the pair above. It is also what lets
+you override a selector baked into a wrapper script or shell alias by appending
+a new one.
+
+Nothing about a line's **content** is consulted by either flag. The numbers come
+from you, after reading `--list`; that is what keeps this an explicit selector
+rather than the heuristic this command refuses to grow.
+
+Each line is delivered **once** — the command runs out of band and costs your CI
+nothing, but a retry loop cannot see *why* an attempt failed and you can, so
+re-running the command is the retry.
+
+**A dry run is never in the file**, so nothing here can replay one: the
+formatter refuses both sinks for `rspec --dry-run` (see above), which means this
+command inherits that guarantee rather than re-checking it.
+
+The exit code is the contract, and it is `specguard-lint`'s:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | every line was accepted |
+| `1` | at least one line was **refused by the endpoint** — it read the payload and said no, with its own reasons rendered exactly as the formatter renders them |
+| `2` | the command could not do its job — no endpoint or API key, an unreadable file, an unparseable line, a bad flag, or a delivery the platform never stored |
+
+`1` is reachable only by the endpoint having read a payload and said no, which
+is an **HTTP 400** and nothing else: that is the one response SpecGuard forms an
+opinion about your run in. A `401` is answered before the request reaches the
+code that would read the payload; a `404`, `429` or `5xx` never gets that far
+either. **Nothing was stored in any of them**, so all of them are a `2` — as are
+a connection refused, a DNS failure and a timeout. Reporting any of these as a
+`1` would be the command telling you your suite is bad on the strength of a
+rotated key, a typo in `SPECGUARD_ENDPOINT`, or a bad afternoon at the platform.
+Note what that buys you: `1` means *fix the payload*, `2` means *fix the setup
+or try again later*, and a `404` and an unset `SPECGUARD_ENDPOINT` — the same
+mistake — give you the same code. When a file produces both, `2` wins, and every
+line is still printed either way.
+
+`--list` sits outside that table's `1`, and outside most of its `2`: it makes no
+request, so no endpoint has read anything and there is no verdict to report. A
+listing exits `0` or `2` only, and the only `2`s it can reach are a bad flag and
+a file it could not read. The other causes in that row are delivery's, not
+listing's — listing needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`,
+and an unparseable line becomes a row in the listing that names it rather than
+an exit code.
+
+**What it will not tell you** is whether a replayed line *created* a new run or
+*folded into* an existing one. The ingest endpoint's `202` carries the run's id
+but no created-versus-updated flag, so the command reports what it can see: the
+`test_run_id` that came back, and whether the line carried a `ci_run_id` of its
+own. Two lines that went out with the same `ci_run_id` and came back with the
+same `test_run_id` landed on one record — that is the sentence above, and it is
+an observation rather than an inference.
+
+Bulk-importing an aged archive is **not** what this is for. The payload carries
+no execution timestamp and SpecGuard orders a repository's runs by when they
+were ingested, so a replayed run becomes the repository's latest. For the case
+this exists to serve — replay the run that just failed, right after fixing the
+credential — that is correct.
+
+#### Machine-readable output — `--json`
+
+An HTTP `400` is the one **permanent** verdict in the table above: a refused line
+is refused every time it is offered, so the only way to land the run is to learn
+which specs SpecGuard objected to and fix the payload. It names **every** one of
+them — one error per offending spec, by index, file and line — and the human
+report has room for three:
+
+```
+line 3: refused — HTTP 400 — the endpoint rejected the payload — specs[417] spec/models/user_spec.rb:88: duration must be a non-negative number when present; specs[418] …; specs[419] … and 19997 more
+```
+
+That cap is right where it is: it exists for the **one stderr line** an in-run CI
+warning is allowed, and the formatter still has to fit inside it. It is a cap on
+a *line*, though, and `--json` is the other channel — stdout carries one JSON
+document instead of the human report, with the whole list in it:
+
+```bash
+bundle exec specguard-ingest --json log/test_results.jsonl
+```
+```json
+{
+  "tool": "specguard-ingest",
+  "mode": "deliver",
+  "file": "log/test_results.jsonl",
+  "summary": { "lines": 3, "attempted": 3, "accepted": 2, "refused": 1,
+               "undelivered": 0, "unparseable": 0, "blank": 0, "skipped": 0,
+               "selector": null },
+  "lines": [
+    { "number": 1, "status": "accepted", "code": 202, "reasons": [],
+      "test_run_id": "41f2c9b8", "ci_run_id": "17442" },
+    { "number": 2, "status": "accepted", "code": 202, "reasons": [],
+      "test_run_id": "41f2c9b8", "ci_run_id": "17442" },
+    { "number": 3, "status": "refused", "code": 400, "test_run_id": null,
+      "ci_run_id": "17443",
+      "reasons": [
+        "specs[417] spec/models/user_spec.rb:88: duration must be a non-negative number when present",
+        "specs[418] spec/models/user_spec.rb:96: duration must be a non-negative number when present"
+      ] }
+  ],
+  "foldings": [
+    { "ci_run_id": "17442", "test_run_id": "41f2c9b8", "lines": [1, 2] }
+  ]
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `tool` | always `"specguard-ingest"`. Deliberately **not** a schema id: this document is about deliveries, and `specguard-lint --json` is the one that mirrors `validate-intent`'s |
+| `mode` | `"deliver"` or `"list"` — whether the lines were sent or only shown |
+| `file` | the path you gave it, echoed back |
+| `summary.lines` | rows in `lines`: the lines that carried a payload and were not held back by a selector |
+| `summary.attempted` | how many of those were offered to the endpoint — always `0` under `--list`, and `lines` minus the unparseable ones otherwise |
+| `summary.accepted` / `refused` / `undelivered` / `unparseable` | the same four counts the text summary line states, computed once for both renderers so they cannot disagree |
+| `summary.blank` / `skipped` | the two ways a line of the file is not a row here, counted rather than dropped |
+| `summary.selector` | `"--lines"`, `"--from-line"`, or `null` when nothing was held back |
+| `lines[]` | one entry per row, in the file's order |
+| `foldings[]` | folding, **observed**: the lines that went out with one `ci_run_id` and came back with one `test_run_id`. The same statement the text report makes as a sentence |
+
+Every delivered line has the same six keys:
+
+| field | meaning |
+| --- | --- |
+| `number` | its 1-based line number in the file **as given**, blank lines counted — so it is the number `--from-line` and `--lines` take |
+| `status` | `accepted`, `refused`, `undelivered` or `unparseable`. The tool's own vocabulary, not the report's wording (`undelivered`, where the row prints `not delivered`) |
+| `code` | the HTTP status, or **`null`** where there is not one: a line that was never a run, and a delivery that got no answer at all (connection refused, DNS, TLS, a timeout) |
+| `reasons` | why the line did not land — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type. SpecGuard's own per-spec errors on a refusal (all of them, in its order), the parse problem where the line was not a run, the error where nothing reached the endpoint, and `[]` where it landed or where the refusal's body said nothing readable |
+| `test_run_id` | the run the line landed on, as the endpoint reported it; `null` where that cannot be said honestly |
+| `ci_run_id` | the run identity the line carried, or `null` — the field to read for, because a line without one has nothing for SpecGuard to fold a redelivery onto |
+
+Every listed line has the same eight keys — `number`, `status` and `reasons`, as
+on a delivered line, and then the five envelope facts the text row prints
+instead of a delivery's outcome:
+
+| field | meaning |
+| --- | --- |
+| `number` | its 1-based line number in the file **as given**, blank lines counted — the same number as on a delivered line, and the one `--from-line` and `--lines` take |
+| `status` | `listed`, or `unparseable` where the line could not be parsed as a run — the two outcomes a preview has, since nothing was sent |
+| `reasons` | the parse problem on an `unparseable` row, and `[]` on a `listed` one — **always** a list of strings, never null and never a bare string, so a consumer never branches on its type. It is the only field that says *why* a previewed line is unusable |
+| `branch` | the branch the line carried, or **`null`** where the row says `no branch` |
+| `commit_sha` | the commit the line carried, or **`null`** |
+| `ci_run_id` | the run identity the line carried, or **`null`** where the row says `no ci_run_id` — the field to read for here too |
+| `examples` | how many examples the line carried, or **`null`** where the row says `no specs`. `0` and `null` stay different facts, exactly as `0 examples` and `no specs` do |
+| `duration_seconds` | the run's duration, or **`null`** where the row says `no duration_seconds` |
+
+`--list --json` needs no `SPECGUARD_ENDPOINT` and no `SPECGUARD_API_KEY`,
+exactly as `--list` does, and it previews the same set by the same numbers a
+delivery would send.
+
+Four things worth knowing:
+
+- **The exit code is identical with and without the flag**, and the default
+  output is unchanged. `--json` is a second renderer over the same lines, the
+  same statuses and the same counts — pinned that way, byte for byte, in
+  `spec/specguard/rspec/regression_targets_spec.rb`.
+- **`--json` does not lift the cap on the human line.** The two channels render
+  the same refusal at different lengths on purpose; nothing about the formatter's
+  in-run warning moves.
+- **A run that never got as far as reading the file emits no document.** A bad
+  flag, `--from-line` with `--lines`, no endpoint or API key, a file that cannot
+  be read — all still exit `2` with prose on stderr and **nothing** on stdout,
+  because there is nothing yet to be a document about. A file the command *did*
+  read always gets one, whatever the exit code, including an empty one.
+- **Warnings stay on stderr**, in both renderers. A run that delivered nothing is
+  still loud there; stdout is the document and nothing else.
 
 ### If you shard your suite
 

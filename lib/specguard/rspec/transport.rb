@@ -147,7 +147,27 @@ module SpecGuard
       #   :success   a 2xx. `code` carries it (202 in the happy path).
       #   :rejected  a non-2xx. `code` carries it; nothing was raised.
       #   :failed    an exception was raised. `error` carries it.
-      Result = Struct.new(:outcome, :code, :error, keyword_init: true) do
+      #
+      # `reasons` is the refusal in the platform's own words — the strings
+      # `Api::BaseController#render_bad_request` puts on the wire, each naming
+      # one offending spec by index, file and line. It is populated only on
+      # `:rejected`, and only when the body actually said something this class
+      # could read; a proxy's HTML 502 leaves it nil and the reader gets
+      # exactly what they got before.
+      #
+      # `body` is the mirror of that on the accepting side: the 202 document
+      # `Api::V1::IngestsController` renders — `test_run_id`, `total_specs`,
+      # `annotated_specs`, `annotated_ratio`, `embedding_status` — parsed, and
+      # populated only on `:success`. It was discarded until {IngestCLI}
+      # needed to say *which run* a re-delivered line landed on, and it is
+      # added rather than substituted: nothing that read a {Result} before
+      # reads a different one now.
+      #
+      # It degrades to `nil` on exactly the terms `reasons` does, and for the
+      # same reason turned around: a 202 whose body will not parse is still an
+      # acceptance, and relabelling it would tell the operator something untrue
+      # about a run the platform has already stored. See {#test_run_id}.
+      Result = Struct.new(:outcome, :code, :error, :reasons, :body, keyword_init: true) do
         # The status codes worth spelling out, because each implies a different
         # thing for the reader to *do*. A 401 means "rotate or fix the key"; a
         # 400 means "the payload this gem built was refused", which is a bug
@@ -162,7 +182,40 @@ module SpecGuard
           429 => "rate limited by the endpoint"
         }.freeze
 
+        # How many of the platform's reasons are spelled out, with an
+        # `and N more` tail standing in for the rest.
+        #
+        # A cap rather than the whole list, because the list is unbounded at
+        # its source: `Ingest::Payload` appends one error *per bad spec*, so a
+        # systemic client bug on a 20,000-example suite comes back with
+        # ~20,000 strings. Three is enough to see the shape of the failure —
+        # they are near-identical when the cause is systemic — and the count
+        # tells the reader how widespread it is.
+        MAX_RENDERED_REASONS = 3
+
+        # Ceiling on the spelled-out reasons, before the `and N more` tail,
+        # which is appended afterwards so the count can never be the thing that
+        # gets truncated away.
+        MAX_REASONS_LENGTH = 300
+
         def success? = outcome == :success
+
+        # The id of the `TestRun` this delivery landed on, as the endpoint
+        # reported it — `nil` whenever that cannot be said honestly: a refusal,
+        # an exception, a 202 with an unreadable body, or one whose
+        # `test_run_id` is not a scalar.
+        #
+        # Returned as a String so two deliveries can be compared without
+        # caring whether the platform spells an id as a UUID or a number. Two
+        # accepted lines answering with the same value landed on the same row;
+        # that is the only claim about folding this class can support, and
+        # {IngestCLI} makes exactly that one.
+        #
+        # @return [String, nil]
+        def test_run_id
+          value = body.is_a?(Hash) ? body["test_run_id"] : nil
+          value.is_a?(String) || value.is_a?(Numeric) ? value.to_s : nil
+        end
 
         # A single clause naming what went wrong, for the one stderr line a run
         # is allowed. `nil` on success, because there is nothing to say.
@@ -171,9 +224,42 @@ module SpecGuard
         def reason
           case outcome
           when :success then nil
-          when :rejected then [+"HTTP #{code}", ADVICE[code]].compact.join(" — ")
+          when :rejected then [+"HTTP #{code}", ADVICE[code], rendered_reasons].compact.join(" — ")
           else "#{error.class}: #{error.message}"
           end
+        end
+
+        private
+
+        # The refusal, bounded and flattened to fit on the one line. `nil` when
+        # there is nothing readable to add, which is what keeps the bare
+        # `HTTP 400 — the endpoint rejected the payload` intact for every body
+        # this class could not make sense of.
+        def rendered_reasons
+          cleaned = Array(reasons).filter_map { |value| one_line(value) }
+          return nil if cleaned.empty?
+
+          rendered = cleaned.take(MAX_RENDERED_REASONS).join("; ")
+          rendered = "#{rendered[0, MAX_REASONS_LENGTH - 1]}…" if rendered.length > MAX_REASONS_LENGTH
+
+          omitted = cleaned.length - MAX_RENDERED_REASONS
+          omitted.positive? ? "#{rendered} and #{omitted} more" : rendered
+        end
+
+        # One line, guaranteed. Newlines, tabs, ANSI escapes and every other
+        # control character collapse to a single space, so nothing arriving
+        # from the network can smear itself across a CI log or forge lines
+        # that look like they came from something else. `scrub` first because
+        # a body from a proxy is bytes, not necessarily valid UTF-8, and
+        # `gsub` raises on an invalid sequence.
+        #
+        # @return [String, nil] nil for a non-String and for anything that was
+        #   only whitespace to begin with.
+        def one_line(value)
+          return nil unless value.is_a?(String)
+
+          text = value.scrub("").gsub(/[[:space:][:cntrl:]]+/, " ").strip
+          text.empty? ? nil : text
         end
       end
 
@@ -212,9 +298,10 @@ module SpecGuard
         response = post(JSON.generate(payload))
         code = response.code.to_i
 
-        return Result.new(outcome: :success, code: code) if response.is_a?(Net::HTTPSuccess)
+        return Result.new(outcome: :success, code: code, body: success_body(response)) if
+          response.is_a?(Net::HTTPSuccess)
 
-        Result.new(outcome: :rejected, code: code)
+        Result.new(outcome: :rejected, code: code, reasons: refusal_reasons(response))
       rescue ScriptError, StandardError => e
         # Connection refused, DNS failure, TLS failure, open/read timeout, a
         # malformed endpoint — one family, one shape. `ScriptError` is in the
@@ -225,6 +312,58 @@ module SpecGuard
       end
 
       private
+
+      # What the platform said about the run it accepted, or `nil` when the
+      # body did not say anything this class can use.
+      #
+      # The guard is {#refusal_reasons}'s, argued the other way round. There it
+      # keeps a refusal from being relabelled an exception; here it keeps an
+      # *acceptance* from being relabelled at all. The platform has stored the
+      # run by the time it writes this body, so a truncated read, an empty
+      # body, or a proxy that rewrote the 202 into HTML must cost the caller
+      # the decoration and nothing else. Every failure of reading degrades to
+      # `nil`, and `Result#success?` is what it was before this existed.
+      def success_body(response)
+        body = JSON.parse(response.body.to_s)
+        body if body.is_a?(Hash)
+      rescue ScriptError, StandardError
+        nil
+      end
+
+      # What the platform said about the refusal, or `nil` when the body did
+      # not say anything this class can use.
+      #
+      # `Api::BaseController` shapes both refusal bodies deliberately for a
+      # client to read: `render_bad_request` carries every validation failure
+      # in `details` and repeats the first in `message`, and
+      # `render_unauthorized` carries `message` alone. So `details` is
+      # preferred and `message` is the fallback, which is exactly the 400/401
+      # split rather than two special cases.
+      #
+      # == Why the guard is here and not the method-level one
+      #
+      # {#deliver}'s `rescue` turns anything raised into
+      # `Result(outcome: :failed)`, and a body that will not parse is not a
+      # delivery failure — the delivery plainly succeeded and was refused. To
+      # let a `JSON::ParserError` reach that rescue would relabel a 400 as an
+      # exception and tell the operator something untrue about what happened,
+      # for the sake of a decoration. So every failure of *reading* degrades to
+      # `nil` here and the run is told exactly what it was told before this
+      # existed. That covers the empty body, the HTML a proxy answers a 413
+      # with, a JSON scalar, and a read that dies part-way through a body whose
+      # status line had already arrived.
+      def refusal_reasons(response)
+        body = JSON.parse(response.body.to_s)
+        return nil unless body.is_a?(Hash)
+
+        details = body["details"]
+        return details if details.is_a?(Array) && details.any? && details.all?(String)
+
+        message = body["message"]
+        [message] if message.is_a?(String)
+      rescue ScriptError, StandardError
+        nil
+      end
 
       def post(body)
         target = uri
