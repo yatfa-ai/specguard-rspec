@@ -31,17 +31,19 @@ jobs:
 
       # The gem is on the load path in its own repository (Gemfile -> gemspec -> lib/), so the
       # --require resolves to the local lib/specguard/rspec/formatter.rb — the code under test is
-      # also the code reporting the run. With no key (a fork PR) SPEC_OPTS stays unset and the
-      # suite runs exactly as a developer sees it.
+      # also the code reporting the run. Deliberately NOT SPEC_OPTS: this suite spawns child rspec
+      # processes that would inherit it and change their output; a variable nothing else reads
+      # carries the flags to the command line instead, and CLI args are not inherited. With no key
+      # (a fork PR) the flags are absent and the suite runs exactly as a developer sees it.
       - name: Enable SpecGuard telemetry when a key is configured
         if: env.SPECGUARD_API_KEY != ''
         run: |
           {
-            echo "SPEC_OPTS=--require specguard/rspec/formatter --format SpecGuard::RSpecFormatter"
+            echo "SPECGUARD_RSPEC_ARGS=--require specguard/rspec/formatter --format SpecGuard::RSpecFormatter"
             echo "SPECGUARD_COMMIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}"
             echo "SPECGUARD_BRANCH=${{ github.head_ref || github.ref_name }}"
             echo "SPECGUARD_RUN_ID=${{ github.run_id }}-${{ github.run_attempt }}"
           } >> "$GITHUB_ENV"
 
       - name: Run the suite
-        run: bundle exec rspec
+        run: bundle exec rspec $SPECGUARD_RSPEC_ARGS
