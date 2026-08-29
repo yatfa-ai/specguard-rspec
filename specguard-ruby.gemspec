@@ -1,21 +1,22 @@
 # frozen_string_literal: true
 
-require_relative "lib/specguard/rspec/version"
+require_relative "lib/specguard/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "specguard-rspec"
-  spec.version = SpecGuard::RSpec::VERSION
+  spec.name = "specguard-ruby"
+  spec.version = SpecGuard::VERSION
   spec.authors = ["specguard Agent"]
   spec.email = ["specguard-agent@noreply.yatfa.com"]
 
-  spec.summary = "RSpec formatter and @intent annotation linter for SpecGuard."
-  spec.description = "SpecGuard's Ruby client. Ships an additive RSpec formatter that posts " \
-                     "test-run telemetry to SpecGuard's ingest endpoint, a CLI linter " \
-                     "(specguard-lint) that validates OpenTestIntent @intent annotations in " \
-                     "*_spec.rb files, and a replayer (specguard-ingest) that re-delivers a run " \
-                     "the formatter saved when the endpoint could not be reached. Telemetry " \
-                     "never blocks CI; the linter blocks only on malformed annotations."
-  spec.homepage = "https://github.com/yatfa-ai/specguard-rspec"
+  spec.summary = "RSpec formatter, Minitest reporter and @intent annotation linter for SpecGuard."
+  spec.description = "SpecGuard's Ruby client — every Ruby test framework, one gem. Ships an " \
+                     "additive RSpec formatter and a Minitest reporter that post test-run " \
+                     "telemetry to SpecGuard's ingest endpoint, a CLI linter (specguard-lint) " \
+                     "that validates OpenTestIntent @intent annotations in *_spec.rb files, and " \
+                     "a replayer (specguard-ingest) that re-delivers a run saved when the " \
+                     "endpoint could not be reached. Telemetry never blocks CI; the linter " \
+                     "blocks only on malformed annotations."
+  spec.homepage = "https://github.com/yatfa-ai/specguard-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
 

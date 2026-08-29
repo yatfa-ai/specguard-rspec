@@ -2,8 +2,9 @@
 # Bump the patch version, commit, push to main, and tag vX.Y.Z on what landed.
 #
 # Mirrors yatfa's script/bump-version.sh, adapted for a gem:
-#   - the version source is lib/specguard/rspec/version.rb (the gemspec reads
-#     SpecGuard::RSpec::VERSION from it), not a VERSION file
+#   - the version source is lib/specguard/version.rb (the gemspec reads
+#     SpecGuard::VERSION from it; lib/specguard/rspec/version.rb is a back-compat
+#     alias that follows it), not a VERSION file
 #   - release is tag-based like warden's: the GitHub Release and the pushed gem
 #     both correspond to vX.Y.Z. There is no `prod` deploy-mirror branch —
 #     nothing here is deployed to a cluster.
@@ -15,7 +16,7 @@
 # `tag` to the step's job outputs. Locally it just prints the new version.
 set -e
 
-VERSION_FILE="lib/specguard/rspec/version.rb"
+VERSION_FILE="lib/specguard/version.rb"
 
 # Ensure we're on the main branch
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)

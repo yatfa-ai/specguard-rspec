@@ -78,7 +78,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
       @build_dir = Dir.mktmpdir("specguard-gem")
       gem_file = File.join(@build_dir, "built.gem")
 
-      out, err, status = Open3.capture3("gem", "build", "specguard-rspec.gemspec", "--output", gem_file,
+      out, err, status = Open3.capture3("gem", "build", "specguard-ruby.gemspec", "--output", gem_file,
                                         chdir: root)
       raise "gem build failed:\n#{out}\n#{err}" unless status.success?
 
@@ -88,7 +88,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     after(:context) { FileUtils.remove_entry(@build_dir) if @build_dir }
 
     it "builds, and is named and versioned as expected" do
-      expect(@spec.name).to eq("specguard-rspec")
+      expect(@spec.name).to eq("specguard-ruby")
       expect(@spec.version.to_s).to eq(SpecGuard::RSpec::VERSION)
     end
 

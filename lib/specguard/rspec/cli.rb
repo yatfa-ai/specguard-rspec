@@ -353,7 +353,7 @@ module SpecGuard
             options[:json] = true
           end
           o.on("-v", "--version", "Print the version and exit") do
-            @stdout.puts "specguard-rspec #{VERSION}"
+            @stdout.puts "specguard-ruby #{VERSION}"
             return nil
           end
           o.on("-h", "--help", "Print this help and exit") do

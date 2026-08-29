@@ -138,7 +138,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
   describe "options" do
     it "prints the version" do
       expect(cli.run(["--version"])).to eq(0)
-      expect(out).to include("specguard-rspec #{SpecGuard::RSpec::VERSION}")
+      expect(out).to include("specguard-ruby #{SpecGuard::VERSION}")
     end
 
     it "prints usage" do

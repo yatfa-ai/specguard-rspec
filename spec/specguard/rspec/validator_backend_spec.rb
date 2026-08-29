@@ -3144,12 +3144,12 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
     describe ".cache_dir" do
       it "honours SPECGUARD_CACHE_DIR" do
-        expect(installer.cache_dir(env)).to end_with("specguard-rspec/validate-intent/#{installer::RELEASE_TAG}")
+        expect(installer.cache_dir(env)).to end_with("specguard-ruby/validate-intent/#{installer::RELEASE_TAG}")
       end
 
       it "falls back to XDG_CACHE_HOME when the override is unset" do
         expect(installer.cache_dir({ "XDG_CACHE_HOME" => File.join(tmpdir, "xdg") }))
-          .to end_with("xdg/specguard-rspec/validate-intent/#{installer::RELEASE_TAG}")
+          .to end_with("xdg/specguard-ruby/validate-intent/#{installer::RELEASE_TAG}")
       end
     end
 
@@ -3159,7 +3159,7 @@ RSpec.describe SpecGuard::RSpec::ValidatorBackend do
 
         path = installer.obtain(env: env)
 
-        expect(path).to eq(File.join(cache_root, "specguard-rspec", "validate-intent", installer::RELEASE_TAG, asset))
+        expect(path).to eq(File.join(cache_root, "specguard-ruby", "validate-intent", installer::RELEASE_TAG, asset))
         expect(File.file?(path)).to be(true)
         expect(File.executable?(path)).to be(true)
         expect(File.binread(path)).to eq(bytes)

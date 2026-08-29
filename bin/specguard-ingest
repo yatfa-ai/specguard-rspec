@@ -33,7 +33,7 @@ begin
   # linter's load chain and this command is the reason to pay for them.
   require "specguard/rspec/ingest_cli"
 rescue ScriptError, StandardError => e
-  warn "specguard-ingest: error: could not load specguard-rspec: #{e.class}: #{e.message}"
+  warn "specguard-ingest: error: could not load specguard-ruby: #{e.class}: #{e.message}"
   exit 2
 end
 

@@ -1717,7 +1717,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     it "prints the gem version" do
       expect(cli.run(["--version"])).to eq(0)
-      expect(out).to eq("specguard-rspec #{SpecGuard::RSpec::VERSION}\n")
+      expect(out).to eq("specguard-ruby #{SpecGuard::VERSION}\n")
     end
 
     # Two selectors that cannot be given together is exactly the kind of rule a

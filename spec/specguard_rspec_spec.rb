@@ -43,13 +43,13 @@ RSpec.describe SpecGuard::RSpec do
     end
 
     # The constant is the single source of truth: the gemspec reads it
-    # (specguard-rspec.gemspec:7) instead of carrying its own literal. This is
+    # (specguard-ruby.gemspec) instead of carrying its own literal. This is
     # the cheap, in-process half of that check — schema_packaging_spec.rb
     # asserts the same equality against a *built* gem, but only after shelling
     # out to `gem build`. Reading the gemspec directly fails fast, and fails
     # loudly if anyone ever hardcodes a version into it.
     it "is the version the gemspec publishes, not a literal copied into it" do
-      gemspec_path = File.expand_path("../specguard-rspec.gemspec", __dir__)
+      gemspec_path = File.expand_path("../specguard-ruby.gemspec", __dir__)
       gemspec = Gem::Specification.load(gemspec_path)
 
       expect(gemspec).not_to be_nil, "#{gemspec_path} failed to load"

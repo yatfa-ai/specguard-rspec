@@ -67,7 +67,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     end
 
     it "identifies itself, so the platform can tell its clients apart" do
-      expect(request.headers["user-agent"]).to eq("specguard-rspec/#{SpecGuard::RSpec::VERSION}")
+      expect(request.headers["user-agent"]).to eq("specguard-ruby/#{SpecGuard::VERSION}")
     end
 
     # The body is `#payload` verbatim. Reshaping it in transport would put the

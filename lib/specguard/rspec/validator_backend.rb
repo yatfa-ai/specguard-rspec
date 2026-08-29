@@ -451,7 +451,10 @@ module SpecGuard
             override = env[CACHE_DIR_VAR].to_s.strip
             xdg = env["XDG_CACHE_HOME"].to_s.strip
             root = override.empty? ? (xdg.empty? ? File.join(Dir.home, ".cache") : xdg) : override
-            File.join(root, "specguard-rspec", "validate-intent", RELEASE_TAG)
+            # Named for the gem, so a cached validator binary survives gem upgrades
+            # within one name and is re-downloaded once — and only once — when the
+            # gem itself changes name.
+            File.join(root, "specguard-ruby", "validate-intent", RELEASE_TAG)
           end
 
           # Downloads the asset plus its manifest, verifies, and installs
@@ -521,7 +524,7 @@ module SpecGuard
                                                           read_timeout: READ_TIMEOUT) do |http|
               request = Net::HTTP::Get.new(uri)
               # GitHub's release endpoints require a client that names itself.
-              request["User-Agent"] = "specguard-rspec-installer"
+              request["User-Agent"] = "specguard-ruby-installer"
               http.request(request)
             end
 

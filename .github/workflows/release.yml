@@ -74,12 +74,12 @@ jobs:
           ./script/bump-version.sh
 
       - name: Build the gem
-        run: gem build specguard-rspec.gemspec
+        run: gem build specguard-ruby.gemspec
 
       - name: Push to RubyGems
         env:
           GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-        run: gem push "specguard-rspec-${{ steps.bump.outputs.version }}.gem"
+        run: gem push "specguard-ruby-${{ steps.bump.outputs.version }}.gem"
 
       - name: Publish GitHub Release
         env:
@@ -87,14 +87,14 @@ jobs:
         run: |
           gh release create "${{ steps.bump.outputs.tag }}" \
             --title "${{ steps.bump.outputs.tag }}" \
-            --notes "Published to RubyGems as \`specguard-rspec ${{ steps.bump.outputs.version }}\`.
+            --notes "Published to RubyGems as \`specguard-ruby ${{ steps.bump.outputs.version }}\`.
 
           \`\`\`ruby
           # Gemfile
           group :test do
-            gem \"specguard-rspec\", \"~> ${{ steps.bump.outputs.version }}\", require: false
+            gem \"specguard-ruby\", \"~> ${{ steps.bump.outputs.version }}\", require: false
           end
           \`\`\`
 
-          Two independent tools: an additive RSpec formatter that ships test-run telemetry, and \`specguard-lint\`, which validates OpenTestIntent \`@intent\` annotations." \
-            "specguard-rspec-${{ steps.bump.outputs.version }}.gem"
+          One Ruby client, every Ruby test framework: an additive RSpec formatter and a Minitest reporter that ship test-run telemetry, and \`specguard-lint\`, which validates OpenTestIntent \`@intent\` annotations." \
+            "specguard-ruby-${{ steps.bump.outputs.version }}.gem"

@@ -6,7 +6,7 @@ require "uri"
 require "zlib"
 
 require_relative "configuration"
-require_relative "version"
+require_relative "../version"
 
 module SpecGuard
   module RSpec
@@ -128,7 +128,7 @@ module SpecGuard
       # `endpoint` setting is the installation's address and nothing more.
       PATH = "/api/v1/ingest"
       CONTENT_TYPE = "application/json"
-      USER_AGENT = "specguard-rspec/#{SpecGuard::RSpec::VERSION}"
+      USER_AGENT = "specguard-ruby/#{SpecGuard::VERSION}"
       CONTENT_ENCODING = "gzip"
 
       # Bodies at least this large are gzipped; smaller ones go identity. See

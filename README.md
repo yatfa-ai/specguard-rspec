@@ -1,19 +1,43 @@
-# specguard-rspec
+# specguard-ruby
 
-> The Ruby client for [SpecGuard](https://github.com/yatfa-ai/specguard): an RSpec formatter that ships test-run telemetry,
-> and a CLI linter that validates `@intent` annotations.
+> The Ruby client for [SpecGuard](https://github.com/yatfa-ai/specguard), every Ruby test framework
+> in one gem: an RSpec formatter and a Minitest reporter that ship test-run telemetry, and a CLI
+> linter that validates `@intent` annotations.
 
 Two independent tools, one dependency — the [OpenTestIntent](https://github.com/yatfa-ai/open-test-intent) annotation format.
 A third command, [`specguard-ingest`](#replaying-a-saved-run--specguard-ingest), belongs to the first of them: it replays a
-run the formatter saved when the endpoint could not be reached.
+run a reporter saved when the endpoint could not be reached.
+
+This gem was named `specguard-rspec` while RSpec was its only adapter; it was renamed when the
+Minitest reporter joined. Same environment variables, same wire contract, same tools.
 
 ## Install
 
 ```ruby
 # Gemfile
 group :test do
-  gem "specguard-rspec", require: false
+  gem "specguard-ruby", require: false
 end
+```
+
+## The Minitest reporter
+
+Minitest discovers the reporter as a plugin — the gem on the load path is the whole integration,
+no spec file changes, no flags:
+
+```bash
+SPECGUARD_ENDPOINT=https://specguard.example SPECGUARD_API_KEY=sgk_… bundle exec ruby test/your_suite.rb
+```
+
+The plugin rides alongside Minitest's own reporters (the suite's output is unchanged), posts one
+envelope per process with the same field names the RSpec formatter sends, and never fails the run:
+a refused or unreachable delivery costs one line on stderr and a line in the local sink. Without
+`SPECGUARD_API_KEY` nothing is sent — the run is appended to the local development record, exactly
+as the RSpec formatter behaves. For a deterministic CI attachment where plugin discovery must not
+be assumed, require it explicitly before the run:
+
+```bash
+bundle exec ruby -rminitest/specguard_plugin -e 'Minitest.extensions << "specguard"; load ARGV[0]' test/your_suite.rb
 ```
 
 ## The linter — `specguard-lint`
@@ -919,7 +943,7 @@ body is encoded on the wire, never what is in it.
 
 Two request headers say something about you rather than about the request: the
 API key travels as a bearer token in `Authorization`, and `User-Agent` names
-this gem and its version (`specguard-rspec/<version>`), so the platform can tell
+this gem and its version (`specguard-ruby/<version>`), so the platform can tell
 its clients apart. The rest are ordinary HTTP plumbing that describe the message
 itself and carry nothing about your code or your suite — `Content-Type`,
 `Accept`, `Content-Length`, `Host`, `Accept-Encoding`, and `Content-Encoding:
