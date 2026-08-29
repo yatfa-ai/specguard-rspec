@@ -409,7 +409,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--json", fixture_path("order_spec.rb")])
 
         expect(err.lines.length).to eq(1)
-        expect(err).to start_with("specguard-lint: validated by validate-intent 0.1.3")
+        expect(err).to start_with("specguard-lint: validated by validate-intent 0.1.4")
         expect(err).to include("(SPECGUARD_VALIDATE_INTENT)")
       end
 

@@ -154,7 +154,7 @@ RSpec.describe "the default output path, byte for byte" do
   # default path and so it is pinned here too, not normalised away.
   def provenance
     digest = Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest
-    "specguard-lint: validated by validate-intent 0.1.3 (go1.22.12 #{RUBY_PLATFORM}) " \
+    "specguard-lint: validated by validate-intent 0.1.4 (go1.22.12 #{RUBY_PLATFORM}) " \
       "schema sha256:#{digest} at #{@stub} (SPECGUARD_VALIDATE_INTENT) " \
       "— it reports enforcing the schema this gem vendors, loaded from <embedded schema>\n"
   end

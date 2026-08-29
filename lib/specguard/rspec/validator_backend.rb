@@ -378,7 +378,13 @@ module SpecGuard
         # which validator validated a CI job must not change because somebody
         # published a new release, and {Runner#verify_schema_contract!} pins
         # the fetched binary to this gem's vendored schema anyway.
-        RELEASE_TAG = "v0.1.3"
+        # v0.1.4 is the first release whose JSON findings carry `intent` on
+        # passing rows; v0.1.3 validated the same schema but reported no payload,
+        # which the formatter's mapping reads as "unannotated" — every annotation
+        # silently dropped while the verdicts stayed green (found via
+        # yatfa-ai/specguard's CI reporting 0.0% annotated after its lock jumped
+        # 0.2.3 -> 0.3.1 and the SPGD-867 binary cutover ran for real).
+        RELEASE_TAG = "v0.1.4"
         REPOSITORY = "yatfa-ai/open-test-intent"
         DOWNLOAD_BASE = "https://github.com/#{REPOSITORY}/releases/download/#{RELEASE_TAG}"
 

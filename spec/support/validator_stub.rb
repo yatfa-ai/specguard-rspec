@@ -74,7 +74,7 @@ module ValidatorStub
 
       if ARGV.include?("--version")
         digest = Digest::SHA256.file(ENV.fetch("STUB_SCHEMA")).hexdigest
-        puts "validate-intent 0.1.3 (go1.22.12 #{RUBY_PLATFORM}) schema sha256:#{digest}"
+        puts "validate-intent 0.1.4 (go1.22.12 #{RUBY_PLATFORM}) schema sha256:#{digest}"
         exit 0
       end
 
