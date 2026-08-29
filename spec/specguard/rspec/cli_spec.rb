@@ -135,7 +135,6 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # gem still owns — stays pinned in annotation_scanner_spec.rb.
   end
 
-
   # SPGD-900: the stacked-annotation structural pass. Two consecutive
   # comment-form `@intent:` lines above one `it` leave the upper line
   # unreachable to the one-line lookback (SPGD-12 §2) — dead metadata the

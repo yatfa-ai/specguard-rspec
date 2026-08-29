@@ -15,7 +15,9 @@ module SpecGuard
     # OpenTestIntent schema, so a Finding with an `intent` is merely
     # syntactically sound, not valid.
     module Scanner
-      module_function      # @param paths [Enumerable<String>]
+      module_function
+
+      # @param paths [Enumerable<String>]
       # @return [Array<Finding>] in file-then-line order
       def scan_files(paths)
         paths.flat_map { |path| scan_file(path) }
