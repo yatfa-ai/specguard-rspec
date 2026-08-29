@@ -48,6 +48,17 @@ module SpecGuard
       # of ways an annotation can fail is written down in one place.
       KIND_SCHEMA = :schema
 
+      # The annotation is well-formed in isolation but can never be EXTRACTED:
+      # it is a comment-form `@intent:` on a line whose next line is also a
+      # comment-form `@intent:`, so the one-line lookback (SPGD-12 §2 —
+      # {AnnotationLookup} claims only the comment on the line immediately
+      # above an example) always skips it in favour of the lower line. The
+      # contract is dead metadata: counted by the linter, discarded by
+      # extraction. Produced by {Scanner}'s structural pass, not by
+      # {AnnotationScanner} — each annotation is scanned in isolation there,
+      # which is exactly why this defect is invisible to it.
+      KIND_UNREACHABLE = :unreachable
+
       def initialize(file:, line:, intent: nil, problem: nil, kind: nil)
         super
       end

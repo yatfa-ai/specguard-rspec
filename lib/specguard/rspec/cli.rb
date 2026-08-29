@@ -140,6 +140,14 @@ module SpecGuard
 
         results = backend.check(selection.files)
 
+        # The structural pass (SPGD-900): annotations that are valid in
+        # isolation but can never be extracted — stacked consecutive
+        # comment-form `@intent:` lines, where the one-line lookback
+        # (SPGD-12 §2) claims only the line just above the example. These are
+        # Linter::Results like any other, so both renderers and the exit code
+        # pick them up with no second path to keep in step.
+        results += unreachable_results(selection.files)
+
         # Computed once, here, and handed to whichever renderer runs. `--json`
         # is a second renderer over this list, not a second code path: the exit
         # code below is the same expression it always was, and the document's
@@ -161,6 +169,19 @@ module SpecGuard
       end
 
       private
+
+      # {Scanner}'s structural findings are annotations, not file problems:
+      # each carries a real `file:line`, so they become failing line-scoped
+      # {Linter::Result}s exactly like a malformed payload would. A file the
+      # backend could not read contributes nothing here — the backend's own
+      # KIND_READ result already reports it, and this pass cannot be positional
+      # about a file it never saw.
+      def unreachable_results(paths)
+        Scanner.unreachable_findings(paths).map do |finding|
+          Linter::Result.new(file: finding.file, line: finding.line,
+                             kind: finding.kind, problem: finding.problem)
+        end
+      end
 
       # One line per run naming the implementation that produced the verdicts.
       # Since the SPGD-867 cutover there is exactly one implementation — the

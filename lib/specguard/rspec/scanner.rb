@@ -15,9 +15,7 @@ module SpecGuard
     # OpenTestIntent schema, so a Finding with an `intent` is merely
     # syntactically sound, not valid.
     module Scanner
-      module_function
-
-      # @param paths [Enumerable<String>]
+      module_function      # @param paths [Enumerable<String>]
       # @return [Array<Finding>] in file-then-line order
       def scan_files(paths)
         paths.flat_map { |path| scan_file(path) }
@@ -229,6 +227,107 @@ module SpecGuard
       rescue ScanError, JSON::ParserError => e
         Finding.new(file: file, line: line, kind: Finding::KIND_PARSE,
                     problem: "could not parse annotation: #{e.message}")
+      end
+
+      # == The structural pass: annotations the extraction can never claim
+      #
+      # Everything above validates each annotation IN ISOLATION — one payload,
+      # one verdict. But the formatter's extraction contract
+      # ({AnnotationLookup}, SPGD-12 §2) is positional: only the comment-form
+      # annotation on the line IMMEDIATELY ABOVE an example is inheritable.
+      # So when two consecutive comment-form `@intent:` lines sit above one
+      # `it`, the UPPER line is unreachable — silently discarded by the
+      # one-line lookback — while this pipeline counts it as a valid
+      # annotation and the run exits 0. Measured (SPGD-897 audit): 16 such
+      # stacked pairs shipped through `specguard-lint` exit 0, every upper
+      # contract dead. Reported loudly, not skipped — the same stance
+      # {AnnotationScanner} takes for NO_PAYLOAD.
+      #
+      # A comment-form annotation line is a comment-only line
+      # ({AnnotationLookup::COMMENT_LINE}) carrying the `@intent:` token. The
+      # trailing same-line form never matches COMMENT_LINE, so it is never
+      # flagged and never makes a neighbour unreachable — its annotation
+      # belongs to its own example's line and the lookback is not involved.
+      #
+      # @param paths [Enumerable<String>]
+      # @return [Array<Finding>] one per unreachable comment-form annotation,
+      #   in file-then-line order. A file that cannot be read contributes
+      #   nothing here — {ValidatorBackend} already reports read failures, and
+      #   this pass has nothing positional to say about a file it never saw.
+      def unreachable_findings(paths)
+        paths.flat_map { |path| unreachable_findings_in_file(path) }
+      end
+
+      # @param path [String]
+      # @return [Array<Finding>]
+      def unreachable_findings_in_file(path)
+        begin
+          text = File.read(path, encoding: "UTF-8")
+        rescue SystemCallError, IOError
+          return []
+        end
+
+        unreachable_findings_in_text(text, file: path)
+      end
+
+      UNREACHABLE_ANNOTATION =
+        "unreachable annotation: the previous line is also a comment-form @intent:, " \
+        "so the one-line lookback claims only the line just above the example " \
+        "and this annotation is silently discarded at extraction (SPGD-12 §2)"
+
+      # A comment-only line carrying an `@intent:` token — the only form an
+      # example on the NEXT line may claim ({AnnotationLookup::COMMENT_LINE}).
+      COMMENT_INTENT_LINE = /\A\s*#.*@intent:/
+
+      # The line an annotation run may be claimed from: the first example
+      # keyword. The lookback rule is `example.metadata[:line_number] - 1`, so
+      # only the comment form on the line immediately above an example is
+      # inheritable — which makes an EXAMPLE the anchor of the whole rule.
+      #
+      # Anchoring on the example is what keeps this pass off annotation
+      # corpora with no examples at all (the recorded-binary fixtures in
+      # spec/fixtures/): there is no lookback there to silently discard
+      # anything, so there is nothing to report. The defect this pass exists
+      # for (SPGD-897) is stacked lines above a real example — an annotation
+      # the author believed was attached to the `it` under it.
+      EXAMPLE_LINE = /\A\s*(?:it|specify)\b/
+
+      # @param text [String] source of one file
+      # @param file [String] path to record on each Finding
+      # @return [Array<Finding>] one per comment-form `@intent:` line in a
+      #   stacked run — a maximal run of consecutive comment-form `@intent:`
+      #   lines immediately above an example — except the run's LAST line,
+      #   which is the one the one-line lookback claims. For the canonical
+      #   two-line stack above one `it`, that is the UPPER line.
+      def unreachable_findings_in_text(text, file:)
+        # A file that is not valid UTF-8 is reported once, loudly, by the
+        # backend as a read failure; nothing positional can be said about it,
+        # and `lines` below would raise on the invalid bytes.
+        return [] unless text.valid_encoding?
+
+        lines = text.lines
+        i = 0
+        findings = []
+
+        while i < lines.length
+          unless COMMENT_INTENT_LINE.match?(lines[i])
+            i += 1
+            next
+          end
+
+          run_start = i
+          i += 1 while i < lines.length && COMMENT_INTENT_LINE.match?(lines[i])
+          run_end = i # exclusive; lines[run_end] is the line after the run
+
+          if run_end < lines.length && EXAMPLE_LINE.match?(lines[run_end]) && run_start < run_end - 1
+            (run_start...(run_end - 1)).each do |j|
+              findings << Finding.new(file: file, line: j + 1, problem: UNREACHABLE_ANNOTATION,
+                                      kind: Finding::KIND_UNREACHABLE)
+            end
+          end
+        end
+
+        findings
       end
     end
   end

@@ -135,6 +135,93 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # gem still owns — stays pinned in annotation_scanner_spec.rb.
   end
 
+
+  # SPGD-900: the stacked-annotation structural pass. Two consecutive
+  # comment-form `@intent:` lines above one `it` leave the upper line
+  # unreachable to the one-line lookback (SPGD-12 §2) — dead metadata the
+  # linter previously counted as a valid annotation and exited 0 over.
+  describe "unreachable stacked @intent: annotations" do
+    def write_spec(dir, body, name: "order_spec.rb")
+      path = File.join(dir, name)
+      File.write(path, body)
+      path
+    end
+
+    it "exits 1 and names the UPPER line's file:line for a stacked pair" do
+      Dir.mktmpdir do |dir|
+        path = write_spec(dir, <<~RUBY)
+          # @intent: { entity: "Order", action: "checkout", behavior: "decrements the order stock", layer: "request" }
+          # @intent: { entity: "Refund", action: "issue", behavior: "restocks the refunded items", layer: "request" }
+          it "restores stock on refund" do
+            expect(order.stock).to eq(3)
+          end
+        RUBY
+
+        code = cli.run([path])
+        expect(code).to eq(1)
+        expect(out).to include("FAIL  #{path}:1")
+        expect(out).not_to include("#{path}:2")
+        expect(out).to include("unreachable annotation")
+      end
+    end
+
+    it "still exits 0 for the canonical one-comment-above-one-it form" do
+      Dir.mktmpdir do |dir|
+        path = write_spec(dir, <<~RUBY)
+          # @intent: { entity: "Order", action: "checkout", behavior: "decrements the order stock", layer: "request" }
+          it "decrements stock" do
+            expect(order.stock).to eq(2)
+          end
+        RUBY
+
+        expect(cli.run([path])).to eq(0)
+        expect(out).not_to include("FAIL")
+      end
+    end
+
+    it "does not flag trailing same-line annotations on adjacent one-liners" do
+      Dir.mktmpdir do |dir|
+        path = write_spec(dir, <<~RUBY)
+          it { is_expected.to eq(1) } # @intent: { entity: "Alpha", action: "act", behavior: "does the thing under test", layer: "request" }
+          it { is_expected.to be_positive } # @intent: { entity: "Beta", action: "act", behavior: "does the thing under test", layer: "request" }
+        RUBY
+
+        expect(cli.run([path])).to eq(0)
+        expect(out).not_to include("FAIL")
+      end
+    end
+
+    it "carries the unreachable kind through --json and still exits 1" do
+      Dir.mktmpdir do |dir|
+        path = write_spec(dir, <<~RUBY)
+          # @intent: { entity: "Alpha", action: "act", behavior: "does the thing under test", layer: "request" }
+          # @intent: { entity: "Beta", action: "act", behavior: "does the thing under test", layer: "request" }
+          it "works" do end
+        RUBY
+
+        code = cli.run(["--json", path])
+        expect(code).to eq(1)
+
+        document = JSON.parse(out)
+        expect(document["ok"]).to be(false)
+        failed = document["findings"].select { |f| !f["ok"] }
+        expect(failed.length).to eq(1)
+        expect(failed.first["kind"]).to eq("unreachable")
+        expect(failed.first["line"]).to eq(1)
+        expect(failed.first["file"]).to eq(path)
+      end
+    end
+
+    it "leaves the 0/1/2 exit contract untouched for a run with no stacked pairs" do
+      # Canonical fixtures, recorded real-binary verdicts: exit 0 file stays 0,
+      # broken file stays 1 with its own kinds, nothing gains a finding.
+      expect(cli.run([fixture_path("order_spec.rb")])).to eq(0)
+      expect(cli.run([fixture_path("broken_intent_spec.rb")])).to eq(1)
+      expect(out).not_to include("unreachable")
+    end
+  end
+
+
   describe "options" do
     it "prints the version" do
       expect(cli.run(["--version"])).to eq(0)
