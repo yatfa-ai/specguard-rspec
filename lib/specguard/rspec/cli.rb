@@ -9,7 +9,7 @@ module SpecGuard
     # == The contract, and the reason it needs defending
     #
     #   0  every annotation checked is valid (including "there were none")
-    #   1  at least one annotation is malformed
+    #   1  at least one annotation is malformed or unreachable
     #   2  the linter could not do its job — misuse, or the tool itself broken
     #
     # Ruby does not give you this for free; it actively works against it.
@@ -102,9 +102,11 @@ module SpecGuard
       # Every annotation checked was valid — or there were none to check.
       # "Lint, don't require": a missing annotation is never an error.
       EXIT_OK = 0
-      # One or more annotations are malformed. The only code produced by
-      # inspecting content, and the only path that reaches it is a failed
-      # {Linter::Result}.
+      # One or more annotations are malformed — or well-formed but
+      # unreachable (SPGD-900: stacked above another comment-form `@intent:`
+      # line, so the one-line lookback never claims it, a dead contract that
+      # is still a failure). The only code produced by inspecting content,
+      # and the only path that reaches it is a failed {Linter::Result}.
       EXIT_MALFORMED = 1
       # The linter could not do its job: bad flags, `--changed` outside a git
       # repository, a validator that could not be resolved, or an unexpected

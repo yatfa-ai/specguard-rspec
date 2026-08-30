@@ -19,7 +19,8 @@ module SpecGuard
     #
     # == What counts as a failure
     #
-    # Three things reach the same verdict from different directions:
+    # Three things make an annotation malformed, reaching the same verdict
+    # from different directions:
     #
     #   * the payload could not be captured off the line at all
     #     (`Finding::KIND_EXTRACTION`) — a typo'd annotation;
@@ -35,6 +36,14 @@ module SpecGuard
     # valid UTF-8 — is also reported as a failure, and therefore also exits 1.
     # That matches `validate-intent`, which classifies it separately (its own
     # `read` kind) and still reports it as `FAIL` with exit 1.
+    #
+    # `Finding::KIND_UNREACHABLE` — an annotation that is well-formed in
+    # isolation but stacked above another comment-form `@intent:` line, so
+    # the one-line lookback (SPGD-12 §2) never claims it — is also reported
+    # as a failure, and therefore also exits 1. Nothing about it is
+    # malformed; the contract is dead metadata, counted by the linter and
+    # discarded by extraction, and the structural pass that flags it
+    # (SPGD-900) reports it loudly rather than letting it pass as clean.
     module Linter
       # One annotation's verdict. `problem` is set when discovery could not
       # produce an intent at all; `reasons` when the schema rejected one.
