@@ -43,8 +43,9 @@ bundle exec ruby -rminitest/specguard_plugin -e 'Minitest.extensions << "specgua
 ## The linter — `specguard-lint`
 
 Validates `# @intent:` annotations in changed (or all) `*_spec.rb` files against the OpenTestIntent
-JSON Schema. Exits `1` on a malformed annotation; **never** fails on a *missing* one (adoption is
-opt-in and gradual).
+JSON Schema. Exits `1` on a malformed annotation — or a well-formed but unreachable one (stacked
+above another comment-form `@intent:` line, so the one-line lookback never claims it) — and
+**never** fails on a *missing* one (adoption is opt-in and gradual).
 
 ```bash
 bundle exec specguard-lint --changed   # CI mode: only files in the current diff
@@ -278,7 +279,9 @@ the `read` kind. The binary's own UTF-8 refusal prose (`input is not well-formed
 
 Every way the backend can fail — the binary is missing, will not execute, exits with something that
 is not a verdict, or emits output that is not a report — is **exit 2**, the linter's "could not do
-my job" code. It never becomes exit 1, which means "an annotation is malformed" and nothing else.
+my job" code. It never becomes exit 1, which means "an annotation is malformed" — or well-formed
+but unreachable: stacked above another comment-form `@intent:` line, so the one-line lookback
+never claims it — and nothing else.
 
 ## The formatter — `SpecGuard::RSpecFormatter`
 
