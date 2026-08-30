@@ -45,12 +45,14 @@ RSpec.describe SpecGuard::RSpec::Transport do
       end
     end
 
+    # @intent: { entity: "Transport", action: "deliver the run", behavior: "delivery uses the POST verb against the ingest endpoint", layer: "unit" }
     it "POSTs" do
       expect(request.verb).to eq("POST")
     end
 
     # `config/routes.rb` mounts `post "ingest"` inside the `/api/v1` scope. The
     # client owns the host; the path is the platform's and is not configurable.
+    # @intent: { entity: "Transport", action: "deliver the run", behavior: "the request targets the ingest path, which the endpoint setting does not already include", layer: "unit" }
     it "posts to /api/v1/ingest, which the endpoint setting does not include" do
       expect(request.path).to eq("/api/v1/ingest")
     end
@@ -58,20 +60,24 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # `Api::BaseController#bearer_token` matches /\ABearer\s+(?<token>.+)\z/i
     # and 401s on anything else — including the `Token ` and bare-key forms an
     # implementation might reasonably have guessed at.
+    # @intent: { entity: "Transport", action: "authenticate the run", behavior: "the api key travels as a Bearer token in the authorization header the platform parses", layer: "unit" }
     it "authenticates with a Bearer token in the form the platform parses" do
       expect(request.headers["authorization"]).to eq("Bearer sgk_abc123")
     end
 
+    # @intent: { entity: "Transport", action: "deliver the run", behavior: "the body is declared as JSON, without which the platform would parse nothing", layer: "unit" }
     it "declares a JSON body, without which Rails parses nothing" do
       expect(request.headers["content-type"]).to eq("application/json")
     end
 
+    # @intent: { entity: "Transport", action: "identify itself", behavior: "the user agent names the gem so the platform can tell its clients apart", layer: "unit" }
     it "identifies itself, so the platform can tell its clients apart" do
       expect(request.headers["user-agent"]).to eq("specguard-ruby/#{SpecGuard::VERSION}")
     end
 
     # The body is `#payload` verbatim. Reshaping it in transport would put the
     # wire format two files away from the code that decides it.
+    # @intent: { entity: "Transport", action: "deliver the run", behavior: "the payload arrives unchanged, key for key", layer: "unit" }
     it "sends the payload unchanged, key for key" do
       expect(request.json).to eq(payload)
     end
@@ -87,6 +93,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # The size assertion is not decoration: without it this example would keep
     # passing while silently testing nothing the day the fixture grows past the
     # threshold.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "a small run stays uncompressed so it remains inspectable on the wire", layer: "unit" }
     it "leaves a small run uncompressed, so it stays inspectable on the wire" do
       expect(payload.to_json.bytesize).to be < described_class::GZIP_THRESHOLD_BYTES
       expect(request.headers["content-encoding"]).to be_nil
@@ -118,6 +125,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # If this fails: update the header list in README's "What SpecGuard
     # collects" to match what is now sent, then update this list. Do not update
     # this list alone — the disclosure is the point of the pin.
+    # @intent: { entity: "Transport", action: "disclose its headers", behavior: "exactly the headers the readme discloses are sent, and no others", layer: "unit" }
     it "sends exactly the headers the README discloses, and no others" do
       expect(request.headers.keys.sort).to eq(
         %w[accept accept-encoding authorization content-length content-type host user-agent]
@@ -202,6 +210,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       end
     end
 
+    # @intent: { entity: "Transport", action: "honour proxy variables", behavior: "the run is sent to the proxy named by the lowercase http proxy variable", layer: "unit" }
     it "sends the run to the proxy named by http_proxy" do
       arrived = requests_arriving_at_proxy(%w[http_proxy], endpoint: "http://ingest.specguard.invalid")
 
@@ -213,6 +222,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # switched off. Captured rather than left to litter the suite's output. The
     # warning is itself corroboration that the read happens; the assertion below
     # is on the request that arrived, which is the stronger evidence.
+    # @intent: { entity: "Transport", action: "honour proxy variables", behavior: "the uppercase spelling of the proxy variable works the same way", layer: "unit" }
     it "honours the uppercase HTTP_PROXY spelling too" do
       original = $stderr
       $stderr = StringIO.new
@@ -228,6 +238,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # pinning. A TLS endpoint is tunnelled, so the proxy sees `CONNECT` and the
     # authority rather than a POST — the run still went to the proxy, which is
     # the disclosed fact.
+    # @intent: { entity: "Transport", action: "honour proxy variables", behavior: "an https endpoint routes through the plain http proxy variable too, not the https one", layer: "unit" }
     it "routes an https endpoint through http_proxy as well, not https_proxy" do
       arrived = requests_arriving_at_proxy(%w[http_proxy])
 
@@ -248,6 +259,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # name and nothing else. The control proves the request *can* reach the
     # stub through this setup; the assertion then means the variable is what
     # stopped it, which is what the README actually says.
+    # @intent: { entity: "Transport", action: "honour proxy variables", behavior: "the https proxy variable is ignored even for an https endpoint, so that run is not proxied", layer: "unit" }
     it "ignores https_proxy even for an https endpoint, so that run is not proxied" do
       through_https_proxy = requests_arriving_at_proxy(%w[https_proxy])
       through_http_proxy = requests_arriving_at_proxy(%w[http_proxy])
@@ -256,6 +268,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(through_https_proxy).to be_empty
     end
 
+    # @intent: { entity: "Transport", action: "honour proxy variables", behavior: "no proxy suppresses the proxy for a matching host", layer: "unit" }
     it "lets no_proxy suppress the proxy for a matching host" do
       origin = "http://ingest.specguard.invalid"
 
@@ -319,6 +332,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     before { expect(big.to_json.bytesize).to be > described_class::GZIP_THRESHOLD_BYTES }
 
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "a run big enough to compress declares its body gzipped, which the platform inflater keys on", layer: "unit" }
     it "declares the body gzipped, which the platform's inflater keys on" do
       expect(captured.headers["content-encoding"]).to eq("gzip")
     end
@@ -326,10 +340,12 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # `Content-Type` describes the body *inside* the encoding. Sending
     # `application/gzip` would be the natural-looking mistake, and the platform
     # inflates first and then parses as JSON, so it would 400 every large run.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "the compressed body still declares the payload itself as JSON", layer: "unit" }
     it "still declares the payload itself as JSON" do
       expect(captured.headers["content-type"]).to eq("application/json")
     end
 
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "materially fewer bytes go on the wire than the payload serializes to", layer: "unit" }
     it "puts materially fewer bytes on the wire than the payload serializes to" do
       expect(captured.body.bytesize).to be < (big.to_json.bytesize / 10)
     end
@@ -338,6 +354,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # came from. `ActionDispatch::Request#raw_post` reads exactly
     # `Content-Length` bytes, so an over-large value hangs the read and an
     # under-large one hands the inflater a truncated stream.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "the content length header matches what was actually written", layer: "unit" }
     it "sets Content-Length to what it actually wrote" do
       expect(captured.headers["content-length"]).to eq(captured.body.bytesize.to_s)
     end
@@ -346,6 +363,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # security review is most likely to capture off a proxy, and it is the one
     # that carries the extra header — so the README's list is only honest if
     # *this* set is pinned too, not just the identity one.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "a compressed run carries exactly the disclosed headers plus the gzip one", layer: "unit" }
     it "sends exactly the headers the README discloses, plus the gzip one" do
       expect(captured.headers.keys.sort).to eq(
         %w[accept accept-encoding authorization content-encoding content-length
@@ -356,6 +374,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # The claim the header alone cannot make. A transport that set
     # `Content-Encoding: gzip` and then gzipped the wrong string — or gzipped
     # it twice — passes every assertion above and loses the run in production.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "the payload round-trips key for key once the receiver inflates it", layer: "unit" }
     it "round-trips key for key once the receiver inflates it" do
       expect(captured.json).to eq(big)
     end
@@ -364,6 +383,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # threshold examples above prove the mechanism on a body that only just
     # clears it. 4.44 MiB of JSON through a real socket — see the note above on
     # why this fixture is leaner than the 7.01 MiB a real 20k run produces.
+    # @intent: { entity: "Transport", action: "compress large runs", behavior: "a twenty-thousand-example run also round-trips key for key", layer: "unit" }
     it "round-trips a 20,000-example run key for key" do
       huge = run_of(20_000)
 
@@ -385,6 +405,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     describe "when compression itself fails" do
       [[Zlib::BufError, "out of buffer space"],
        [NotImplementedError, "no zlib in this build"]].each do |error, message|
+        # @intent: { entity: "Transport", action: "survive compression failure", behavior: "when gzip raises the run is still delivered identity-encoded and accepted", layer: "unit" }
         it "still delivers the run, identity-encoded, after a #{error}" do
           allow(Zlib).to receive(:gzip).and_raise(error, message)
 
@@ -398,6 +419,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
           end
         end
 
+        # @intent: { entity: "Transport", action: "survive compression failure", behavior: "a gzip failure never raises out of deliver", layer: "unit" }
         it "does not raise out of #deliver after a #{error}" do
           allow(Zlib).to receive(:gzip).and_raise(error, message)
 
@@ -409,6 +431,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     end
   end
 
+  # @intent: { entity: "Transport", action: "deliver the run", behavior: "the whole run goes out in a single request rather than streaming parts", layer: "unit" }
   it "sends the whole run in a single request" do
     StubIngestEndpoint.run do |server|
       transport_to(server).deliver(payload.merge("specs" => Array.new(50) { payload["specs"].first }))
@@ -418,6 +441,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
   end
 
   describe "a 202, which is what the ingest endpoint answers on success" do
+    # @intent: { entity: "Transport", action: "read a success answer", behavior: "the accepted status reports success carrying the code", layer: "unit" }
     it "reports success, carrying the code" do
       StubIngestEndpoint.run(status: 202) do |server|
         result = transport_to(server).deliver(payload)
@@ -426,12 +450,14 @@ RSpec.describe SpecGuard::RSpec::Transport do
       end
     end
 
+    # @intent: { entity: "Transport", action: "read a success answer", behavior: "a success has nothing to warn about", layer: "unit" }
     it "has nothing to warn about" do
       StubIngestEndpoint.run(status: 202) do |server|
         expect(transport_to(server).deliver(payload).reason).to be_nil
       end
     end
 
+    # @intent: { entity: "Transport", action: "read a success answer", behavior: "any two-hundreds status reads as success rather than only the exact code seen today", layer: "unit" }
     it "accepts any 2xx rather than only the exact code it expects today" do
       StubIngestEndpoint.run(status: 200) do |server|
         expect(transport_to(server).deliver(payload)).to be_success
@@ -444,6 +470,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # rather than a guess. It is carried now, and every assertion above this
     # one is unchanged, which is the whole of what "additively" claims.
     describe "the body it now carries back" do
+      # @intent: { entity: "Transport", action: "read a success answer", behavior: "the endpoint answer body is parsed so a caller can name the run it landed on", layer: "unit" }
       it "parses the endpoint's answer, so a caller can name the run it landed on" do
         StubIngestEndpoint.run(status: 202, body: '{"test_run_id":"tr_42","annotated_ratio":0.5}') do |server|
           result = transport_to(server).deliver(payload)
@@ -455,6 +482,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
       # A numeric id is still an id. Stringified so two deliveries can be
       # compared without the caller caring how the platform spells one.
+      # @intent: { entity: "Transport", action: "read a success answer", behavior: "a numeric run id in the answer is stringified rather than dropped", layer: "unit" }
       it "stringifies a numeric id rather than dropping it" do
         StubIngestEndpoint.run(status: 202, body: '{"test_run_id":42}') do |server|
           expect(transport_to(server).deliver(payload).test_run_id).to eq("42")
@@ -471,6 +499,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
         ["a JSON scalar", "202"],
         ["a JSON array", '[{"test_run_id":"tr_42"}]']
       ].each do |description, body|
+        # @intent: { entity: "Transport", action: "read a success answer", behavior: "an empty or blank answer body still reads as success with no run id", layer: "unit" }
         it "stays a success with no body for #{description}" do
           StubIngestEndpoint.run(status: 202, body: body) do |server|
             result = transport_to(server).deliver(payload)
@@ -484,6 +513,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
       # A refusal has no body to carry, and reading one off a rejection would
       # be the same relabelling in the other direction.
+      # @intent: { entity: "Transport", action: "read a success answer", behavior: "a refusal answer leaves the body nil, the reasons field being what speaks there", layer: "unit" }
       it "leaves the body nil on a refusal, where `reasons` is the field that speaks" do
         StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
           result = transport_to(server).deliver(payload)
@@ -508,6 +538,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       500 => nil
     }.each do |status, advice|
       context "when the endpoint answers #{status}" do
+        # @intent: { entity: "Transport", action: "read a refusal", behavior: "a non-success status reports a rejection rather than a success", layer: "unit" }
         it "reports a rejection rather than a success" do
           StubIngestEndpoint.run(status: status) do |server|
             expect(transport_to(server).deliver(payload))
@@ -518,6 +549,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
         # The number is the non-negotiable part: a 401 means "rotate the key"
         # and a 400 means "this gem built a body the platform refused", which
         # are different people's problems.
+        # @intent: { entity: "Transport", action: "read a refusal", behavior: "the refusal names its status in a line a CI operator can read", layer: "unit" }
         it "names the status in something a CI operator can read" do
           StubIngestEndpoint.run(status: status) do |server|
             reason = transport_to(server).deliver(payload).reason
@@ -529,6 +561,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       end
     end
 
+    # @intent: { entity: "Transport", action: "read a refusal", behavior: "a refusal never raises, so nothing above it can be relying on an exception", layer: "unit" }
     it "does not raise, so nothing above it can be relying on one" do
       StubIngestEndpoint.run(status: 500) do |server|
         expect { transport_to(server).deliver(payload) }.not_to raise_error
@@ -558,6 +591,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       end
     end
 
+    # @intent: { entity: "Transport", action: "report refusal reasons", behavior: "an offending spec in the refusal details is named, so the run need not be reproduced to find it", layer: "unit" }
     it "names the offending spec, so the run does not have to be reproduced to find it" do
       reason = reason_for(status: 400, body: JSON.generate("details" => [detail]))
 
@@ -566,6 +600,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     # Appended to, not replacing: the status is the part that says whose
     # problem this is, and it stays first.
+    # @intent: { entity: "Transport", action: "report refusal reasons", behavior: "the status and the standing advice keep printing alongside the reasons", layer: "unit" }
     it "keeps the status and the advice it already printed" do
       reason = reason_for(status: 400, body: JSON.generate("details" => [detail]))
 
@@ -575,6 +610,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # The 401 body has no `details` at all — `render_unauthorized` carries
     # `message` alone — so the fallback is the whole of what that status can
     # say, not a defensive extra.
+    # @intent: { entity: "Transport", action: "report refusal reasons", behavior: "a body with no details falls back to its message field, which is every unauthorized answer", layer: "unit" }
     it "falls back to `message` for a body that has no details, which is every 401" do
       reason = reason_for(status: 401,
                           body: JSON.generate("error" => "unauthorized",
@@ -583,6 +619,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(reason).to include("A valid Bearer API key is required.")
     end
 
+    # @intent: { entity: "Transport", action: "report refusal reasons", behavior: "the full details are preferred over the first-error echo in the message field", layer: "unit" }
     it "prefers the full details over the first-error echo in `message`" do
       reason = reason_for(status: 400,
                           body: JSON.generate("message" => detail, "details" => [detail, "spec 7: name is required"]))
@@ -602,15 +639,18 @@ RSpec.describe SpecGuard::RSpec::Transport do
                    body: JSON.generate("details" => Array.new(500) { |i| "spec #{i}: name is required" }))
       end
 
+      # @intent: { entity: "Transport", action: "cap the reason line", behavior: "a refusal with many reasons spells out only the first few", layer: "unit" }
       it "spells out the first few" do
         expect(reason).to include("spec 0: name is required", "spec 2: name is required")
       end
 
+      # @intent: { entity: "Transport", action: "cap the reason line", behavior: "the reasons beyond the cap are counted rather than printed", layer: "unit" }
       it "counts the rest rather than printing them" do
         expect(reason).to include("and 497 more")
         expect(reason).not_to include("spec 3: name is required")
       end
 
+      # @intent: { entity: "Transport", action: "cap the reason line", behavior: "the whole refusal still comes out as one line", layer: "unit" }
       it "is still one line" do
         expect(reason.lines.length).to eq(1)
       end
@@ -632,6 +672,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
         "JSON with no key this cares about" => '{"error":"bad_request"}'
       }.each do |description, body|
         context "when the body is #{description}" do
+          # @intent: { entity: "Transport", action: "survive unreadable bodies", behavior: "a body that cannot be parsed still reports a rejection rather than a failure", layer: "unit" }
           it "still reports a rejection rather than a failure" do
             StubIngestEndpoint.run(status: 400, body: body) do |server|
               expect(transport_to(server).deliver(payload))
@@ -639,6 +680,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
             end
           end
 
+          # @intent: { entity: "Transport", action: "survive unreadable bodies", behavior: "an unreadable body degrades to exactly the line printed before bodies were parsed", layer: "unit" }
           it "degrades to exactly the line it printed before" do
             expect(reason_for(status: 400, body: body))
               .to eq("HTTP 400 — the endpoint rejected the payload")
@@ -651,6 +693,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # that later gets read as lines. A body carrying newlines could otherwise
     # forge output that looks like it came from the suite, or from this gem.
     describe "a reason carrying things a log line cannot hold" do
+      # @intent: { entity: "Transport", action: "sanitise reasons", behavior: "a newline inside a reason is flattened rather than emitting a second log line", layer: "unit" }
       it "flattens newlines instead of emitting a second line" do
         reason = reason_for(status: 400,
                             body: JSON.generate("details" => ["spec 3 failed\nSpecGuard: everything is fine"]))
@@ -659,6 +702,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
         expect(reason).to include("spec 3 failed SpecGuard: everything is fine")
       end
 
+      # @intent: { entity: "Transport", action: "sanitise reasons", behavior: "control characters are stripped so a colour escape cannot survive into logs", layer: "unit" }
       it "strips control characters, so a colour escape cannot survive" do
         reason = reason_for(status: 400,
                             body: JSON.generate("details" => ["spec 3 \e[31mred\e[0m"]))
@@ -666,6 +710,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
         expect(reason).not_to include("\e")
       end
 
+      # @intent: { entity: "Transport", action: "sanitise reasons", behavior: "a single enormous reason is capped rather than printed in full", layer: "unit" }
       it "caps a single enormous reason rather than printing all of it" do
         reason = reason_for(status: 400, body: JSON.generate("details" => ["x" * 5_000]))
 
@@ -676,6 +721,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
   # Criterion 4. One shape for the whole family, so the caller has one branch.
   describe "a request that never gets an answer" do
+    # @intent: { entity: "Transport", action: "survive no answer", behavior: "a refused connection reports a failure rather than raising", layer: "unit" }
     it "reports a failure when the connection is refused" do
       # Bound, then closed: the port is guaranteed to have been free, and
       # nothing is listening on it now.
@@ -690,6 +736,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(result.error).to be_a(SystemCallError)
     end
 
+    # @intent: { entity: "Transport", action: "survive no answer", behavior: "a host that does not resolve reports a failure the same way", layer: "unit" }
     it "reports a failure when the host does not resolve" do
       result = described_class
                .new(endpoint: "http://specguard.invalid", api_key: "k", timeout: 2)
@@ -702,6 +749,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # Criterion 6, at the unit level: the budget is the budget, and a peer that
     # accepts the connection and then says nothing is the shape that would
     # otherwise sit there for `Net::HTTP`'s stock 60 seconds.
+    # @intent: { entity: "Transport", action: "survive no answer", behavior: "a silent endpoint is given up on within the configured budget", layer: "unit" }
     it "gives up on a silent endpoint within the configured budget" do
       StubIngestEndpoint.run(hang: true) do |server|
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -719,6 +767,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
   # an exception the formatter's guard would have to catch separately.
   describe "an endpoint that is not a URL" do
     ["", "   ", nil].each do |value|
+      # @intent: { entity: "Transport", action: "refuse bad endpoints", behavior: "an endpoint value that is not a URL reports a failure rather than posting anywhere", layer: "unit" }
       it "reports a failure rather than posting to #{value.inspect}" do
         result = described_class.new(endpoint: value, api_key: "k", timeout: 1).deliver(payload)
 
@@ -729,6 +778,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     # `URI.parse` returns a `URI::Generic` with a nil host for this rather than
     # raising, and `Net::HTTP` would then try to connect to nowhere.
+    # @intent: { entity: "Transport", action: "refuse bad endpoints", behavior: "a bare host with no scheme is rejected", layer: "unit" }
     it "rejects a bare host with no scheme" do
       result = described_class.new(endpoint: "specguard.example.com", api_key: "k", timeout: 1)
                               .deliver(payload)
@@ -737,6 +787,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(result.reason).to include("http:// or https://")
     end
 
+    # @intent: { entity: "Transport", action: "refuse bad endpoints", behavior: "a scheme it cannot speak is rejected", layer: "unit" }
     it "rejects a scheme it cannot speak" do
       result = described_class.new(endpoint: "ftp://specguard.example.com", api_key: "k", timeout: 1)
                               .deliver(payload)
@@ -746,6 +797,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
   end
 
   describe "#uri" do
+    # @intent: { entity: "Transport", action: "build the target uri", behavior: "the platform path is appended to the configured installation", layer: "unit" }
     it "appends the platform's path to the configured installation" do
       transport = described_class.new(endpoint: "https://specguard.example.com", api_key: "k")
 
@@ -754,6 +806,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     # A trailing slash is what a copy-paste out of a browser's address bar
     # gives you, and `"https://host/" + "/api/v1/ingest"` is a 404.
+    # @intent: { entity: "Transport", action: "build the target uri", behavior: "a trailing slash on the endpoint does not double the path separator", layer: "unit" }
     it "does not double the slash when the endpoint has a trailing one" do
       transport = described_class.new(endpoint: "https://specguard.example.com///", api_key: "k")
 
@@ -762,12 +815,14 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     # SpecGuard is self-hostable, and a self-hosted one may well sit behind a
     # path on a shared hostname.
+    # @intent: { entity: "Transport", action: "build the target uri", behavior: "a path prefix on the installation is kept for mounts under one", layer: "unit" }
     it "keeps a path prefix, for an installation mounted under one" do
       transport = described_class.new(endpoint: "https://tools.example.com/specguard", api_key: "k")
 
       expect(transport.uri.to_s).to eq("https://tools.example.com/specguard/api/v1/ingest")
     end
 
+    # @intent: { entity: "Transport", action: "build the target uri", behavior: "an https endpoint uses TLS and an http one does not", layer: "unit" }
     it "uses TLS for an https endpoint and not for an http one" do
       expect(described_class.new(endpoint: "https://x.example.com", api_key: "k").uri.scheme).to eq("https")
       expect(described_class.new(endpoint: "http://x.example.com", api_key: "k").uri.scheme).to eq("http")
@@ -778,14 +833,17 @@ RSpec.describe SpecGuard::RSpec::Transport do
     def timeout_for(value) = described_class.new(endpoint: "https://x.example.com", api_key: "k",
                                                  timeout: value).timeout
 
+    # @intent: { entity: "Transport", action: "bound the timeout", behavior: "the timeout defaults to the configuration budget rather than the http library sixty seconds", layer: "unit" }
     it "defaults to the configuration's, not Net::HTTP's 60 seconds" do
       expect(described_class.new(endpoint: "https://x.example.com", api_key: "k").timeout).to eq(10)
     end
 
+    # @intent: { entity: "Transport", action: "bound the timeout", behavior: "a configured budget is honoured", layer: "unit" }
     it "honours a configured budget" do
       expect(timeout_for(2.5)).to eq(2.5)
     end
 
+    # @intent: { entity: "Transport", action: "bound the timeout", behavior: "a budget arriving as the string an environment variable carries is accepted", layer: "unit" }
     it "accepts the string a configured ENV variable arrives as" do
       expect(timeout_for("3")).to eq(3.0)
     end
@@ -793,6 +851,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
     # A `0` here means "time out immediately" to Net::HTTP: a typo would turn
     # into a run that silently never delivers anything.
     [0, -1, "ten", nil, Float::INFINITY, Float::NAN].each do |value|
+      # @intent: { entity: "Transport", action: "bound the timeout", behavior: "an unparseable budget value falls back to the default rather than being trusted", layer: "unit" }
       it "falls back to the default rather than trusting #{value.inspect}" do
         expect(timeout_for(value)).to eq(10)
       end
@@ -803,6 +862,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
   # possible for this class to end a suite, and it must still be possible to
   # stop one with Ctrl-C.
   describe "what it refuses to let escape" do
+    # @intent: { entity: "Transport", action: "contain escapes", behavior: "a ScriptError, which a bare rescue misses, is swallowed into a failure result", layer: "unit" }
     it "swallows a ScriptError, which a bare rescue would miss" do
       allow(Net::HTTP).to receive(:new).and_raise(NotImplementedError, "nope")
 
@@ -812,6 +872,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
       expect(result.reason).to include("NotImplementedError")
     end
 
+    # @intent: { entity: "Transport", action: "contain escapes", behavior: "a payload that will not serialize is swallowed rather than escaping deliver", layer: "unit" }
     it "swallows a payload that will not serialize" do
       unserializable = { "specs" => [Object.new] }
       allow(JSON).to receive(:generate).and_raise(JSON::GeneratorError, "cannot serialize")
@@ -822,6 +883,7 @@ RSpec.describe SpecGuard::RSpec::Transport do
 
     # Ctrl-C must stay Ctrl-C. Reporting an interrupt as "delivery failed" is
     # its own small lie, and would make a long suite harder to stop.
+    # @intent: { entity: "Transport", action: "contain escapes", behavior: "an interrupt is not swallowed, keeping ctrl-c working during delivery", layer: "unit" }
     it "does NOT swallow an interrupt" do
       allow(Net::HTTP).to receive(:new).and_raise(Interrupt)
 

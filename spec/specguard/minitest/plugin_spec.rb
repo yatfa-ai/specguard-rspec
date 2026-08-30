@@ -67,6 +67,7 @@ RSpec.describe "the minitest plugin" do
     end
   end
 
+  # @intent: { entity: "minitest plugin", action: "ship telemetry from a red child run", behavior: "a real minitest child process with the plugin attached posts one ingest envelope carrying the platform field names, auth header and per-test outcomes, and exits non-zero without writing the fallback sink", layer: "integration" }
   it "attaches, runs the suite, and posts one envelope with the platform's field names" do
     server = CaptureServer.new
     begin
@@ -140,6 +141,7 @@ RSpec.describe "the minitest plugin" do
     end
   end
 
+  # @intent: { entity: "minitest plugin", action: "stay discoverable", behavior: "a child ruby with the gem lib on the load path lists specguard_plugin.rb among the files Minitest plugin discovery scans", layer: "integration" }
   it "is discoverable by Minitest's plugin mechanism when the gem is on the load path" do
     # `-I lib` puts the gem's lib directory in front of Ruby's, which is the
     # same thing Bundler does for a path dependency. Gem.find_files is how

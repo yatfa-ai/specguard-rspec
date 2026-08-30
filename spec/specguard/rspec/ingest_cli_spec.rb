@@ -90,6 +90,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
   end
 
   describe "0 — every line accepted" do
+    # @intent: { entity: "specguard-ingest", action: "re-deliver a saved line", behavior: "the saved run line goes to the endpoint byte for byte as the body it was offered", layer: "unit" }
     it "re-delivers the saved line as the body the endpoint was offered, byte for byte" do
       payload = run_payload
 
@@ -108,6 +109,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Criterion 1, whole: the run refused for a rotated key, replayed after the
     # secret is fixed, reaches the platform. Every line, in order.
+    # @intent: { entity: "specguard-ingest", action: "deliver a multi-run file", behavior: "every line of a file holding several runs is delivered", layer: "unit" }
     it "delivers every line of a multi-run file" do
       StubIngestEndpoint.run do |server|
         code = described_class.new(stdout: stdout, stderr: stderr,
@@ -121,6 +123,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest", action: "report each line", behavior: "each line is reported by its number with the run id the endpoint said it landed on", layer: "unit" }
     it "reports each line by its number, with the run the endpoint said it landed on" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         path = sink(run_payload(ci_run_id: "17442"))
@@ -139,6 +142,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # same run identity out, same run id back. Note what is NOT said — nothing
     # about a line WITHOUT a `ci_run_id`, whose new row is created inside
     # `RunRecorder` where this command cannot see it.
+    # @intent: { entity: "specguard-ingest", action: "report folding", behavior: "folding is stated only where two delivered lines actually observed it", layer: "unit" }
     it "states folding only where two lines observed it" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         path = sink(run_payload(ci_run_id: "17442"), run_payload(ci_run_id: "17442"))
@@ -155,6 +159,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest", action: "report folding", behavior: "a line with no run identity is said so and nothing further is claimed about it", layer: "unit" }
     it "says a line carried no run identity, and claims nothing further about it" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         described_class.new(stdout: stdout, stderr: stderr,
@@ -170,6 +175,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # Two lines that came back with the same id but went out with DIFFERENT run
     # identities are not evidence of anything the endpoint did on purpose, so
     # no sentence is manufactured for them.
+    # @intent: { entity: "specguard-ingest", action: "report folding", behavior: "no folding is claimed for lines that shared no ci run id", layer: "unit" }
     it "does not claim folding for lines that shared no ci_run_id" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         described_class.new(stdout: stdout, stderr: stderr,
@@ -183,6 +189,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # A 202 whose body will not parse is still a 202: the platform stored the
     # run before it wrote the body. The id is reported as unknown rather than
     # the acceptance being downgraded.
+    # @intent: { entity: "specguard-ingest", action: "report each line", behavior: "an unreadable success body reports as an unknown id rather than a failure", layer: "unit" }
     it "reports an unreadable success body as an unknown id, not as a failure" do
       StubIngestEndpoint.run(body: "<html>accepted</html>") do |server|
         code = described_class.new(stdout: stdout, stderr: stderr,
@@ -196,6 +203,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
   end
 
   describe "1 — the endpoint refused a line" do
+    # @intent: { entity: "specguard-ingest exit contract", action: "render a refusal", behavior: "a refused line exits one and renders the endpoint own reasons", layer: "unit" }
     it "exits 1 and renders the endpoint's own reasons" do
       body = JSON.generate(
         "message" => "payload is invalid",
@@ -226,6 +234,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # gets echoed after it. Read against the 401 row in the table under exit 2
     # — which says something equally auth-flavoured and exits 2 — the pair
     # shows the discriminator is the status and nothing else.
+    # @intent: { entity: "specguard-ingest exit contract", action: "render a refusal", behavior: "the status alone is enough to exit one whatever the body reads like", layer: "unit" }
     it "exits 1 on the status alone, whatever the body reads like" do
       StubIngestEndpoint.run(status: 400, body: '{"message":"invalid api key"}') do |server|
         path = sink(run_payload)
@@ -241,6 +250,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Criterion 3. A file that was only partly accepted must be resumable, and
     # that needs the report to say WHICH lines landed — not how many.
+    # @intent: { entity: "specguard-ingest exit contract", action: "render a refusal", behavior: "a partly-accepted file is numbered line by line in the report", layer: "unit" }
     it "numbers a partly-accepted file line by line" do
       responses = [{ status: 202 }, { status: 400, body: '{"message":"spec 2: outcome is required"}' },
                    { status: 202 }]
@@ -260,6 +270,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest exit contract", action: "render a refusal", behavior: "the lines after a refusal are still delivered rather than stopping at the first", layer: "unit" }
     it "delivers the lines after a refusal rather than stopping at the first" do
       StubIngestEndpoint.run(responses: [{ status: 400 }, { status: 202 }]) do |server|
         described_class.new(stdout: stdout, stderr: stderr,
@@ -277,6 +288,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     context "when delivery is not configured" do
       let(:endpoint) { nil }
 
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "a missing endpoint exits two naming the endpoint without reading the file", layer: "unit" }
       it "exits 2 naming the endpoint, without reading the file" do
         expect(cli.run([sink(run_payload)])).to eq(2)
         expect(err).to eq("specguard-ingest: error: no endpoint is configured (set SPECGUARD_ENDPOINT)\n")
@@ -285,6 +297,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # Named separately from the endpoint: they fail for different reasons and
       # are fixed in different places.
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "a missing api key alone exits two naming the key", layer: "unit" }
       it "exits 2 naming the API key when only that is missing" do
         code = described_class.new(stdout: stdout, stderr: stderr,
                                    env: { "SPECGUARD_ENDPOINT" => "https://specguard.example.com" })
@@ -297,6 +310,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # One exit 2 rather than N identical delivery failures: a malformed
       # endpoint is a configuration problem, and reporting it once as one is
       # the difference between "fix this variable" and "the network is flaky".
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "an endpoint that is not an http URL exits two", layer: "unit" }
       it "exits 2 on an endpoint that is not an http(s) URL" do
         code = described_class.new(stdout: stdout, stderr: stderr,
                                    env: env.merge("SPECGUARD_ENDPOINT" => "specguard.example.com"))
@@ -310,16 +324,19 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     context "when the file cannot be read" do
       let(:endpoint) { "https://specguard.example.com" }
 
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "a file that does not exist exits two", layer: "unit" }
       it "exits 2 on a file that does not exist" do
         expect(cli.run([File.join(@dir, "gone.jsonl")])).to eq(2)
         expect(err).to eq("specguard-ingest: error: no such file: #{File.join(@dir, 'gone.jsonl')}\n")
       end
 
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "a directory handed as the file exits two", layer: "unit" }
       it "exits 2 on a directory" do
         expect(cli.run([@dir])).to eq(2)
         expect(err).to eq("specguard-ingest: error: not a file: #{@dir}\n")
       end
 
+      # @intent: { entity: "specguard-ingest exit contract", action: "exit misuse", behavior: "a file the tool may not open exits two", layer: "unit" }
       it "exits 2 on a file it may not open" do
         path = sink(run_payload)
         File.chmod(0o000, path)
@@ -331,6 +348,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     end
 
     context "when a line cannot be parsed" do
+      # @intent: { entity: "specguard-ingest exit contract", action: "rank the codes", behavior: "a tool failure outranks a refusal waiting on the same file", layer: "unit" }
       it "exits 2, and 2 outranks a refusal on the same file" do
         StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
           path = sink(run_payload, "{not json", run_payload)
@@ -346,6 +364,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # A truncated last line — a sink written by a process that was killed —
       # must not cost the lines before it.
+      # @intent: { entity: "specguard-ingest exit contract", action: "rank the codes", behavior: "every line that could be parsed is still delivered when others could not", layer: "unit" }
       it "still delivers every line it could parse" do
         StubIngestEndpoint.run do |server|
           code = described_class.new(stdout: stdout, stderr: stderr,
@@ -361,6 +380,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # `JSON.parse` answers a bare `"text"` line with a String and `null` with
       # nil. Neither is a run, and neither may be posted as one.
       [['"a bare string"', "String"], ["null", "NilClass"], ["[1,2]", "Array"], ["42", "Integer"]].each do |line, type|
+        # @intent: { entity: "specguard-ingest exit contract", action: "refuse non-run lines", behavior: "a line that parses but is not a run is refused rather than posted", layer: "unit" }
         it "refuses to post #{line}, which parses but is not a run" do
           StubIngestEndpoint.run do |server|
             code = described_class.new(stdout: stdout, stderr: stderr,
@@ -377,6 +397,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # that is not valid UTF-8, and `String#strip` raises on one. Reported as
       # the line problem it is, rather than as an internal error — this tool is
       # not broken, it was handed something that is not a run.
+      # @intent: { entity: "specguard-ingest exit contract", action: "refuse non-run lines", behavior: "a line that is not valid UTF-8 is reported as unparseable rather than as a bug", layer: "unit" }
       it "reports a line that is not valid UTF-8 as unparseable, not as a bug in itself" do
         path = File.join(@dir, "binary.jsonl")
         File.open(path, "wb") do |file|
@@ -400,6 +421,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The endpoint never answered, so no verdict about the content exists.
     # Reporting this as a 1 would be the tool telling an operator their run is
     # bad on the strength of a socket error.
+    # @intent: { entity: "specguard-ingest exit contract", action: "survive an unreachable endpoint", behavior: "an endpoint that cannot be reached at all exits two", layer: "unit" }
     it "exits 2 when the endpoint could not be reached at all" do
       code = described_class.new(stdout: stdout, stderr: stderr,
                                  env: env.merge("SPECGUARD_ENDPOINT" => dead_endpoint,
@@ -425,6 +447,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         500 => nil,
         503 => nil
       }.each do |status, advice|
+        # @intent: { entity: "specguard-ingest exit contract", action: "survive an unreachable endpoint", behavior: "a status answered without reading the payload reports as not delivered and exits two", layer: "unit" }
         it "exits 2 for a #{status}, reporting it as not delivered" do
           StubIngestEndpoint.run(status: status, body: '{"message":"nope"}') do |server|
             code = described_class.new(stdout: stdout, stderr: stderr,
@@ -444,6 +467,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # well — same operator mistake, same fix. A 1 would also contradict the
       # tool's own advice on the very same line, which tells them to go and fix
       # `SPECGUARD_ENDPOINT`.
+      # @intent: { entity: "specguard-ingest exit contract", action: "survive an unreachable endpoint", behavior: "a wrong endpoint URL exits the same way an unset one does", layer: "unit" }
       it "agrees with itself: a wrong endpoint URL exits the same as an unset one" do
         unset = described_class.new(stdout: StringIO.new, stderr: StringIO.new,
                                     env: { "SPECGUARD_API_KEY" => "sgk_abc" }).run([sink(run_payload)])
@@ -462,6 +486,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # inhabitant of the files this command is pointed at. Retrying once the
       # platform recovers is the right move, and exit 1 is the signal that says
       # do not — so 2 has to outrank a genuine 400 on the same file.
+      # @intent: { entity: "specguard-ingest exit contract", action: "survive an unreachable endpoint", behavior: "a server error outranks a real content refusal on the same file", layer: "unit" }
       it "lets a 5xx outrank a real content refusal on the same file" do
         StubIngestEndpoint.run(responses: [{ status: 400, body: '{"message":"spec 2: outcome is required"}' },
                                            { status: 500, body: '{"message":"upstream boom"}' }]) do |server|
@@ -482,6 +507,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     describe "misuse of the command line" do
       let(:endpoint) { "https://specguard.example.com" }
 
+      # @intent: { entity: "specguard-ingest options", action: "exit misuse", behavior: "running with no file given exits two", layer: "unit" }
       it "exits 2 with no file given" do
         expect(cli.run([])).to eq(2)
         expect(err).to eq("specguard-ingest: error: no file given — #{described_class::BANNER}\n")
@@ -489,11 +515,13 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # A typo'd flag is the likeliest route to a false "the endpoint refused
       # your run": uncaught, OptionParser raises and Ruby exits 1.
+      # @intent: { entity: "specguard-ingest options", action: "exit misuse", behavior: "an unknown flag exits two rather than letting the Ruby default one stand", layer: "unit" }
       it "exits 2 on an unknown flag rather than letting Ruby's 1 stand" do
         expect(cli.run(["--replaay", "file.jsonl"])).to eq(2)
         expect(err).to eq("specguard-ingest: error: invalid option: --replaay\n")
       end
 
+      # @intent: { entity: "specguard-ingest options", action: "exit misuse", behavior: "two files given exit two rather than guessing which was meant", layer: "unit" }
       it "exits 2 rather than guessing which of two files was meant" do
         expect(cli.run(%w[one.jsonl two.jsonl])).to eq(2)
         expect(err).to include("one file at a time, got 2: one.jsonl, two.jsonl")
@@ -506,6 +534,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # code for "there was nothing to do", so 0 stands and the warning carries
     # the weight. What must not happen is a silent 0 — "sent nothing" reading
     # as "sent everything".
+    # @intent: { entity: "specguard-ingest", action: "handle an empty file", behavior: "a file with nothing to deliver exits zero and says so on stderr rather than reporting a clean run", layer: "unit" }
     it "exits 0 and says so on stderr, rather than reporting a clean run" do
       path = File.join(@dir, "empty.jsonl")
       File.write(path, "")
@@ -515,6 +544,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to be_empty
     end
 
+    # @intent: { entity: "specguard-ingest", action: "handle an empty file", behavior: "the blank lines skipped are counted rather than dropped from the report", layer: "unit" }
     it "counts the blank lines it skipped rather than dropping them from the report" do
       StubIngestEndpoint.run do |server|
         path = File.join(@dir, "gappy.jsonl")
@@ -537,6 +567,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
   # already landed — and re-sending is not free: a line carrying no `ci_run_id`
   # has no identity for `RunRecorder` to fold onto, so it becomes a second row.
   describe "--from-line, resuming a partly-accepted file" do
+    # @intent: { entity: "specguard-ingest --from-line", action: "resume a file", behavior: "the lines before the resume point are skipped and the rest delivered", layer: "unit" }
     it "skips the lines before N and delivers the rest" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
@@ -552,6 +583,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The whole point of resuming from a report: the numbers have to be the
     # SAME numbers. A renumbered report (which is what `tail -n +2` would give
     # you) makes the second run's "line 2" a different line from the first's.
+    # @intent: { entity: "specguard-ingest --from-line", action: "resume a file", behavior: "the file own numbering is kept rather than renumbering from the resume point", layer: "unit" }
     it "keeps the file's own numbering rather than renumbering from the resume point" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
@@ -568,6 +600,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # A skip that is not reported is a summary quietly narrowing what it is
     # summarising — and here it would read as "your whole file is delivered".
+    # @intent: { entity: "specguard-ingest --from-line", action: "resume a file", behavior: "skipping past everything says so on stderr", layer: "unit" }
     it "says so on stderr when it skipped past everything" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload, run_payload)
@@ -582,6 +615,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest --from-line", action: "resume a file", behavior: "the whole file is delivered when the flag is absent", layer: "unit" }
     it "delivers the whole file when the flag is absent" do
       StubIngestEndpoint.run do |server|
         described_class.new(stdout: stdout, stderr: stderr,
@@ -597,12 +631,14 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # `to_i` would make this 0 and silently deliver the whole file — the one
       # outcome a resume flag exists to prevent — so it is a 2 instead.
+      # @intent: { entity: "specguard-ingest --from-line", action: "refuse bad values", behavior: "a non-numeric resume point exits two rather than falling back to the whole file", layer: "unit" }
       it "exits 2 on a non-numeric N rather than falling back to the whole file" do
         expect(cli.run(["--from-line", "twelve", "file.jsonl"])).to eq(2)
         expect(err).to include("invalid argument: --from-line twelve")
       end
 
       [0, -3].each do |value|
+        # @intent: { entity: "specguard-ingest --from-line", action: "refuse bad values", behavior: "each nonsense resume value exits two on its own", layer: "unit" }
         it "exits 2 on --from-line #{value}" do
           expect(cli.run(["--from-line", value.to_s, "file.jsonl"])).to eq(2)
           expect(err).to eq("specguard-ingest: error: --from-line must be 1 or greater, got #{value}\n")
@@ -623,6 +659,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # be delivered to completion by any suffix, and IS delivered to completion —
     # exit 0 — by naming the set around it. Both halves run against a real
     # socket, so "the rest landed" is what arrived, not what was mocked.
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "a file is delivered around a permanently-refused interior line and still exits zero", layer: "unit" }
     it "delivers a file around a permanently-refused interior line, exiting 0" do
       path = sink(*%w[a b c d e].map { |id| run_payload(ci_run_id: id) })
       refusal = { status: 400, body: '{"message":"spec 1: outcome is required"}' }
@@ -645,6 +682,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "exactly the numbers and ranges the spec names are sent, in the file own order", layer: "unit" }
     it "sends exactly the numbers and ranges the spec names, in the file's order" do
       StubIngestEndpoint.run do |server|
         path = sink(*%w[a b c d e f].map { |id| run_payload(ci_run_id: id) })
@@ -660,6 +698,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # Criterion 4 under the new selector. The numbers are the file's, and an
     # interior selection is where a renumbering bug would actually show: line 4
     # is the second line delivered and must still report as 4.
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "an interior set keeps the file own numbering", layer: "unit" }
     it "keeps the file's own numbering for an interior set" do
       StubIngestEndpoint.run(body: '{"test_run_id":"tr_7"}') do |server|
         path = sink(*%w[a b c d e].map { |id| run_payload(ci_run_id: id) })
@@ -680,6 +719,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # the failure this project keeps finding. The wording has to be accurate
     # too — the lines `--lines` holds back are not "earlier", they are wherever
     # in the file they sit, and three summaries carry the clause.
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "the held-back lines are counted in the delivery summary", layer: "unit" }
     it "counts the lines it held back, in the delivery summary" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload, run_payload, run_payload)
@@ -692,6 +732,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "the single held-back line is counted in the singular", layer: "unit" }
     it "counts the one line it held back in the singular" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload, run_payload)
@@ -706,6 +747,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The empty-file detail, which is the summary that matters most here: a
     # spec naming lines the file does not have delivers nothing, and a silent 0
     # would read as "your whole file is delivered".
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "a spec naming nothing the file has says so on stderr", layer: "unit" }
     it "says on stderr when the spec named nothing the file has" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload, run_payload)
@@ -723,6 +765,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `--lines` sits in the same branch position the suffix test held, so the
     # blank counting and the file's numbering are inherited rather than
     # reimplemented: a blank line the spec names is still a blank line.
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "the blank-line counting is inherited rather than re-decided", layer: "unit" }
     it "inherits the blank-line counting rather than re-deciding it" do
       StubIngestEndpoint.run do |server|
         path = File.join(@dir, "gappy.jsonl")
@@ -738,6 +781,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest --lines", action: "send an arbitrary set", behavior: "the whole file is delivered when the flag is absent", layer: "unit" }
     it "delivers the whole file when the flag is absent" do
       StubIngestEndpoint.run do |server|
         described_class.new(stdout: stdout, stderr: stderr,
@@ -754,6 +798,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # it would hand the user a set they did not send. Asserted as the two
     # actually agreeing on the same file and the same spec, not as two
     # independent expectations that happen to match.
+    # @intent: { entity: "specguard-ingest --lines", action: "preview under list", behavior: "the list preview shows exactly the lines the same spec delivers", layer: "unit" }
     it "previews under --list exactly the lines the same spec delivers" do
       path = sink(*%w[a b c d e f].map { |id| run_payload(ci_run_id: id) })
       spec = "2,4-5"
@@ -775,6 +820,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Listing needs no credentials, and that must hold for the new selector too
     # — the file most worth previewing a set out of is the keyless one.
+    # @intent: { entity: "specguard-ingest --lines", action: "preview under list", behavior: "a set lists with neither endpoint nor key set and delivers nothing", layer: "unit" }
     it "lists a set with neither endpoint nor API key set, and delivers nothing" do
       path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
       code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--lines", "3", path])
@@ -786,6 +832,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(err).to be_empty
     end
 
+    # @intent: { entity: "specguard-ingest --lines", action: "preview under list", behavior: "a listed spec naming nothing the file has says so on stderr", layer: "unit" }
     it "says on stderr when a listed spec named nothing the file has" do
       path = sink(run_payload)
       code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--lines", "4", path])
@@ -805,6 +852,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     describe "given together with --from-line" do
       let(:endpoint) { "https://specguard.example.com" }
 
+      # @intent: { entity: "specguard-ingest flag combination", action: "refuse conflicting selectors", behavior: "the resume flag with the lines flag exits two rather than silently intersecting", layer: "unit" }
       it "exits 2 rather than silently intersecting the two" do
         path = sink(run_payload, run_payload, run_payload)
 
@@ -814,6 +862,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         expect(out).to be_empty
       end
 
+      # @intent: { entity: "specguard-ingest flag combination", action: "refuse conflicting selectors", behavior: "the pair is refused whichever order it is written in", layer: "unit" }
       it "refuses the pair whichever order they are written in" do
         path = sink(run_payload)
         second = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: env)
@@ -824,6 +873,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # The refusal is about the pair, not about either flag — each still works
       # on its own, and `--list` is not a way around it.
+      # @intent: { entity: "specguard-ingest flag combination", action: "refuse conflicting selectors", behavior: "either flag alone is accepted and the pair is refused under list too", layer: "unit" }
       it "still accepts either one alone, and refuses the pair under --list too" do
         path = sink(run_payload, run_payload)
         alone = described_class.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
@@ -843,6 +893,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # exactly the last one typed — and it is what lets a wrapper script's baked
     # in selector be corrected by appending a new one.
     describe "given more than once" do
+      # @intent: { entity: "specguard-ingest flag combination", action: "apply last-wins", behavior: "repeated specs deliver the last set typed, neither the intersection nor the union", layer: "unit" }
       it "delivers the last set typed, not the intersection and not the union" do
         path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"),
                     run_payload(ci_run_id: "c"), run_payload(ci_run_id: "d"))
@@ -853,6 +904,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # The repeat overrides rather than accumulating, so a later spec widens
       # just as readily as it narrows — the earlier one is gone either way.
+      # @intent: { entity: "specguard-ingest flag combination", action: "apply last-wins", behavior: "a later spec widens what an earlier one narrowed", layer: "unit" }
       it "lets a later spec widen what an earlier one narrowed" do
         path = sink(run_payload, run_payload, run_payload)
 
@@ -862,6 +914,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # Same convention on the flag that already had it before this one
       # existed, asserted here so the two selectors are pinned as a pair.
+      # @intent: { entity: "specguard-ingest flag combination", action: "apply last-wins", behavior: "the same last-wins rule applies to a repeated resume flag", layer: "unit" }
       it "applies the same last-wins rule to a repeated --from-line" do
         path = sink(run_payload, run_payload, run_payload)
 
@@ -871,6 +924,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # A repeat is still not a way around the cross-flag refusal: the last
       # `--lines` is a `--lines`, and `--from-line` is still there beside it.
+      # @intent: { entity: "specguard-ingest flag combination", action: "apply last-wins", behavior: "the pair is still refused when the repeat is the one that lands", layer: "unit" }
       it "still refuses the pair when the repeat is the one that lands" do
         path = sink(run_payload, run_payload)
 
@@ -898,6 +952,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         "3,,5" => 'specguard-ingest: error: --lines has an empty entry in "3,,5"',
         "3," => 'specguard-ingest: error: --lines has an empty entry in "3,"'
       }.each do |spec, message|
+        # @intent: { entity: "specguard-ingest --lines", action: "refuse unparseable specs", behavior: "an unparseable line spec exits two rather than delivering anything", layer: "unit" }
         it "exits 2 on --lines #{spec.inspect} rather than delivering anything" do
           expect(cli.run(["--lines", spec, "file.jsonl"])).to eq(2)
           expect(err).to eq("#{message}\n")
@@ -908,6 +963,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # The failure mode that matters most: a rejected spec must never become
       # "no selector", which is the whole file. Asserted against a real socket
       # so "nothing was sent" is what arrived.
+      # @intent: { entity: "specguard-ingest --lines", action: "refuse unparseable specs", behavior: "nothing at all is sent for a spec that could not be parsed", layer: "unit" }
       it "sends nothing at all for a spec it could not parse" do
         StubIngestEndpoint.run do |server|
           code = described_class.new(stdout: stdout, stderr: stderr,
@@ -921,6 +977,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # A spec is rejected before the file is even looked at, so the message is
       # about the flag rather than about a path that was never the point.
+      # @intent: { entity: "specguard-ingest --lines", action: "refuse unparseable specs", behavior: "the bad spec is named rather than a file that was never opened", layer: "unit" }
       it "names the bad spec rather than a file it never opened" do
         expect(cli.run(["--lines", "abc", File.join(@dir, "gone.jsonl")])).to eq(2)
         expect(err).not_to include("no such file")
@@ -929,6 +986,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # Whitespace around an entry is a typing convenience, not a grammar: it is
       # stripped between entries and rejected inside one, so `3, 7` works and
       # `5 - 7` is the typo it looks like rather than a silently repaired range.
+      # @intent: { entity: "specguard-ingest --lines", action: "refuse unparseable specs", behavior: "whitespace between entries is allowed and whitespace inside one is refused", layer: "unit" }
       it "allows whitespace between entries and refuses it inside one" do
         path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
         spaced = described_class.new(stdout: stdout, stderr: stderr, env: {})
@@ -956,6 +1014,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # a mock expectation on a method this test chose to watch. The endpoint is
     # configured and reachable here on purpose — nothing was sent because
     # listing does not send, not because sending was impossible.
+    # @intent: { entity: "specguard-ingest --list", action: "preview a file", behavior: "listing prints a row per line and sends nothing even with a live endpoint configured", layer: "unit" }
     it "prints a row per line and sends nothing, even with a live endpoint configured" do
       StubIngestEndpoint.run do |server|
         path = sink(run_payload(ci_run_id: "17442"), run_payload(ci_run_id: nil, commit_sha: "abc123"))
@@ -980,6 +1039,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # demanded credentials would be unavailable in exactly the situation that
     # produces the hazard it exists to prevent, so `--list` short-circuits
     # ahead of `build_transport` and this example is what holds it there.
+    # @intent: { entity: "specguard-ingest --list", action: "run unconfigured", behavior: "listing works with neither endpoint nor api key set", layer: "unit" }
     it "lists with neither SPECGUARD_ENDPOINT nor SPECGUARD_API_KEY set" do
       path = sink(run_payload(ci_run_id: nil))
       code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
@@ -992,6 +1052,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The same invocation without `--list` is the control: it exits 2 naming
     # the endpoint. The pair shows the credential check is genuinely skipped
     # for listing rather than happening to pass.
+    # @intent: { entity: "specguard-ingest --list", action: "run unconfigured", behavior: "listing is the only mode that runs unconfigured, delivering the same file exits two", layer: "unit" }
     it "is the only mode that runs unconfigured — delivering the same file exits 2" do
       path = sink(run_payload)
       listed = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", path])
@@ -1004,6 +1065,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # has nothing for `RunRecorder` to fold onto and becomes a second run, and
     # a keyless local file is made entirely of those. Its absence is stated,
     # never left as a gap in the row for the reader to notice.
+    # @intent: { entity: "specguard-ingest --list", action: "render rows", behavior: "a row names the absence of a ci run id rather than leaving a gap", layer: "unit" }
     it "names the absence of a ci_run_id rather than leaving a gap" do
       described_class.new(stdout: stdout, stderr: stderr, env: {})
                      .run(["--list", sink(run_payload(ci_run_id: nil))])
@@ -1011,6 +1073,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to include("no ci_run_id")
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "render rows", behavior: "the row counts the examples the run carries", layer: "unit" }
     it "counts the examples the run carries" do
       payload = run_payload
       payload["specs"] = Array.new(3) { payload["specs"].first }
@@ -1022,6 +1085,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `#scalar`, for the same reason `#deliver_line` uses it on `ci_run_id`:
     # the envelope is free-form, and rendering `{"a"=>1}` as a branch would be
     # this tool inventing structure the line does not have.
+    # @intent: { entity: "specguard-ingest --list", action: "render rows", behavior: "a non-scalar field is reported absent rather than rendering its structure", layer: "unit" }
     it "reports a non-scalar field as absent rather than rendering its structure" do
       described_class.new(stdout: stdout, stderr: stderr, env: {})
                      .run(["--list", sink({ "branch" => { "a" => 1 }, "ci_run_id" => %w[x] })])
@@ -1032,6 +1096,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Criterion 3. Listing exists to be read before `--from-line`, so the
     # numbers it prints must be the numbers that flag takes — the file's own.
+    # @intent: { entity: "specguard-ingest --list", action: "compose selectors", behavior: "listing composes with the resume flag keeping the file own numbering", layer: "unit" }
     it "composes with --from-line, keeping the file's own numbering" do
       path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"), run_payload(ci_run_id: "c"))
       code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--from-line", "3", path])
@@ -1043,6 +1108,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
                              "nothing was delivered")
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "compose selectors", behavior: "the listing counts the blank lines it skipped rather than dropping them", layer: "unit" }
     it "counts the blank lines it skipped rather than dropping them from the listing" do
       path = File.join(@dir, "gappy.jsonl")
       File.write(path, "#{JSON.generate(run_payload)}\n\n#{JSON.generate(run_payload)}\n")
@@ -1057,6 +1123,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # re-implementing it: a line that is not valid UTF-8 is kept rather than
     # dropped, so `#parse_payload` can name it — and the rest of the file is
     # still listed.
+    # @intent: { entity: "specguard-ingest --list", action: "compose selectors", behavior: "an unparseable line is listed as unparseable and the listing keeps going", layer: "unit" }
     it "lists an unparseable line as unparseable and keeps going" do
       path = File.join(@dir, "binary.jsonl")
       File.open(path, "wb") do |file|
@@ -1081,6 +1148,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `#exit_code`, which listing does not reach. Both files below are ones the
     # DELIVERY path exits non-zero on: the first would be a 1 (the endpoint
     # refuses it), the second a 2 (a line will not parse). Listed, both are 0.
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "listing never reaches exit one, a file delivery would refuse still lists as zero", layer: "unit" }
     it "never reaches exit 1 — a file that delivery would refuse still lists as 0" do
       StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
         path = sink(run_payload)
@@ -1093,6 +1161,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "a file whose lines delivery would exit two for still lists as zero", layer: "unit" }
     it "exits 0 on a file whose lines delivery would exit 2 for" do
       expect(described_class.new(stdout: stdout, stderr: stderr, env: {})
                             .run(["--list", sink("{not json", "null")])).to eq(0)
@@ -1100,6 +1169,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to include("line 2: unparseable — the line is NilClass JSON, and a run is an object")
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "a file that does not exist exits two under list without asking for credentials first", layer: "unit" }
     it "exits 2 on a file that does not exist, without asking for credentials first" do
       code = described_class.new(stdout: stdout, stderr: stderr, env: {})
                             .run(["--list", File.join(@dir, "gone.jsonl")])
@@ -1109,6 +1179,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to be_empty
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "a directory handed to list exits two", layer: "unit" }
     it "exits 2 on a directory" do
       expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", @dir])).to eq(2)
       expect(err).to eq("specguard-ingest: error: not a file: #{@dir}\n")
@@ -1119,6 +1190,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # prefix rather than the whole of stderr. The property under test is the
     # code: a typo'd flag must not borrow the 1 that means "the endpoint refused
     # your run", and in listing mode nothing was ever offered to an endpoint.
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "a bad flag beside list exits two", layer: "unit" }
     it "exits 2 on a bad flag alongside --list" do
       code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--liist", "f.jsonl"])
 
@@ -1126,6 +1198,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(err).to start_with("specguard-ingest: error: invalid option: --liist\n")
     end
 
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "list with no file given exits two", layer: "unit" }
     it "exits 2 on --list with no file given" do
       expect(described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list"])).to eq(2)
       expect(err).to eq("specguard-ingest: error: no file given — #{described_class::BANNER}\n")
@@ -1140,6 +1213,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # behaviour it describes is what stops the row drifting out of step again:
     # this fails if the table stops saying it, and equally if listing ever
     # starts exiting 2 for either cause.
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "the help documents exactly the misuse codes listing can reach, and reaches only those", layer: "unit" }
     it "documents which 2s listing can reach, and reaches only those" do
       cli.run(["--help"])
       table = out.gsub(/\s+/, " ")
@@ -1158,6 +1232,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # A listing that printed nothing and exited 0 would read as "your file is
     # clear" — the same silent-success failure the empty delivery guards.
+    # @intent: { entity: "specguard-ingest --list", action: "keep the codes apart", behavior: "an empty listing says so on stderr rather than printing nothing", layer: "unit" }
     it "says so on stderr when there was nothing to list, rather than printing nothing" do
       path = File.join(@dir, "empty.jsonl")
       File.write(path, "")
@@ -1204,6 +1279,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # document carries ALL 500 of the platform's reasons, verbatim and in order,
     # and the same run without the flag prints the same capped line it printed
     # before this renderer existed — three reasons and a count, on one line.
+    # @intent: { entity: "specguard-ingest --json", action: "render reasons", behavior: "the document lists every reason the platform sent while the text line shows three and a count", layer: "unit" }
     it "lists every reason the platform sent, while the text line still shows three and a count" do
       details = refusal_details
       path = sink(run_payload)
@@ -1229,6 +1305,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # same refusal, so a change that started truncating the document — or one
     # that lifted the cap on the warning the formatter still has to fit on one
     # stderr line — fails here.
+    # @intent: { entity: "specguard-ingest --json", action: "render reasons", behavior: "the same refusal renders at two different lengths between text and document on purpose", layer: "unit" }
     it "renders the same refusal at two different lengths, on purpose" do
       details = refusal_details(40)
       path = sink(run_payload)
@@ -1258,6 +1335,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       "a refusal and an undelivered line together" =>
         [2, [{ status: 400, body: '{"message":"no"}' }, { status: 500, body: '{"message":"boom"}' }]]
     }.each do |name, (expected, responses)|
+      # @intent: { entity: "specguard-ingest --json", action: "keep the exit codes", behavior: "each exit-code class comes out identically with and without the json flag", layer: "unit" }
       it "exits #{expected} with and without the flag on #{name}" do
         path = sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"))
 
@@ -1272,6 +1350,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The fourth status has no HTTP response behind it, so it gets its own
     # example rather than a `responses` entry — and it is the one that proves the
     # flag does not rescue anything the default path does not.
+    # @intent: { entity: "specguard-ingest --json", action: "keep the exit codes", behavior: "a line that is not a run at all exits two either way", layer: "unit" }
     it "exits 2 either way on a line that is not a run at all" do
       path = sink(run_payload, "{not json")
 
@@ -1281,6 +1360,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Criterion 7, on the side a consumer meets first: an accepted line has
     # nothing to say and says it as `[]`.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "an accepted line reports its code with an empty reasons list", layer: "unit" }
     it "reports an accepted line with its code and an empty reasons list" do
       expect(deliver(["--json", sink(run_payload)])).to eq(0)
 
@@ -1293,6 +1373,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # Criterion 7's other half. `Transport#refusal_reasons` degrades to nil for
     # every body it cannot read — an empty one, HTML from a proxy, a JSON scalar
     # — and `null` there would hand every consumer a type check.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "a refusal whose body said nothing readable reports an empty list, never null", layer: "unit" }
     it "reports a refusal whose body said nothing readable as an empty list, never null" do
       expect(deliver(["--json", sink(run_payload)], status: 400, body: "<html>no</html>")).to eq(1)
       entry = document["lines"].first
@@ -1307,6 +1388,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `undelivered` — not `refused`, because nothing was judged, and not
     # `:failed`, because a response genuinely arrived — and the document is still
     # a document.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "a gateway error answering in HTML renders as undelivered with a valid document and no crash", layer: "unit" }
     it "renders a 502 answering with HTML as undelivered, with a valid document and no crash" do
       code = deliver(["--json", sink(run_payload)], status: 502,
                                                     body: "<html><body>502 Bad Gateway</body></html>")
@@ -1324,6 +1406,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # rendering is the whole of what there is to say — so it lands in `reasons`
     # rather than being dropped for want of a field of its own. `code: null` next
     # to a non-empty `reasons` is what tells a consumer this from a refusal.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "a socket failure reports no code with the error in the reasons", layer: "unit" }
     it "reports a socket failure with no code and the error in reasons" do
       code = described_class.new(stdout: stdout, stderr: stderr,
                                 env: env.merge("SPECGUARD_ENDPOINT" => dead_endpoint,
@@ -1340,6 +1423,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # problem is the only thing there is to say about it — collapsed into the same
     # list, exactly as `JSONReporter#errors` collapses lint's `problem` into
     # `errors`, so one code path reads every reason a line did not land.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "an unparseable line problem collapses into the same reasons list", layer: "unit" }
     it "collapses an unparseable line's problem into the same reasons list" do
       expect(deliver(["--json", sink(run_payload, "{not json")])).to eq(2)
       entry = document["lines"].last
@@ -1350,6 +1434,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(entry["reasons"].first).to start_with("could not parse the line as JSON:")
     end
 
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "every reasons list is a list of strings whatever the line did", layer: "unit" }
     it "reports every reasons list as a list of strings, whatever the line did" do
       responses = [{}, { status: 400, body: refusal_body(refusal_details(4)) }, { status: 500, body: "" }]
       expect(deliver(["--json", sink(run_payload, run_payload, run_payload, "{not json")],
@@ -1364,6 +1449,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # is `Transport::Result#one_line`'s job because a CI log has one line to
     # spend, and a JSON string has no such budget. What must hold either way is
     # that the document parses.
+    # @intent: { entity: "specguard-ingest --json", action: "render rows", behavior: "a multi-line reason stays intact and the document still parses", layer: "unit" }
     it "keeps a multi-line reason intact and still emits parseable JSON" do
       body = JSON.generate("details" => ["specs[0] spec/u_spec.rb:1:\n  duration must be non-negative"])
 
@@ -1377,6 +1463,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # unfalsifiable from outside the process. So the counts are computed once and
     # handed to whichever renderer runs, and this is the example that would fail
     # if either grew its own tally.
+    # @intent: { entity: "specguard-ingest --json", action: "stay consistent", behavior: "the document agrees with the text summary about every count on one mixed file", layer: "unit" }
     it "agrees with the text summary about every count, on one mixed file" do
       responses = [{}, { status: 400, body: '{"message":"no"}' }, { status: 500, body: '{"message":"boom"}' }]
       path = sink(run_payload, run_payload, run_payload, "{not json", "", run_payload)
@@ -1396,6 +1483,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       )
     end
 
+    # @intent: { entity: "specguard-ingest --json", action: "stay consistent", behavior: "the summary names the resume flag when that is the selector that held lines back", layer: "unit" }
     it "names --from-line as the selector when that is the flag that held lines back" do
       expect(deliver(["--json", "--from-line", "3", sink(run_payload, run_payload, run_payload)])).to eq(0)
 
@@ -1405,6 +1493,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # `--from-line` defaults to 1 when it was not given at all, so a document that
     # named it unconditionally would report a selector the user never typed.
+    # @intent: { entity: "specguard-ingest --json", action: "stay consistent", behavior: "no selector is named when nothing held anything back", layer: "unit" }
     it "names no selector when nothing held anything back" do
       expect(deliver(["--json", sink(run_payload)])).to eq(0)
 
@@ -1412,6 +1501,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(document["summary"]["skipped"]).to eq(0)
     end
 
+    # @intent: { entity: "specguard-ingest --json", action: "stay consistent", behavior: "the document counts the blank lines it skipped rather than dropping them", layer: "unit" }
     it "counts the blank lines it skipped rather than dropping them from the document" do
       path = File.join(@dir, "gappy.jsonl")
       File.write(path, "#{JSON.generate(run_payload)}\n\n\n#{JSON.generate(run_payload)}\n")
@@ -1424,6 +1514,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
     # Folding, as data rather than as a sentence — one grouping rendered twice, so
     # the observation cannot disagree with itself.
+    # @intent: { entity: "specguard-ingest --json", action: "report folding", behavior: "an observed folding reports the lines, the run identity and the run id", layer: "unit" }
     it "reports an observed folding as the lines, the run identity and the run id" do
       path = sink(run_payload(ci_run_id: "17442"), run_payload(ci_run_id: "17442"), run_payload(ci_run_id: "x"))
       expect(deliver(["--json", path])).to eq(0)
@@ -1433,6 +1524,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       )
     end
 
+    # @intent: { entity: "specguard-ingest --json", action: "report folding", behavior: "no folding is claimed where none was observed", layer: "unit" }
     it "claims no folding where none was observed" do
       expect(deliver(["--json", sink(run_payload(ci_run_id: "a"), run_payload(ci_run_id: "b"))])).to eq(0)
 
@@ -1443,6 +1535,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # mirrors `validate-intent --json --source` key for key because the gem
     # consumes it; this one is about deliveries, and naming a schema it has
     # nothing to do with would assert a conformance it cannot have.
+    # @intent: { entity: "specguard-ingest --json", action: "declare itself", behavior: "the document names the tool that wrote it rather than a schema it does not implement", layer: "unit" }
     it "names the tool that wrote it rather than a schema it does not implement" do
       expect(deliver(["--json", sink(run_payload)])).to eq(0)
 
@@ -1454,6 +1547,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The exit status is the one carrier of this command's verdict, and 0/1/2 do
     # not collapse to a boolean: restating it in the document would be a second
     # copy free to drift from the first.
+    # @intent: { entity: "specguard-ingest --json", action: "declare itself", behavior: "the document carries no ok and no exit code field", layer: "unit" }
     it "carries no ok and no exit_code" do
       expect(deliver(["--json", sink(run_payload)], status: 400)).to eq(1)
 
@@ -1466,6 +1560,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # `build_transport`, and the file most worth previewing is the one the
       # formatter wrote BECAUSE no API key was set. A renderer must not be able
       # to reintroduce the credential requirement that ordering exists to avoid.
+      # @intent: { entity: "specguard-ingest --json --list", action: "run unconfigured", behavior: "the json listing runs with neither endpoint nor key set", layer: "unit" }
       it "lists with neither SPECGUARD_ENDPOINT nor SPECGUARD_API_KEY set" do
         path = sink(run_payload(ci_run_id: nil))
         code = described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
@@ -1483,6 +1578,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # in the suite reading it. The paragraph it replaced named 6 of these 8
       # (`reasons` and `number` were missing) and shipped green. A key added or
       # removed here fails this example: update that table in the same commit.
+      # @intent: { entity: "specguard-ingest --json --list", action: "render rows", behavior: "the rows carry the envelope facts as values rather than prose", layer: "unit" }
       it "carries the envelope facts the row prints, as values rather than prose" do
         path = sink(run_payload(ci_run_id: "17442"))
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
@@ -1499,6 +1595,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # branch would be this tool inventing structure the line does not have. `0
       # examples` and "the line does not say" stay different facts — 0 against
       # null, where the prose has `0 examples` against `no specs`.
+      # @intent: { entity: "specguard-ingest --json --list", action: "render rows", behavior: "a fact the line does not carry reports null and an empty one reports as itself", layer: "unit" }
       it "reports a fact the line does not carry as null, and an empty one as itself" do
         path = sink({ "branch" => { "a" => 1 }, "ci_run_id" => %w[x] }, { "specs" => [], "branch" => "main" })
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--list", "--json", path])
@@ -1514,6 +1611,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # preview that disagreed with the delivery would hand the user a set they
       # did not send. Asserted as the two agreeing on the same file and the same
       # spec rather than as two expectations that happen to match.
+      # @intent: { entity: "specguard-ingest --json --list", action: "render rows", behavior: "the preview shows exactly the lines the same spec delivers, by the same numbers", layer: "unit" }
       it "previews exactly the lines the same spec delivers, by the same numbers" do
         path = sink(*%w[a b c d e f g].map { |id| run_payload(ci_run_id: id) })
 
@@ -1534,6 +1632,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # was delivered, the way the text listing's summary says it in words. Every
       # delivery status is 0 and `attempted` is 0 — which is a statement, not an
       # absence.
+      # @intent: { entity: "specguard-ingest --json --list", action: "render rows", behavior: "the json listing says nothing was delivered even with a live endpoint configured", layer: "unit" }
       it "says nothing was delivered, even with a live endpoint configured" do
         StubIngestEndpoint.run do |server|
           path = sink(run_payload, "{not json")
@@ -1556,6 +1655,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # run — `EXIT_REFUSED` stays produced in exactly one place, which listing
       # does not reach. Both files below are ones the delivery path exits non-zero
       # on; listed under `--json`, both are 0.
+      # @intent: { entity: "specguard-ingest --json --list", action: "keep the codes apart", behavior: "the json listing never reaches exit one and exits zero where delivery would exit two", layer: "unit" }
       it "never reaches exit 1, and exits 0 on a file delivery would exit 2 for" do
         StubIngestEndpoint.run(status: 400, body: '{"message":"no"}') do |server|
           configured = env.merge("SPECGUARD_ENDPOINT" => server.endpoint)
@@ -1570,6 +1670,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         end
       end
 
+      # @intent: { entity: "specguard-ingest --json --list", action: "keep the codes apart", behavior: "an unparseable line is listed as unparseable and the listing keeps going", layer: "unit" }
       it "lists an unparseable line as unparseable and keeps going" do
         path = File.join(@dir, "binary.jsonl")
         File.open(path, "wb") do |file|
@@ -1602,6 +1703,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         "--from-line given with --lines under --list" =>
           [["--list", "--json", "--from-line", "2", "--lines", "3"], {}]
       }.each do |name, (flags, environment)|
+        # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "a run that never reached the file writes nothing on stdout and exits two", layer: "unit" }
         it "writes nothing on stdout and exits 2 on #{name}" do
           path = sink(run_payload, run_payload, run_payload)
           code = described_class.new(stdout: stdout, stderr: stderr, env: environment || env).run([*flags, path])
@@ -1615,6 +1717,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       # Both modes, because they reach the same {#read_source} by different
       # routes: delivery through `build_transport` first, listing deliberately
       # ahead of it.
+      # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "an unreadable file writes nothing on stdout and exits two", layer: "unit" }
       it "writes nothing on stdout and exits 2 on a file it cannot read" do
         gone = File.join(@dir, "gone.jsonl")
         listing = described_class.new(stdout: stdout, stderr: stderr, env: {})
@@ -1626,6 +1729,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         expect(err).to eq("specguard-ingest: error: no such file: #{gone}\n" * 2)
       end
 
+      # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "a bad flag beside the json flag writes nothing on stdout and exits two", layer: "unit" }
       it "writes nothing on stdout and exits 2 on a bad flag alongside it" do
         expect(cli.run(["--json", "--replaay", "f.jsonl"])).to eq(2)
 
@@ -1635,6 +1739,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
 
       # The internal-error backstop is what makes `1` mean one thing, and the
       # renderer must not stand between a bug in this tool and that 2.
+      # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "an unexpected internal failure reports as a two printing no document", layer: "unit" }
       it "reports an unexpected internal failure as a 2, printing no document" do
         allow(SpecGuard::RSpec::Transport).to receive(:new).and_raise(NotImplementedError, "boom")
 
@@ -1649,6 +1754,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # says WHY it was empty is a diagnostic about this tool, so it stays on stderr
     # in both renderers.
     describe "a file with nothing in it" do
+      # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "a delivery still writes its document with any warning on stderr", layer: "unit" }
       it "still writes a document for a delivery, with the warning on stderr" do
         path = File.join(@dir, "empty.jsonl")
         File.write(path, "")
@@ -1660,6 +1766,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
         expect(err).to eq("specguard-ingest: warning: #{path} holds no runs to deliver\n")
       end
 
+      # @intent: { entity: "specguard-ingest --json", action: "fail without a document", behavior: "an empty listing still writes its document naming why it was empty on stderr", layer: "unit" }
       it "still writes a document for a listing, naming why it was empty on stderr" do
         path = sink(run_payload, run_payload)
         code = described_class.new(stdout: stdout, stderr: stderr, env: {})
@@ -1673,6 +1780,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       end
     end
 
+    # @intent: { entity: "specguard-ingest help", action: "document the json flag", behavior: "the json flag is documented in the help beside the flag that enables it", layer: "unit" }
     it "is documented in the help, alongside the flag that enables it" do
       cli.run(["--help"])
       screen = out.gsub(/\s+/, " ")
@@ -1687,6 +1795,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
   describe "--help and --version" do
     let(:endpoint) { "https://specguard.example.com" }
 
+    # @intent: { entity: "specguard-ingest help", action: "print usage", behavior: "the help flag exits zero and prints the usage", layer: "unit" }
     it "exits 0 and prints the usage" do
       expect(cli.run(["--help"])).to eq(0)
       expect(out).to include(described_class::BANNER)
@@ -1696,6 +1805,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # The sink mixes failed deliveries with ordinary keyless local runs and
     # nothing on the line tells them apart, so a developer must be able to learn
     # BEFORE running this that their laptop's whole history will be sent.
+    # @intent: { entity: "specguard-ingest help", action: "warn about delivery", behavior: "the help warns that every line is delivered, failures or not", layer: "unit" }
     it "warns in the help that every line is delivered, failures or not" do
       cli.run(["--help"])
 
@@ -1707,6 +1817,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # `--help` is where a user meets both, so it must name the thing that lets
     # them act on the warning — and say that it costs no credentials, since the
     # file worth checking is the keyless one.
+    # @intent: { entity: "specguard-ingest help", action: "warn about delivery", behavior: "the remedy is named next to the hazard, with the note that listing needs no key", layer: "unit" }
     it "names the remedy next to the hazard, and that listing needs no key" do
       cli.run(["--help"])
 
@@ -1715,6 +1826,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(out).to include("List the runs in <file> without delivering any of them")
     end
 
+    # @intent: { entity: "specguard-ingest help", action: "print the version", behavior: "the version flag prints the gem version", layer: "unit" }
     it "prints the gem version" do
       expect(cli.run(["--version"])).to eq(0)
       expect(out).to eq("specguard-ruby #{SpecGuard::VERSION}\n")
@@ -1725,6 +1837,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
     # help says it. Asserted alongside the behaviour that enforces it, for the
     # reason the exit-code table is: this fails if the help stops saying it, and
     # equally if the pair ever stops being refused.
+    # @intent: { entity: "specguard-ingest help", action: "document selectors", behavior: "the help documents the lines flag and the rule that it does not combine with the resume flag", layer: "unit" }
     it "documents --lines and the rule that it does not combine with --from-line" do
       cli.run(["--help"])
       screen = out.gsub(/\s+/, " ")
@@ -1744,6 +1857,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
   # #run returns 0, 1 or 2 and never raises — the property `bin/specguard-ingest`
   # depends on, since it turns the return value straight into an exit status.
   describe "the backstop that keeps 1 meaning one thing" do
+    # @intent: { entity: "specguard-ingest", action: "contain internal errors", behavior: "an unexpected internal failure reports as a two in those words", layer: "unit" }
     it "reports an unexpected internal failure as a 2, in those words" do
       allow(SpecGuard::RSpec::Transport).to receive(:new).and_raise(NotImplementedError, "boom")
 
@@ -1755,6 +1869,7 @@ RSpec.describe SpecGuard::RSpec::IngestCLI do
       expect(err).to eq("specguard-ingest: internal error: NotImplementedError: boom\n")
     end
 
+    # @intent: { entity: "specguard-ingest", action: "contain internal errors", behavior: "every argv shape above answers only zero, one or two", layer: "unit" }
     it "answers only 0, 1 or 2 across every shape above" do
       expect([described_class::EXIT_OK, described_class::EXIT_REFUSED, described_class::EXIT_MISUSE])
         .to eq([0, 1, 2])

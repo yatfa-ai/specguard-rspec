@@ -65,6 +65,7 @@ module SpecGuard
       end
 
       describe "row mapping" do
+        # @intent: { entity: "Minitest Reporter", action: "map a passed result", behavior: "a passing minitest result becomes a row with the platform field names, file and line split from the source location, and the recorded duration", layer: "unit" }
         it "maps a passed result to a passed row in the platform's field names" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport.first, output: StringIO.new)
@@ -83,6 +84,7 @@ module SpecGuard
           )
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "map a skipped result", behavior: "a skipped result reports the platform pending outcome rather than a failure", layer: "unit" }
         it "maps a skip to the platform's pending, not to a failure" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport.first, output: StringIO.new)
@@ -92,6 +94,7 @@ module SpecGuard
           expect(reporter.instance_variable_get(:@rows).first["outcome"]).to eq("pending")
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "map failing results", behavior: "an assertion failure and an unexpected raise both map to the same failed outcome", layer: "unit" }
         it "maps an assertion failure and a raised error to the same failed outcome" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport.first, output: StringIO.new)
@@ -103,6 +106,7 @@ module SpecGuard
           expect(outcomes).to eq(%w[failed failed])
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "read legacy locations", behavior: "a path colon line location string in the minitest five shape splits into file_path and line_number like the array shape does", layer: "unit" }
         it "reads the path:line String minitest 5 reports, not only the Array 6 does" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport.first, output: StringIO.new)
@@ -112,6 +116,7 @@ module SpecGuard
           expect(reporter.instance_variable_get(:@rows).first["file_path"]).to eq("spec/old_test.rb")
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "drop unnameable results", behavior: "a result whose location carries no line is dropped from the rows rather than emitted mangled", layer: "unit" }
         it "drops a result whose location cannot be named rather than mangling it" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport.first, output: StringIO.new)
@@ -123,6 +128,7 @@ module SpecGuard
       end
 
       describe "the envelope" do
+        # @intent: { entity: "Minitest Reporter", action: "build the envelope", behavior: "the delivered envelope uses the platform wire names, including ci_run_id and shard_id, with duration measured by the injected clock", layer: "unit" }
         it "carries the platform's field names, not this gem's setting names" do
           transport, captured = recording_transport
           reporter = Reporter.new(configuration: configuration(base_env),
@@ -144,6 +150,7 @@ module SpecGuard
       end
 
       describe "the never-fail guarantee" do
+        # @intent: { entity: "Minitest Reporter", action: "fall back to the sink on refusal", behavior: "a rejected delivery appends one line to the configured output path and prints exactly one warning instead of raising", layer: "unit" }
         it "writes the local sink instead of raising when the endpoint refuses" do
           Dir.mktmpdir do |dir|
             sink = File.join(dir, "test_results.jsonl")
@@ -164,6 +171,7 @@ module SpecGuard
           end
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "sink silently without a key", behavior: "with no api key configured the reporter writes the local sink file and emits no warning at all", layer: "unit" }
         it "writes the sink without any warning when no key is configured" do
           Dir.mktmpdir do |dir|
             sink = File.join(dir, "test_results.local.jsonl")
@@ -179,6 +187,7 @@ module SpecGuard
           end
         end
 
+        # @intent: { entity: "Minitest Reporter", action: "never redden the suite", behavior: "a reporter whose delivery was rejected still reports itself passing, so telemetry cannot fail a suite", layer: "unit" }
         it "is always a passing reporter, so telemetry can never redden a suite" do
           reporter = Reporter.new(configuration: configuration(base_env),
                                   transport: recording_transport(outcome: :rejected).first,

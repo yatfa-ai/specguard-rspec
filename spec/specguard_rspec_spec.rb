@@ -32,12 +32,14 @@ RSpec.describe SpecGuard::RSpec do
     # release where nothing sees it. So no prerelease branch here: the assertion
     # and this justification have to agree, and the release path is the stricter
     # of the two.
+    # @intent: { entity: "SpecGuard::RSpec::VERSION", action: "publish a release identifier", behavior: "the version constant is a non-empty string matching strict MAJOR.MINOR.PATCH so the release script can parse it", layer: "unit" }
     it "is a well-formed semver string" do
       expect(version).to be_a(String)
       expect(version).not_to be_empty
       expect(version).to match(/\A\d+\.\d+\.\d+\z/)
     end
 
+    # @intent: { entity: "SpecGuard::RSpec::VERSION", action: "freeze the published value", behavior: "the version constant is frozen, so no caller can mutate what the gemspec published", layer: "unit" }
     it "is frozen, so no caller can mutate the value the gemspec published" do
       expect(version).to be_frozen
     end
@@ -48,6 +50,7 @@ RSpec.describe SpecGuard::RSpec do
     # asserts the same equality against a *built* gem, but only after shelling
     # out to `gem build`. Reading the gemspec directly fails fast, and fails
     # loudly if anyone ever hardcodes a version into it.
+    # @intent: { entity: "SpecGuard::RSpec::VERSION", action: "stay the single source of truth", behavior: "loading the real gemspec yields a version equal to the constant, catching anyone hardcoding a literal into the gemspec", layer: "unit" }
     it "is the version the gemspec publishes, not a literal copied into it" do
       gemspec_path = File.expand_path("../specguard-ruby.gemspec", __dir__)
       gemspec = Gem::Specification.load(gemspec_path)
