@@ -48,20 +48,24 @@ RSpec.describe "the gem's load boundary" do
 
     let(:stdout) { result[0] }
 
+    # @intent: { entity: "gem load boundary", action: "require the linter half", behavior: "a fresh interpreter with only the gem lib on the load path requires specguard/rspec and exits zero", layer: "integration" }
     it "loads without error" do
       expect(result[2]).to eq(0), "stderr was: #{result[1]}"
     end
 
+    # @intent: { entity: "gem load boundary", action: "require the linter half", behavior: "requiring the linter entry point leaves the RSpec::Core constant undefined in the fresh interpreter", layer: "integration" }
     it "does not define RSpec::Core" do
       expect(stdout).to include("rspec-core absent")
     end
 
     # The stronger form: not merely "the constant is missing" but "not one file
     # of rspec-core was read", which also catches a partial require.
+    # @intent: { entity: "gem load boundary", action: "require the linter half", behavior: "not a single rspec-core file enters loaded_features, catching a partial require the constant probe would miss", layer: "integration" }
     it "does not load a single file of rspec-core" do
       expect(stdout).to include("loaded_features=0")
     end
 
+    # @intent: { entity: "gem load boundary", action: "require the linter half", behavior: "the linter chain resolves to the CLI constant, so the entry point is whole without the test framework", layer: "integration" }
     it "still gives the linter everything it needs" do
       expect(stdout).to include("linter=SpecGuard::RSpec::CLI")
     end
@@ -73,6 +77,7 @@ RSpec.describe "the gem's load boundary" do
     # because in *this* repo everything is present anyway. What the linter must
     # not gain is a reason to fail: it is installed on machines with no test
     # framework, and every file it does not need is a file that can be missing.
+    # @intent: { entity: "gem load boundary", action: "require the linter half", behavior: "the formatter half transport and configuration constants stay absent from the linter load path", layer: "integration" }
     it "does not bring the formatter's transport with it" do
       expect(stdout).to include("transport absent")
       expect(stdout).to include("configuration absent")
@@ -92,14 +97,17 @@ RSpec.describe "the gem's load boundary" do
       [stdout, stderr, status.exitstatus]
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "run without RSpec installed", behavior: "the bin script answers --version with exit zero in an interpreter that has never heard of RSpec", layer: "integration" }
     it "runs and exits 0" do
       expect(result[2]).to eq(0), "stderr was: #{result[1]}"
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "run without RSpec installed", behavior: "the version output reaches stdout, proving the run traversed the full require chain into the CLI", layer: "integration" }
     it "reports the gem's version, so it really reached the CLI" do
       expect(result[0]).to include(SpecGuard::RSpec::VERSION)
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "run without RSpec installed", behavior: "stderr stays empty on the way through require and option parsing", layer: "integration" }
     it "does not warn about anything on the way" do
       expect(result[1]).to be_empty
     end
@@ -121,6 +129,7 @@ RSpec.describe "the gem's load boundary" do
 
     # Standalone: it must not assume the linter half was required first, or the
     # documented one-line `.rspec` opt-in would only work by accident.
+    # @intent: { entity: "gem load boundary", action: "require the formatter half", behavior: "requiring the formatter file alone, without the linter half, exits zero in the fresh interpreter", layer: "integration" }
     it "loads on its own, without specguard/rspec having been required" do
       expect(result[2]).to eq(0), "stderr was: #{result[1]}"
       expect(stdout).to include("formatter=SpecGuard::RSpecFormatter")
@@ -130,10 +139,12 @@ RSpec.describe "the gem's load boundary" do
     # SpecGuard`, an unqualified `RSpec::Core` resolves to `SpecGuard::RSpec::Core`.
     # If the `::` qualification were ever dropped, this require would die with
     # `NameError: uninitialized constant SpecGuard::RSpec::Core`.
+    # @intent: { entity: "gem load boundary", action: "require the formatter half", behavior: "the formatter constant resolves to a subclass of the real RSpec BaseFormatter, escaping the SpecGuard::RSpec namespace trap", layer: "integration" }
     it "subclasses the real RSpec's BaseFormatter" do
       expect(stdout).to include("superclass=RSpec::Core::Formatters::BaseFormatter")
     end
 
+    # @intent: { entity: "gem load boundary", action: "require the formatter half", behavior: "the configuration object comes with the formatter require, defaulting its output path", layer: "integration" }
     it "brings the configuration with it" do
       expect(stdout).to include("configurable=log/test_results.jsonl")
     end
@@ -142,6 +153,7 @@ RSpec.describe "the gem's load boundary" do
     # `--require specguard/rspec/formatter` in a project's `.rspec` is the whole
     # of the documented opt-in, so anything the run needs at `close` has to be
     # on this one chain.
+    # @intent: { entity: "gem load boundary", action: "require the formatter half", behavior: "the transport constant and its ingest path arrive on the same require chain the documented opt-in uses", layer: "integration" }
     it "brings the transport with it, so close has something to POST with" do
       expect(stdout).to include("transport=SpecGuard::RSpec::Transport")
       expect(stdout).to include("path=/api/v1/ingest")

@@ -14,11 +14,13 @@ require "rubygems/package"
 RSpec.describe "the vendored OpenTestIntent schema" do
   subject(:schema) { JSON.parse(File.read(SpecGuard::RSpec::SCHEMA_PATH)) }
 
+  # @intent: { entity: "vendored OpenTestIntent schema", action: "ship inside the gem", behavior: "the schema path resolves under lib/specguard/rspec/schemas and the file exists on disk", layer: "unit" }
   it "ships inside lib/, which the gemspec packages" do
     expect(SpecGuard::RSpec::SCHEMA_PATH).to include("/lib/specguard/rspec/schemas/")
     expect(File).to exist(SpecGuard::RSpec::SCHEMA_PATH)
   end
 
+  # @intent: { entity: "vendored OpenTestIntent schema", action: "stay tracked by git", behavior: "git ls-files names the schema, without which the gemspec would silently package a gem missing it", layer: "unit" }
   it "is tracked by git, without which it would not be packaged" do
     tracked = `git ls-files --error-unmatch #{SpecGuard::RSpec::SCHEMA_PATH} 2>/dev/null`
 
@@ -48,12 +50,14 @@ RSpec.describe "the vendored OpenTestIntent schema" do
   # and this constant moves with it, in the same change as the digest above.
   CANONICAL_V1_ID = "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json"
 
+  # @intent: { entity: "vendored OpenTestIntent schema", action: "match the canonical bytes", behavior: "the sha256 digest, id and schema dialect equal the pins from the protocol repository schema-v1.0 tag", layer: "unit" }
   it "is the canonical v1 schema, byte-for-byte" do
     expect(Digest::SHA256.file(SpecGuard::RSpec::SCHEMA_PATH).hexdigest).to eq(CANONICAL_V1_SHA256)
     expect(schema["$id"]).to eq(CANONICAL_V1_ID)
     expect(schema["$schema"]).to eq("http://json-schema.org/draft-07/schema#")
   end
 
+  # @intent: { entity: "vendored OpenTestIntent schema", action: "carry the enforced constraints", behavior: "additionalProperties is false, exactly the four intent keys are required, behavior minLength is fifteen and layer lists only the four enum members", layer: "unit" }
   it "carries the constraints the linter enforces" do
     expect(schema["additionalProperties"]).to be(false)
     expect(schema["required"]).to contain_exactly("entity", "action", "behavior", "layer")
@@ -63,6 +67,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
 
   # The fixtures are excluded from the gem by design, so nothing at runtime may
   # depend on them. This is the assertion that keeps that true.
+  # @intent: { entity: "vendored OpenTestIntent schema", action: "avoid the unshipped fixtures", behavior: "the schema path stays outside spec/, keeping runtime independent of files the gem does not package", layer: "unit" }
   it "is reachable without the spec fixtures, which do not ship" do
     expect(SpecGuard::RSpec::SCHEMA_PATH).not_to include("/spec/")
   end
@@ -87,11 +92,13 @@ RSpec.describe "the vendored OpenTestIntent schema" do
 
     after(:context) { FileUtils.remove_entry(@build_dir) if @build_dir }
 
+    # @intent: { entity: "built gem", action: "build from the gemspec", behavior: "a real gem build produces a package named specguard-ruby carrying the current version constant", layer: "integration" }
     it "builds, and is named and versioned as expected" do
       expect(@spec.name).to eq("specguard-ruby")
       expect(@spec.version.to_s).to eq(SpecGuard::RSpec::VERSION)
     end
 
+    # @intent: { entity: "built gem", action: "package the vendored schema", behavior: "the built gem file list includes the schema under lib, which the linter cannot run without", layer: "integration" }
     it "packages the vendored schema, which the linter cannot run without" do
       expect(@spec.files).to include("lib/specguard/rspec/schemas/open-test-intent.v1.json")
     end
@@ -101,6 +108,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     # the installed gem — reproduced during this ticket, before these files
     # were added. Enumerating the tree rather than naming files keeps the next
     # person who adds one honest without their having to remember this spec.
+    # @intent: { entity: "built gem", action: "package every lib Ruby file", behavior: "the built gem file list contains every Ruby file found under lib on disk, so an untracked file cannot produce a load error only on install", layer: "integration" }
     it "packages every Ruby file under lib/, not just the ones named here" do
       root = File.expand_path("../../..", __dir__)
       on_disk = Dir.glob("lib/**/*.rb", base: root).sort
@@ -114,11 +122,13 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     # not installed at all. `spec.files` comes from `git ls-files`, so the
     # second shape is one `git add` away at any time — this example is what
     # caught `bin/specguard-ingest` while it was still untracked (SPGD-631).
+    # @intent: { entity: "built gem", action: "package both executables", behavior: "the built gem declares and carries exactly the specguard-lint and specguard-ingest executables", layer: "integration" }
     it "packages both executables" do
       expect(@spec.executables).to match_array(%w[specguard-lint specguard-ingest])
       expect(@spec.files).to include("bin/specguard-lint", "bin/specguard-ingest")
     end
 
+    # @intent: { entity: "built gem", action: "exclude the spec tree", behavior: "no file under spec/ appears in the built gem, so fixtures can never become load-bearing at runtime", layer: "integration" }
     it "does not package the spec fixtures, so they can never become load-bearing" do
       expect(@spec.files.grep(%r{^spec/})).to be_empty
     end
@@ -128,6 +138,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     # job; it survives only as a development dependency for the offline spec
     # stub). A runtime dependency creeping back would mean the hand-rolled
     # validation path had quietly returned.
+    # @intent: { entity: "built gem", action: "declare no json_schemer runtime dependency", behavior: "the runtime dependency list omits json_schemer, keeping validation owned by the Go binary", layer: "integration" }
     it "declares no json_schemer runtime dependency" do
       expect(@spec.runtime_dependencies.map(&:name)).not_to include("json_schemer")
     end
@@ -142,6 +153,7 @@ RSpec.describe "the vendored OpenTestIntent schema" do
     # BYTES. So the packaged copy is proven by digest: parseable JSON whose
     # bytes match the checkout's copy, which is what the contract check
     # compares against the binary's.
+    # @intent: { entity: "vendored OpenTestIntent schema", action: "load from outside the checkout", behavior: "a copy placed in a scratch directory parses to the same document and byte-identical digest as the checkout copy", layer: "unit" }
     it "matches the checkout's copy byte for byte, from outside the checkout" do
       Dir.mktmpdir do |dir|
         packaged = File.join(dir, "open-test-intent.v1.json")

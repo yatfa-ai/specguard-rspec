@@ -130,12 +130,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # `:message` here and `#message` becomes dead code *and* the duplication
     # comes back — this list is the only thing that decides whether either hook
     # is ever called.
+    # @intent: { entity: "RSpecFormatter", action: "register with RSpec", behavior: "the formatter subscribes to exactly the five notifications it implements", layer: "unit" }
     it "is registered for the five notifications it implements" do
       registered = RSpec::Core::Formatters::Loader.formatters[described_class]
 
       expect(registered).to contain_exactly(:example_finished, :stop, :close, :seed, :message)
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "register with RSpec", behavior: "being a BaseFormatter, RSpec accepts it as an additional format alongside the usual one", layer: "unit" }
     it "is a BaseFormatter, so RSpec accepts it as an additional --format" do
       expect(described_class.ancestors).to include(RSpec::Core::Formatters::BaseFormatter)
     end
@@ -144,6 +146,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # namespace, so an unqualified `RSpec::Core` inside `module SpecGuard`
     # resolves to `SpecGuard::RSpec::Core` and raises. If that ever creeps back
     # in, the superclass is the first thing to go wrong.
+    # @intent: { entity: "RSpecFormatter", action: "register with RSpec", behavior: "the superclass is the real RSpec BaseFormatter, not the gem same-named namespace", layer: "unit" }
     it "inherits from the real RSpec's BaseFormatter, not from SpecGuard::RSpec" do
       expect(described_class.superclass).to equal(::RSpec::Core::Formatters::BaseFormatter)
     end
@@ -180,6 +183,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when this formatter is not among the configuration's formatters" do
       let(:registered) { [] }
 
+      # @intent: { entity: "RSpecFormatter seed", action: "leave foreign runs alone", behavior: "when this formatter is not among the configured formatters, seed touches nothing", layer: "unit" }
       it "does not touch the configuration" do
         formatter.seed(nil)
 
@@ -192,6 +196,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when this formatter is registered and nothing else reports the run" do
       let(:registered) { [formatter] }
 
+      # @intent: { entity: "RSpecFormatter seed", action: "restore the default formatter", behavior: "when registered alone it restores the configured default formatter so the run still prints", layer: "unit" }
       it "restores the configured default formatter" do
         formatter.seed(nil)
 
@@ -215,6 +220,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         [formatter, ::RSpec::Core::Formatters::FailureListFormatter.new(StringIO.new)]
       end
 
+      # @intent: { entity: "RSpecFormatter seed", action: "leave foreign runs alone", behavior: "when another formatter already reports the run, seed leaves the configuration alone", layer: "unit" }
       it "leaves the configuration alone" do
         formatter.seed(nil)
 
@@ -253,6 +259,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when no other registered formatter handles messages" do
       let(:registered) { [formatter] }
 
+      # @intent: { entity: "RSpecFormatter message", action: "relay messages", behavior: "with no other message-handling formatter, message prints exactly the fallback RSpec would have printed", layer: "unit" }
       it "prints the message, exactly as RSpec's fallback would have" do
         formatter.message(notification)
 
@@ -268,6 +275,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         [formatter, ::RSpec::Core::Formatters::ProgressFormatter.new(StringIO.new)]
       end
 
+      # @intent: { entity: "RSpecFormatter message", action: "relay messages", behavior: "when another formatter handles messages this one stays quiet", layer: "unit" }
       it "stays quiet and lets that formatter print it" do
         formatter.message(notification)
 
@@ -282,6 +290,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when this formatter is not among the configuration's formatters" do
       let(:registered) { [] }
 
+      # @intent: { entity: "RSpecFormatter message", action: "leave foreign runs alone", behavior: "when not among the configured formatters, message writes nothing", layer: "unit" }
       it "writes nothing" do
         formatter.message(notification)
 
@@ -291,6 +300,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
   end
 
   describe "#payload" do
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "the payload envelope carries commit, branch and duration from the configuration", layer: "unit" }
     it "carries the run envelope from the configuration" do
       formatter.stop(nil)
 
@@ -308,6 +318,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # The setting is `run_id` and the wire field is `ci_run_id` on purpose: the
     # keys of this Hash are the platform's names, spelled as `TestRun` spells
     # them, and the setting names are this gem's.
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "the ci run id is named with the platform own key rather than the gem setting name", layer: "unit" }
     it "names the CI run the shard belongs to, under the platform's own key" do
       formatter.stop(nil)
 
@@ -316,6 +327,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # The laptop path. A run nobody's CI provider named still ships a complete
     # envelope; the platform reads the nil as "this run is its own run".
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "a missing run id is an explicit null key, not an omitted one", layer: "unit" }
     it "sends an explicit null run id rather than omitting the key" do
       SpecGuard::RSpec.configure { |config| config.run_id = nil }
       formatter.stop(nil)
@@ -329,12 +341,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # this is what lets the platform tell a shard reporting for the second time
     # from a shard reporting for the first — and therefore replace its numbers
     # rather than add them.
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "the shard id names which shard of the run this process is", layer: "unit" }
     it "names which shard of that run this process is" do
       formatter.stop(nil)
 
       expect(formatter.payload).to include("shard_id" => "shard-2")
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "a missing shard id is an explicit null key, not an omitted one", layer: "unit" }
     it "sends an explicit null shard id rather than omitting the key" do
       SpecGuard::RSpec.configure { |config| config.shard_id = nil }
       formatter.stop(nil)
@@ -343,6 +357,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(formatter.payload["shard_id"]).to be_nil
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "carry the run envelope", behavior: "the run duration is non-negative once the suite has stopped", layer: "unit" }
     it "reports a non-negative run duration once the suite has stopped" do
       formatter.stop(nil)
 
@@ -352,6 +367,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # Criterion 4. The unannotated majority is the population SpecGuard exists
     # to measure; a formatter that filtered here would report an empty first run
     # to every new adopter.
+    # @intent: { entity: "RSpecFormatter payload", action: "record examples", behavior: "one entry appears per example, in the order they finished", layer: "unit" }
     it "records one entry per example, in the order they finished" do
       3.times { |i| finish(build_example(name: "example #{i}", line_number: i + 1)) }
 
@@ -361,12 +377,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # Criterion 3, at the unit level; formatter_run_spec.rb proves the same
     # thing against a real nested describe/context.
+    # @intent: { entity: "RSpecFormatter payload", action: "record examples", behavior: "the recorded name is the example full description, verbatim", layer: "unit" }
     it "records the name as full_description, verbatim" do
       finish(build_example(name: "user when signed in can order an item"))
 
       expect(formatter.payload["specs"].first["name"]).to eq("user when signed in can order an item")
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "record examples", behavior: "each entry records its line number, duration and outcome", layer: "unit" }
     it "records the line number, duration and outcome of each example" do
       finish(build_example(line_number: 42, run_time: 0.0109, status: :failed))
 
@@ -380,6 +398,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # A Symbol serializes to a JSON string either way, but leaving it a Symbol
     # here means an in-process consumer compares `:passed` against the `"passed"`
     # every JSON reader hands back, and quietly matches nothing.
+    # @intent: { entity: "RSpecFormatter payload", action: "record examples", behavior: "the outcome is recorded as a String, not the Symbol RSpec reports", layer: "unit" }
     it "records the outcome as a String, not the Symbol RSpec reports" do
       finish(build_example(status: :pending))
 
@@ -387,18 +406,21 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
 
     describe "file paths" do
+      # @intent: { entity: "RSpecFormatter payload", action: "normalize file paths", behavior: "the dot-slash prefix RSpec puts on project-relative paths is stripped", layer: "unit" }
       it "strips the ./ prefix RSpec puts on a project-relative path" do
         finish(build_example(file_path: "./spec/orders_spec.rb"))
 
         expect(formatter.payload["specs"].first["file_path"]).to eq("spec/orders_spec.rb")
       end
 
+      # @intent: { entity: "RSpecFormatter payload", action: "normalize file paths", behavior: "an absolute path under the project root is relativized to it", layer: "unit" }
       it "relativizes an absolute path that lies under the project root" do
         finish(build_example(file_path: File.join(Dir.pwd, "spec", "orders_spec.rb")))
 
         expect(formatter.payload["specs"].first["file_path"]).to eq("spec/orders_spec.rb")
       end
 
+      # @intent: { entity: "RSpecFormatter payload", action: "normalize file paths", behavior: "a path outside the project root stays absolute rather than being invented relative", layer: "unit" }
       it "leaves a path outside the project root absolute rather than inventing one" do
         finish(build_example(file_path: "/elsewhere/orders_spec.rb"))
 
@@ -418,12 +440,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
   # double is simply told what to answer — that half is in formatter_run_spec.rb,
   # against a real `rspec` process.
   describe "#payload — example identity" do
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "the row carries RSpec own example id", layer: "unit" }
     it "records RSpec's own example id" do
       finish(build_example(id: "./spec/orders_spec.rb[1:2]"))
 
       expect(formatter.payload["specs"].first["id"]).to eq("./spec/orders_spec.rb[1:2]")
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "several examples sharing one definition line still get one row each", layer: "unit" }
     it "keeps one row per example when several share a definition line" do
       3.times { |i| finish(build_example(line_number: 4, id: "./spec/table_spec.rb[1:#{i + 1}]")) }
 
@@ -432,6 +456,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(formatter.payload["specs"].map { |spec| spec["line_number"] }).to all(eq(4))
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "the spec file named is the one that ran the example, not only the one that defined it", layer: "unit" }
     it "names the spec file that ran the example, not only the one that defined it" do
       finish(build_example(file_path: "./spec/support/shared_examples.rb",
                            rerun_file_path: "./spec/orders_spec.rb"))
@@ -445,12 +470,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # The ordinary case, which is nearly every example: the two coincide, so a
     # consumer that groups by `spec_file_path` groups by the file a reader would
     # have named anyway.
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "an ordinary example reports the definition file as its owning file", layer: "unit" }
     it "reports the owning file as the definition file for an ordinary example" do
       finish(build_example(file_path: "./spec/orders_spec.rb"))
 
       expect(formatter.payload["specs"].first["spec_file_path"]).to eq("spec/orders_spec.rb")
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "the owning file loses its dot-slash prefix exactly like the file path does", layer: "unit" }
     it "strips the ./ prefix off the owning file, exactly as it does for file_path" do
       finish(build_example(file_path: File.join(Dir.pwd, "spec", "orders_spec.rb"),
                            rerun_file_path: "./spec/users_spec.rb"))
@@ -465,6 +492,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # unreachable in a real run — but a null here would silently drop a whole
     # file out of any by-file aggregate, and the definition site is the best
     # answer available.
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "metadata without an owning file falls back to the definition file", layer: "unit" }
     it "falls back to the definition file when the metadata carries no owning file" do
       example = instance_double(RSpec::Core::Example,
                                 full_description: "user can order an item",
@@ -482,6 +510,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # inherits the intent written next to the shared `it`, and repurposing
     # `file_path` to the including file would send the lookup to a line that
     # holds something else entirely.
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "the annotation lookup is asked about the definition site, not the owning file", layer: "unit" }
     it "still asks the lookup about the definition site, not the owning file" do
       finish(build_example(file_path: "./spec/support/shared_examples.rb",
                            rerun_file_path: "./spec/orders_spec.rb",
@@ -493,6 +522,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # Additive means additive: the seven fields the platform already reads must
     # come out of this change byte-identical for an ordinary example.
+    # @intent: { entity: "RSpecFormatter payload", action: "identify examples", behavior: "adding the identity fields leaves every pre-existing payload field untouched", layer: "unit" }
     it "leaves every pre-existing field untouched" do
       allow(annotations).to receive(:intent_for).and_return(intent)
       finish(build_example(file_path: "./spec/orders_spec.rb", line_number: 42,
@@ -515,6 +545,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
   # spec that lacks it, and `valid?` requires the error list to be empty, so the
   # run is rejected whole.
   describe "#payload — status and intent" do
+    # @intent: { entity: "RSpecFormatter payload", action: "report annotation status", behavior: "an example the lookup resolves is reported annotated, carrying the intent", layer: "unit" }
     it "reports an example the lookup resolved as annotated, carrying the intent" do
       allow(annotations).to receive(:intent_for).and_return(intent)
       finish(build_example)
@@ -522,6 +553,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(formatter.payload["specs"].first).to include("status" => "annotated", "intent" => intent)
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "report annotation status", behavior: "an example the lookup cannot resolve is reported unannotated", layer: "unit" }
     it "reports an example the lookup could not resolve as unannotated" do
       finish(build_example)
 
@@ -533,6 +565,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # the archive: it is the difference between "we looked and found nothing"
     # and "this producer does not report annotations" — exactly the ambiguity
     # slice 1's payload could not resolve.
+    # @intent: { entity: "RSpecFormatter payload", action: "report annotation status", behavior: "the intent key is written explicitly null rather than omitted", layer: "unit" }
     it "writes the intent key explicitly rather than omitting it" do
       finish(build_example)
 
@@ -543,12 +576,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # payload records and not RSpec's raw `./`-prefixed metadata — otherwise the
     # coordinate the platform stores and the coordinate the annotation was read
     # from are two different strings that only look alike.
+    # @intent: { entity: "RSpecFormatter payload", action: "report annotation status", behavior: "the lookup is asked with the same file path the payload records and the example own line", layer: "unit" }
     it "asks about the same file path it records, and the example's own line" do
       finish(build_example(file_path: "./spec/orders_spec.rb", line_number: 42))
 
       expect(annotations).to have_received(:intent_for).with(file: "spec/orders_spec.rb", line: 42)
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "report annotation status", behavior: "each example is resolved independently of the others", layer: "unit" }
     it "resolves each example independently" do
       allow(annotations).to receive(:intent_for).and_return(intent, nil, intent)
       3.times { |i| finish(build_example(line_number: i + 1)) }
@@ -588,6 +623,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       %w[duration file_path id intent line_number name outcome spec_file_path status]
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "disclose the key set", behavior: "the envelope transmits exactly the run fields the readme discloses", layer: "unit" }
     it "transmits exactly the run-envelope fields the README discloses" do
       formatter.stop(nil)
 
@@ -597,6 +633,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # Both annotation outcomes, and `eq` over the whole mapped array rather than
     # `all(eq(...))`: an empty `specs` satisfies `all` vacuously, which would
     # make this pin report success having checked no example at all.
+    # @intent: { entity: "RSpecFormatter payload", action: "disclose the key set", behavior: "each row transmits exactly the per-example fields the readme discloses", layer: "unit" }
     it "transmits exactly the per-example fields the README discloses" do
       allow(annotations).to receive(:intent_for).and_return(intent, nil)
       2.times { |i| finish(build_example(name: "example #{i}", line_number: i + 1)) }
@@ -632,6 +669,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
   # the two path rows and the machine-derived-paths paragraph in the README
   # section named above before touching the expectation.
   describe "the disclosed path values" do
+    # @intent: { entity: "RSpecFormatter payload", action: "disclose path values", behavior: "a spec under the project root ships with the leading dot-slash stripped, as the readme table says", layer: "unit" }
     it "strips the leading ./ for a spec under the project root, as the table says" do
       finish(build_example(file_path: "./spec/orders_spec.rb"))
 
@@ -647,12 +685,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # `#relative_path`, so the prefix survives on the wire. Pinned because the
     # README quotes a literal value, and a quoted value that stops being true is
     # worse than no example at all.
+    # @intent: { entity: "RSpecFormatter payload", action: "disclose path values", behavior: "the RSpec example id ships verbatim, dot-slash prefix and all", layer: "unit" }
     it "transmits RSpec's example id verbatim, ./ prefix and all" do
       finish(build_example(file_path: "./spec/orders_spec.rb", id: "./spec/orders_spec.rb[1:2]"))
 
       expect(formatter.payload["specs"].first["id"]).to eq("./spec/orders_spec.rb[1:2]")
     end
 
+    # @intent: { entity: "RSpecFormatter payload", action: "disclose path values", behavior: "a spec outside the project root ships as an absolute path", layer: "unit" }
     it "transmits an absolute path for a spec outside the project root" do
       outside = "/tmp/vendored-suite/outside_spec.rb"
 
@@ -670,6 +710,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # the local-development default, and none of them may reach the network.
     # SPGD-810 criterion 1: a keyless run belongs to the *local* sink, and the
     # replay-queue file is neither created nor written.
+    # @intent: { entity: "RSpecFormatter local sink", action: "stay offline without a key", behavior: "with no api key configured the formatter attempts no HTTP call at all", layer: "unit" }
     it "attempts no HTTP call at all when there is no API key" do
       allow(SpecGuard::RSpec::Transport).to receive(:new).and_call_original
 
@@ -679,6 +720,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(SpecGuard::RSpec::Transport).not_to have_received(:new)
     end
 
+    # @intent: { entity: "RSpecFormatter local sink", action: "append the run", behavior: "the run lands in the sink as a single JSON object on one line", layer: "unit" }
     it "appends the run as a single JSON object on one line" do
       finish(build_example)
       formatter.stop(nil)
@@ -688,11 +730,13 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(JSON.parse(local_sink_lines.first)["specs"].length).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter local sink", action: "append the run", behavior: "a missing output directory is created on first write", layer: "unit" }
     it "creates the output directory when it does not exist yet" do
       expect { formatter.close(nil) }.to change { File.directory?(File.dirname(local_sink)) }.to(true)
     end
 
     # JSONL, not JSON: a second run must not truncate the first.
+    # @intent: { entity: "RSpecFormatter local sink", action: "append the run", behavior: "an existing sink file is appended to rather than replaced", layer: "unit" }
     it "appends to an existing file rather than replacing it" do
       2.times do
         described_class.new(output, error_stream: errors).tap do |run|
@@ -705,6 +749,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(local_sink_lines).to all(satisfy { |line| JSON.parse(line).key?("specs") })
     end
 
+    # @intent: { entity: "RSpecFormatter local sink", action: "append the run", behavior: "a run with no examples still writes a well-formed envelope", layer: "unit" }
     it "still writes a well-formed envelope for a run with no examples at all" do
       formatter.stop(nil)
       formatter.close(nil)
@@ -714,6 +759,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # `stop` is where the duration is sealed, but a run that never reaches it
     # must not write a null into a field the platform validates as numeric.
+    # @intent: { entity: "RSpecFormatter local sink", action: "append the run", behavior: "a close without stop still reports a duration", layer: "unit" }
     it "still reports a duration when close is reached without stop" do
       formatter.close(nil)
 
@@ -722,6 +768,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # SPGD-810 criterion 1, both halves: written to the local sink, and the
     # replay queue is neither created nor written.
+    # @intent: { entity: "RSpecFormatter local sink", action: "separate the two sinks", behavior: "a keyless run writes to the local sink, not the replay queue", layer: "unit" }
     it "writes a keyless run to the local sink, not the replay queue" do
       finish(build_example)
       formatter.close(nil)
@@ -732,6 +779,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # SPGD-810 escape hatch: pointing both paths at one file reproduces the
     # pre-split single-file behaviour exactly.
+    # @intent: { entity: "RSpecFormatter local sink", action: "separate the two sinks", behavior: "when both settings name the same file the run also reaches the replay queue", layer: "unit" }
     it "writes to the replay queue too when both paths name the same file" do
       SpecGuard::RSpec.configure { |config| config.local_output_path = config.output_path }
 
@@ -767,6 +815,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       server.requests.first
     end
 
+    # @intent: { entity: "RSpecFormatter delivery", action: "POST the run", behavior: "with an api key configured the run is posted exactly once", layer: "unit" }
     it "POSTs the run once when an API key is configured" do
       StubIngestEndpoint.run do |server|
         deliver_to(server)
@@ -775,6 +824,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
+    # @intent: { entity: "RSpecFormatter delivery", action: "POST the run", behavior: "what goes on the wire is exactly what payload assembled, at the platform path", layer: "unit" }
     it "sends exactly what #payload assembled, to the platform's path" do
       StubIngestEndpoint.run do |server|
         request = deliver_to(server)
@@ -792,6 +842,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # The point of POSTing at all: the local file is the *fallback*, not a
     # second copy. Writing both would double a shared CI sink's contents for
     # every successful run.
+    # @intent: { entity: "RSpecFormatter delivery", action: "POST the run", behavior: "an accepted run writes no local file", layer: "unit" }
     it "writes no local file when the endpoint accepted the run" do
       StubIngestEndpoint.run do |server|
         deliver_to(server)
@@ -800,6 +851,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
+    # @intent: { entity: "RSpecFormatter delivery", action: "POST the run", behavior: "an accepted run says nothing on stderr", layer: "unit" }
     it "says nothing on stderr when the endpoint accepted the run" do
       StubIngestEndpoint.run do |server|
         deliver_to(server)
@@ -808,6 +860,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
     end
 
+    # @intent: { entity: "RSpecFormatter delivery", action: "POST the run", behavior: "delivery honours the configured timeout rather than the http library default", layer: "unit" }
     it "honours the configured timeout rather than Net::HTTP's 60 seconds" do
       allow(SpecGuard::RSpec::Transport).to receive(:new).and_call_original
 
@@ -824,6 +877,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # reader unable to tell which of them they are looking at.
     [400, 401, 500].each do |status|
       context "when the endpoint answers #{status}" do
+        # @intent: { entity: "RSpecFormatter delivery", action: "survive a refusal", behavior: "a refused status warns on stderr naming the status", layer: "unit" }
         it "warns on stderr, naming the status" do
           StubIngestEndpoint.run(status: status) do |server|
             deliver_to(server)
@@ -837,6 +891,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # over by the time anyone reads the warning, so a run discarded here
         # cannot be re-produced — and `output_path` already exists to support
         # exactly this replay-from-file path.
+        # @intent: { entity: "RSpecFormatter delivery", action: "survive a refusal", behavior: "the refused payload is written to the local fallback rather than dropped", layer: "unit" }
         it "writes the payload to the local fallback rather than dropping it" do
           StubIngestEndpoint.run(status: status) do |server|
             deliver_to(server)
@@ -846,12 +901,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
           end
         end
 
+        # @intent: { entity: "RSpecFormatter delivery", action: "survive a refusal", behavior: "a refusal never raises out of close", layer: "unit" }
         it "does not raise out of close" do
           StubIngestEndpoint.run(status: status) do |server|
             expect { deliver_to(server) }.not_to raise_error
           end
         end
 
+        # @intent: { entity: "RSpecFormatter delivery", action: "survive a refusal", behavior: "the warning prints once, not once per problem in the run", layer: "unit" }
         it "warns once, not once per problem" do
           StubIngestEndpoint.run(status: status) do |server|
             deliver_to(server)
@@ -860,6 +917,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
           end
         end
 
+        # @intent: { entity: "RSpecFormatter delivery", action: "survive a refusal", behavior: "the fallback file is named in the warning so the reader knows the run is recoverable", layer: "unit" }
         it "names the fallback file, so the reader knows the run is recoverable" do
           StubIngestEndpoint.run(status: status) do |server|
             deliver_to(server)
@@ -879,6 +937,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         "spec 3 (spec/foo_spec.rb:9): line_number is required and must be a positive integer"
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "report refusal reasons", behavior: "the platform reason for the refusal appears on the one warning line", layer: "unit" }
       it "puts the platform's reason on the one line it warns with" do
         StubIngestEndpoint.run(status: 400, body: JSON.generate("details" => [detail])) do |server|
           deliver_to(server)
@@ -890,6 +949,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       # Recoverable loss stays recoverable. Naming the cause is an addition to
       # the warning, not a substitute for keeping the run.
+      # @intent: { entity: "RSpecFormatter delivery", action: "report refusal reasons", behavior: "a run the endpoint refused still lands in the fallback file", layer: "unit" }
       it "still writes the run to the fallback file" do
         StubIngestEndpoint.run(status: 400, body: JSON.generate("details" => [detail])) do |server|
           deliver_to(server)
@@ -898,6 +958,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "report refusal reasons", behavior: "a refusal of every spec in the run still comes out on one line", layer: "unit" }
       it "stays on one line when the endpoint refuses every spec in the run" do
         body = JSON.generate("details" => Array.new(500) { |i| "spec #{i}: name is required" })
 
@@ -921,6 +982,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "survive no endpoint", behavior: "a request that cannot be made at all warns and falls back rather than losing the run", layer: "unit" }
       it "warns and falls back rather than losing the run" do
         finish(build_example)
         formatter.close(nil)
@@ -929,10 +991,12 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(sink_lines.length).to eq(1)
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "survive no endpoint", behavior: "an undeliverable request never raises out of close", layer: "unit" }
       it "does not raise out of close" do
         expect { formatter.close(nil) }.not_to raise_error
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "survive no endpoint", behavior: "the underlying error is named so the cause is not a mystery", layer: "unit" }
       it "names the underlying error, so the cause is not a mystery" do
         formatter.close(nil)
 
@@ -946,6 +1010,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # whole — every example, not merely the empty field. Spending the run's
     # wall clock to be told that is pure loss.
     describe "when the commit could not be determined" do
+      # @intent: { entity: "RSpecFormatter delivery", action: "gate on the commit", behavior: "a run whose commit could not be determined does not POST at all", layer: "unit" }
       it "does not POST at all" do
         StubIngestEndpoint.run do |server|
           deliver_to(server, commit_sha: nil)
@@ -954,6 +1019,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "gate on the commit", behavior: "the unknown commit takes the fallback sink and the warning says why", layer: "unit" }
       it "takes the fallback sink and says why" do
         StubIngestEndpoint.run do |server|
           deliver_to(server, commit_sha: nil)
@@ -963,6 +1029,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "gate on the commit", behavior: "a blank commit is treated the same as a missing one", layer: "unit" }
       it "treats a blank commit the same as a missing one" do
         StubIngestEndpoint.run do |server|
           deliver_to(server, commit_sha: "   ")
@@ -978,6 +1045,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     describe "when an API key is set but no endpoint is" do
       before { SpecGuard::RSpec.configure { |config| config.api_key = "sgk_abc123" } }
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "gate on the commit", behavior: "an api key with no endpoint falls back to the file and names the missing setting", layer: "unit" }
       it "falls back to the file and names the missing setting" do
         formatter.close(nil)
 
@@ -990,6 +1058,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # and a blank commit, are *failed deliveries* — recoverable, and therefore
     # replay-queue material. Only the keyless branch moved to the local sink.
     describe "the replay queue's membership (SPGD-810)" do
+      # @intent: { entity: "RSpecFormatter delivery", action: "route the replay queue", behavior: "a run blocked only by the missing keyless endpoint stays on the replay queue, off the local sink", layer: "unit" }
       it "keeps a keyless-endpoint run on the replay queue, off the local sink" do
         SpecGuard::RSpec.configure { |config| config.api_key = "sgk_abc123" }
 
@@ -999,6 +1068,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(File.exist?(local_sink)).to be(false)
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "route the replay queue", behavior: "a blank-commit run also stays on the replay queue, off the local sink", layer: "unit" }
       it "keeps a blank-commit run on the replay queue, off the local sink" do
         StubIngestEndpoint.run do |server|
           deliver_to(server, commit_sha: nil)
@@ -1012,6 +1082,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # The fallback's own failure mode. Both sinks are gone, the run really is
     # lost — but the process must still exit on the suite's own terms, and the
     # one warning the run is allowed must be the specific one.
+    # @intent: { entity: "RSpecFormatter delivery", action: "survive double failure", behavior: "a fallback write that fails too is survived, with the warning still naming the HTTP status", layer: "unit" }
     it "survives a fallback write that fails too, still naming the HTTP status" do
       StubIngestEndpoint.run(status: 401) do |server|
         blocker = File.join(tmpdir, "blocker")
@@ -1068,10 +1139,12 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # Both totals are whole-suite figures, so an edit anywhere in the tree can
     # move them without touching this file or the one it describes; the example
     # named above is the part of this claim that does not rot.
+    # @intent: { entity: "RSpecFormatter dry-run guard", action: "read the real RSpec config", behavior: "the dry-run question is asked of the real RSpec configuration, not the gem same-named one", layer: "unit" }
     it "reads the real RSpec's configuration, not this gem's same-named one" do
       expect(formatter.send(:rspec_configuration)).to equal(::RSpec.configuration)
     end
 
+    # @intent: { entity: "RSpecFormatter dry-run guard", action: "read the real RSpec config", behavior: "the question asked is one the gem own configuration cannot answer", layer: "unit" }
     it "is asking a question this gem's own configuration cannot answer" do
       expect(SpecGuard::RSpec.configuration).not_to respond_to(:dry_run?)
       expect(::RSpec.configuration).to respond_to(:dry_run?)
@@ -1079,6 +1152,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # The control for everything below: this suite is not itself a dry run, so
     # unstubbed the predicate must be false and delivery must be ordinary.
+    # @intent: { entity: "RSpecFormatter dry-run guard", action: "deliver ordinary runs", behavior: "when RSpec is not in dry-run mode the run delivers normally", layer: "unit" }
     it "delivers normally when RSpec is not in dry-run mode" do
       expect(formatter.send(:dry_run?)).to be(false)
 
@@ -1091,6 +1165,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when RSpec is in dry-run mode" do
       before { dry_run!(true) }
 
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "refuse dry runs", behavior: "a dry run appends nothing to the local sink", layer: "unit" }
       it "appends nothing to the local sink" do
         finish(build_example)
         formatter.close(nil)
@@ -1098,6 +1173,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(sink_lines).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "refuse dry runs", behavior: "a dry run issues no POST even with an api key and endpoint configured", layer: "unit" }
       it "issues no POST, even with an API key and an endpoint configured" do
         StubIngestEndpoint.run do |server|
           SpecGuard::RSpec.configure do |config|
@@ -1131,6 +1207,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       # weakened to `>= 1`: three examples through a formatter that announced
       # per-example would read 3 here and still fail, so the regression the
       # original was built to catch is still caught.
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "announce the refusal", behavior: "the dry-run refusal is said on stderr exactly once", layer: "unit" }
       it "says so on stderr, exactly once" do
         3.times { finish(build_example) }
         formatter.close(nil)
@@ -1142,6 +1219,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       # The other half of the line above, and the reason it can no longer be a
       # line count: the report enumerates *examples*, so three unannotated ones
       # get three worklist entries under the single header.
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "announce the refusal", behavior: "every unannotated example is listed under the one refusal header", layer: "unit" }
       it "lists every unannotated example under that one header" do
         3.times { finish(build_example) }
         formatter.close(nil)
@@ -1155,6 +1233,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       # Only the *delivery* decision changes. Capture is left exactly as it
       # was, so a caller — or a future replay path — can still inspect what the
       # run looked like without anything having been written anywhere.
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "announce the refusal", behavior: "the refused run is still captured so the payload stays inspectable", layer: "unit" }
       it "still captures the run, so #payload remains inspectable" do
         finish(build_example)
         formatter.stop(nil)
@@ -1164,6 +1243,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(formatter.payload["duration_seconds"]).to be_a(Float)
       end
 
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "announce the refusal", behavior: "the refusal never raises out of close", layer: "unit" }
       it "does not raise out of close" do
         expect { formatter.close(nil) }.not_to raise_error
       end
@@ -1182,6 +1262,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
           allow(annotations).to receive(:intent_for).and_return(intent, nil, intent, nil)
         end
 
+        # @intent: { entity: "RSpecFormatter coverage report", action: "report the annotation split", behavior: "the local report names the annotated and unannotated split with each unannotated example at its site", layer: "unit" }
         it "reports the split, and names each unannotated example with its site" do
           mixed_suite!
           finish(build_example(name: "alpha", line_number: 1))
@@ -1207,6 +1288,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
         # Criterion 5: the state the metric exists to reach is not an error,
         # and gets no worklist rather than an empty heading over nothing.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "report the annotation split", behavior: "a fully annotated suite is treated as the goal, not as a problem", layer: "unit" }
         it "treats a fully-annotated suite as the goal, not a problem" do
           allow(annotations).to receive(:intent_for).and_return(intent)
           2.times { finish(build_example) }
@@ -1220,6 +1302,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # The degenerate denominator. `close` runs even when nothing was
         # captured, so this path is reachable by anyone who dry-runs a filter
         # that matches nothing — and it must not divide by zero.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "report the annotation split", behavior: "a run with nothing to measure says so rather than dividing by zero", layer: "unit" }
         it "says there is nothing to measure rather than dividing by zero" do
           expect { formatter.close(nil) }.not_to raise_error
 
@@ -1233,6 +1316,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # the report matters *most*: the scanner failing classifies every
         # example `unannotated`, so a reader who saw only "0% annotated"
         # without the warning would blame their specs for SpecGuard's fault.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "share the warning budget", behavior: "the coverage report is not swallowed by a warning budget an earlier failure already spent", layer: "unit" }
         it "is not swallowed by a warning budget an earlier failure already spent" do
           allow(annotations).to receive(:intent_for).and_raise(IOError, "spec file vanished")
           finish(build_example)
@@ -1244,6 +1328,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
         # ...and the converse: nothing went wrong here, so the report must not
         # spend the budget a genuine later warning still needs.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "share the warning budget", behavior: "the coverage report leaves the warning budget unspent for a real warning that follows", layer: "unit" }
         it "leaves the warning budget unspent for a real warning that follows" do
           finish(build_example)
           formatter.close(nil)
@@ -1257,11 +1342,13 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # 200 rounds to 100%, and a report that printed it would say a suite
         # with an unannotated spec in it was fully annotated — while its own
         # worklist, one line below, showed otherwise.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "round honestly", behavior: "the ratio never rounds up to full coverage while an example is still unannotated", layer: "unit" }
         it "never rounds up to 100% while an example is still unannotated" do
           expect(formatter.send(:annotated_percentage, 199, 200)).to eq(99)
           expect(formatter.send(:annotated_percentage, 200, 200)).to eq(100)
         end
 
+        # @intent: { entity: "RSpecFormatter coverage report", action: "round honestly", behavior: "the ratio never rounds down to zero once an example is annotated", layer: "unit" }
         it "never rounds down to 0% once an example is annotated" do
           expect(formatter.send(:annotated_percentage, 1, 500)).to eq(1)
           expect(formatter.send(:annotated_percentage, 0, 500)).to eq(0)
@@ -1283,6 +1370,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # half-built report, which would be worse than either — figures nobody
         # should trust, printed by the path that exists because they could not
         # be computed.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "survive report failure", behavior: "when the report cannot be built the refusal is reported and only the refusal", layer: "unit" }
         it "reports the refusal, and only the refusal, when the report cannot be built" do
           allow(formatter).to receive(:unannotated_worklist).and_raise(IOError, "scanner died mid-report")
           finish(build_example)
@@ -1302,6 +1390,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         # reaches `close`'s `never_fail_the_run`, which spends the budget on a
         # warning that goes to the same dead stream: a line nobody can read,
         # traded for one somebody needed.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "survive report failure", behavior: "a dead error stream means the warning budget is not spent", layer: "unit" }
         it "does not spend the run's one warning when the error stream is dead" do
           dead = instance_double(StringIO)
           allow(dead).to receive(:puts).and_raise(IOError, "stderr closed")
@@ -1317,6 +1406,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         end
 
         # The report is the *only* thing added. Both sinks stay refused.
+        # @intent: { entity: "RSpecFormatter coverage report", action: "survive report failure", behavior: "a failed report publishes nothing to either sink", layer: "unit" }
         it "publishes nothing, to either sink" do
           StubIngestEndpoint.run do |server|
             SpecGuard::RSpec.configure do |config|
@@ -1344,10 +1434,12 @@ RSpec.describe SpecGuard::RSpecFormatter do
     context "when the RSpec configuration has no #dry_run? at all" do
       before { allow(formatter).to receive(:rspec_configuration).and_return(Object.new) }
 
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "tolerate old RSpec", behavior: "a configuration with no dry-run predicate is treated as an ordinary run", layer: "unit" }
       it "treats the run as an ordinary one" do
         expect(formatter.send(:dry_run?)).to be(false)
       end
 
+      # @intent: { entity: "RSpecFormatter dry-run guard", action: "tolerate old RSpec", behavior: "such a run is delivered rather than swallowed into silence", layer: "unit" }
       it "delivers it, rather than swallowing a NoMethodError into silence" do
         finish(build_example)
         formatter.close(nil)
@@ -1383,12 +1475,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
       SpecGuard::RSpec.configure { |config| config.local_output_path = File.join(blocker, "results.jsonl") }
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "an unwritable output path is swallowed instead of raising out of close", layer: "unit" }
     it "swallows an unwritable output path instead of raising out of close" do
       unwritable_sink!
 
       expect { formatter.close(nil) }.not_to raise_error
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "the unwritable path is named on stderr once with its underlying error", layer: "unit" }
     it "says so on stderr, once, naming the underlying error" do
       unwritable_sink!
       formatter.close(nil)
@@ -1397,6 +1491,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(errors.string).to match(/Errno::/)
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "a sink raising an IO error mid-write is swallowed", layer: "unit" }
     it "swallows a sink that raises IOError" do
       allow(File).to receive(:open).and_call_original
       allow(File).to receive(:open).with(local_sink, "a").and_raise(IOError, "closed stream")
@@ -1407,6 +1502,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # A bare `rescue` catches StandardError only. An autoload or a mixin
     # blowing up raises ScriptError, and would sail straight past it.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "a ScriptError, which a bare rescue misses, is swallowed too", layer: "unit" }
     it "swallows a ScriptError, which a bare rescue would miss" do
       allow(File).to receive(:open).and_call_original
       allow(File).to receive(:open).with(local_sink, "a").and_raise(NotImplementedError, "nope")
@@ -1415,6 +1511,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(errors.string).to include("NotImplementedError")
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "an example whose metadata cannot be read is swallowed", layer: "unit" }
     it "swallows an example whose metadata cannot be read" do
       broken = build_example
       allow(broken).to receive(:full_description).and_raise("boom")
@@ -1423,6 +1520,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     end
 
     # One bad example must not cost the run the other nineteen thousand.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "the examples following a broken one keep being captured", layer: "unit" }
     it "keeps capturing the examples that follow a broken one" do
       broken = build_example
       allow(broken).to receive(:full_description).and_raise("boom")
@@ -1433,6 +1531,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(formatter.payload["specs"].map { |spec| spec["name"] }).to eq(["the one after"])
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "a clock failure in stop is swallowed", layer: "unit" }
     it "swallows a clock failure in stop" do
       allow(formatter).to receive(:monotonic_now).and_raise("no clock")
 
@@ -1447,6 +1546,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # at all — so this repair is where such a typo first becomes an exception,
     # and `:seed` is dispatched from `Reporter#start`, before a single example
     # has run. Unguarded, a one-word config typo would abort the whole suite.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "a failure while restoring the default formatter is swallowed", layer: "unit" }
     it "swallows a failure while restoring the default formatter" do
       allow(formatter).to receive(:restore_suppressed_default_formatter).and_raise("no such formatter")
 
@@ -1460,6 +1560,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
     # arrive before `Reporter#report` is even entered. A raise here would replace
     # the error the developer was being told about with one from the telemetry
     # gem.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "a failure while relaying a message is swallowed", layer: "unit" }
     it "swallows a failure while relaying a message" do
       allow(formatter).to receive(:relay_message).and_raise("no configuration")
 
@@ -1482,10 +1583,12 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       let(:broken_lookup) { SpecGuard::RSpec::ValidatorError.new("could not resolve the validator") }
 
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "a failing annotation lookup never raises out of example finished", layer: "unit" }
       it "does not raise out of example_finished" do
         expect { finish(build_example) }.not_to raise_error
       end
 
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "the affected example is still recorded, as unannotated", layer: "unit" }
       it "still records the example, as unannotated" do
         finish(build_example(name: "can order an item"))
 
@@ -1496,12 +1599,14 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
       # The fields the platform actually stores a run on. Losing an annotation
       # is a gap in one row; losing these is losing the example.
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "the affected example outcome and duration are still recorded", layer: "unit" }
       it "still records the example's outcome and duration" do
         finish(build_example(run_time: 0.0109, status: :failed))
 
         expect(formatter.payload["specs"].first).to include("duration" => 0.0109, "outcome" => "failed")
       end
 
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "the lookup failure is said on stderr once however many examples are affected", layer: "unit" }
       it "says so on stderr exactly once, however many examples are affected" do
         50.times { finish(build_example) }
 
@@ -1509,6 +1614,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(errors.string).to include("ValidatorError")
       end
 
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "all fifty affected examples are still recorded", layer: "unit" }
       it "records all 50 of them anyway" do
         50.times { finish(build_example) }
 
@@ -1516,6 +1622,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       end
 
       # A ScriptError from the lookup would sail past a bare `rescue`.
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "a ScriptError from the lookup is swallowed too", layer: "unit" }
       it "swallows a ScriptError from the lookup too" do
         allow(annotations).to receive(:intent_for).and_raise(NotImplementedError, "nope")
 
@@ -1523,6 +1630,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
         expect(formatter.payload["specs"].first["status"]).to eq("unannotated")
       end
 
+      # @intent: { entity: "RSpecFormatter", action: "survive lookup failure", behavior: "an interrupt raised from the lookup is not swallowed", layer: "unit" }
       it "does NOT swallow an interrupt raised from the lookup" do
         allow(annotations).to receive(:intent_for).and_raise(Interrupt)
 
@@ -1532,6 +1640,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # A warning per example would bury the failure output of the suite it is
     # supposed to be reporting on.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "exactly one warning prints however many things went wrong in one run", layer: "unit" }
     it "warns exactly once however many things go wrong" do
       broken = build_example
       allow(broken).to receive(:full_description).and_raise("boom")
@@ -1542,6 +1651,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
       expect(errors.string.scan(described_class::WARNING_PREFIX).length).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "nothing is ever written to the shared output stream, whatever happens", layer: "unit" }
     it "writes nothing to the shared output stream, whatever happens" do
       unwritable_sink!
       finish(build_example)
@@ -1552,6 +1662,7 @@ RSpec.describe SpecGuard::RSpecFormatter do
 
     # Ctrl-C must stay Ctrl-C. Reporting an interrupt as "telemetry failed" is
     # its own small lie, and would make a long suite harder to stop.
+    # @intent: { entity: "RSpecFormatter", action: "never fail the run", behavior: "an interrupt is not swallowed, keeping ctrl-c working through the formatter", layer: "unit" }
     it "does NOT swallow an interrupt" do
       allow(File).to receive(:open).and_call_original
       allow(File).to receive(:open).with(local_sink, "a").and_raise(Interrupt)

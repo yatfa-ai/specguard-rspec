@@ -597,16 +597,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # Criterion 1. The reason to check for progress's marks specifically: a
     # formatter that *replaced* the human one would still leave a summary on
     # stdout, so "there was output" proves nothing.
+    # @intent: { entity: "RSpecFormatter child run", action: "run alongside the human formatter", behavior: "the formatter rides beside format progress in a real child rspec run without replacing its marks", layer: "integration" }
     it "runs alongside --format progress rather than replacing it" do
       expect(run.stdout).to include(".F*")
       expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "write the sink", behavior: "the child run appends exactly one JSON object for the whole suite", layer: "integration" }
     it "appends exactly one JSON object for the run" do
       expect(run.lines.length).to eq(1)
     end
 
     # Criterion 4.
+    # @intent: { entity: "RSpecFormatter child run", action: "record every example", behavior: "every example in the suite is recorded, not only an annotated subset", layer: "integration" }
     it "records every example in the suite, not just an annotated subset" do
       expect(specs.length).to eq(3)
     end
@@ -614,6 +617,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # Criterion 3. The composed string is the point: `full_description` is what
     # makes a test identifiable across runs, and it only exists once the
     # describe, the context and the it are joined.
+    # @intent: { entity: "RSpecFormatter child run", action: "record every example", behavior: "each example is named by its full composed description", layer: "integration" }
     it "names each example by its full, composed description" do
       expect(specs.map { |spec| spec["name"] }).to eq(
         [
@@ -625,19 +629,23 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     end
 
     # Criterion 2.
+    # @intent: { entity: "RSpecFormatter child run", action: "record every example", behavior: "passing, failing and pending outcomes are each recorded as such", layer: "integration" }
     it "records each example's outcome" do
       expect(specs.map { |spec| spec["outcome"] }).to eq(%w[passed failed pending])
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "record every example", behavior: "every example records a real duration, pending ones included", layer: "integration" }
     it "records a real duration for every example, pending ones included" do
       expect(specs.map { |spec| spec["duration"] }).to all(be_a(Float).and(be > 0))
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "record every example", behavior: "each example is located by a path relative to the project root", layer: "integration" }
     it "records where each example lives, relative to the project root" do
       expect(specs.map { |spec| spec["file_path"] }).to all(eq("sample_spec.rb"))
       expect(specs.map { |spec| spec["line_number"] }).to eq([3, 8, 13])
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "wrap the envelope", behavior: "the rows arrive wrapped in the six-key run envelope", layer: "integration" }
     it "wraps them in a run envelope" do
       expect(run.payload.keys)
         .to contain_exactly("commit_sha", "branch", "ci_run_id", "shard_id", "duration_seconds", "specs")
@@ -647,11 +655,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # A suite with no annotations is the cold-start case, and it must still say
     # so *positively*. "No annotations here" and "this producer does not report
     # annotations" are different facts, and only one of them is true.
+    # @intent: { entity: "RSpecFormatter child run", action: "report unannotated suites", behavior: "an unannotated suite reports every example unannotated with a null intent", layer: "integration" }
     it "reports every example as unannotated, with a null intent" do
       expect(specs.map { |spec| spec["status"] }).to all(eq("unannotated"))
       expect(specs.map { |spec| spec["intent"] }).to all(be_nil)
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "match the platform row shape", behavior: "each entry carries exactly the fields the platform spec entry is made of", layer: "integration" }
     it "carries exactly the fields the platform's spec entry is made of" do
       expect(specs.first.keys)
         .to contain_exactly("id", "spec_file_path", "file_path", "line_number", "name", "duration",
@@ -660,20 +670,24 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # Criterion 3, on the ordinary suite: no two rows share an identity even
     # when nothing about the suite is unusual.
+    # @intent: { entity: "RSpecFormatter child run", action: "identify examples", behavior: "every example gets an id of its own", layer: "integration" }
     it "gives every example an id of its own" do
       expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(specs.length)
     end
 
     # The ordinary case: nothing is shared, so the file that ran the example and
     # the file that defined it are the same file.
+    # @intent: { entity: "RSpecFormatter child run", action: "identify examples", behavior: "the owning spec file reported is the file the examples are written in", layer: "integration" }
     it "reports the owning spec file as the file the examples are written in" do
       expect(specs.map { |spec| spec["spec_file_path"] }).to all(eq("sample_spec.rb"))
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "leave the exit status alone", behavior: "the suite own exit status passes through untouched", layer: "integration" }
     it "leaves the suite's own exit status alone" do
       expect(run.exit_status).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter child run", action: "stay quiet when healthy", behavior: "a healthy child run says nothing on stderr", layer: "integration" }
     it "says nothing on stderr when everything works" do
       expect(run.stderr).to be_empty
     end
@@ -701,6 +715,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     let(:run) { @run }
 
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "run with no other formatter", behavior: "a suite wired the readme ruby way still prints the progress marks, so the run is not silent", layer: "integration" }
     it "still prints progress's marks, so the run is not silent" do
       expect(run.stdout).to include(".F*")
     end
@@ -709,6 +724,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # separately from the dots because a formatter that emitted marks and
     # swallowed the failure body would satisfy the line above and still leave
     # nobody able to fix anything.
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "run with no other formatter", behavior: "the failure, its diff, its location and the re-run command still print", layer: "integration" }
     it "prints the failure, its diff, its location and the re-run command" do
       expect(run.stdout).to include("Failures:")
       expect(run.stdout).to include("expected: :out_of_stock")
@@ -716,6 +732,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       expect(run.stdout).to include("rspec ./sample_spec.rb:8")
     end
 
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "run with no other formatter", behavior: "the summary line still prints", layer: "integration" }
     it "prints the summary line" do
       expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
     end
@@ -723,6 +740,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # Criterion 5 is about stdout, and criterion 3 is what keeps the repair from
     # being a trade: the telemetry this wiring produces is the same telemetry
     # the `.rspec` wiring produces.
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "run with no other formatter", behavior: "the ruby wiring captures the same telemetry the rspec-file wiring does", layer: "integration" }
     it "captures the same telemetry as the .rspec wiring" do
       expect(run.lines.length).to eq(1)
       expect(run.payload["specs"].length).to eq(3)
@@ -734,10 +752,12 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # Criterion 4. The never-block-CI contract is untouched by any of this: the
     # exit code was already correct when the output was missing.
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "leave the exit status alone", behavior: "the ruby wiring leaves the suite exit status alone", layer: "integration" }
     it "leaves the suite's own exit status alone" do
       expect(run.exit_status).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter ruby wiring", action: "stay quiet when healthy", behavior: "the ruby wiring says nothing on stderr when it works", layer: "integration" }
     it "says nothing on stderr" do
       expect(run.stderr).to be_empty
     end
@@ -773,6 +793,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
           @message_control = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :none)
         end
 
+        # @intent: { entity: "RSpecFormatter output parity", action: "match a plain run byte for byte", behavior: "a failing suite prints exactly what RSpec alone would have printed", layer: "integration" }
         it "prints a failing suite exactly as RSpec would have" do
           run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: wiring)
 
@@ -785,6 +806,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         # catches a message that went missing — which is the failure mode of the
         # obvious alternative repair, where this formatter implements `message`
         # as a no-op to suppress the fallback and then nothing prints it at all.
+        # @intent: { entity: "RSpecFormatter output parity", action: "match a plain run byte for byte", behavior: "a non-example error prints exactly as RSpec alone would have printed it", layer: "integration" }
         it "prints a non-example error exactly as RSpec would have" do
           run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: wiring)
 
@@ -830,11 +852,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # reach the child, both streams would lose it together and the comparison
       # would agree about nothing. This pins that the control really does carry
       # the thing the comparison is here to protect — head and tail.
+      # @intent: { entity: "RSpecFormatter output parity", action: "match a randomised run", behavior: "the control run prints the seed banner twice, proving the parity harness can see it", layer: "integration" }
       it "has a control that prints the seed banner twice" do
         expect(@random_control.stdout.scan(/Randomized with seed #{FormatterRunHelpers::FIXED_SEED}/).length)
           .to eq(2)
       end
 
+      # @intent: { entity: "RSpecFormatter output parity", action: "match a randomised run", behavior: "a randomised run prints exactly as RSpec alone would have, seed banner included", layer: "integration" }
       it "prints a randomised run exactly as RSpec would have, banner included" do
         run = run_rspec(FormatterRunHelpers::MIXED_SUITE, wiring: :ruby, order: :random)
 
@@ -844,6 +868,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # And the telemetry is still there — the parity above is worth nothing if it
     # was bought by not capturing anything.
+    # @intent: { entity: "RSpecFormatter output parity", action: "match a randomised run", behavior: "the randomised run is captured as telemetry while matching the control output byte for byte", layer: "integration" }
     it "captures the run while matching the control byte for byte" do
       run = run_rspec(FormatterRunHelpers::NON_EXAMPLE_ERROR_SUITE, wiring: :ruby)
 
@@ -872,16 +897,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     let(:run) { @run }
 
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit failures choice", behavior: "a suite that chose format failures prints the failure list and only that", layer: "integration" }
     it "prints the failure list, and only the failure list" do
       expect(run.stdout).to eq(@control.stdout)
       expect(run.stdout).to eq("./sample_spec.rb:8:cannot order an item that is out of stock\n")
     end
 
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit failures choice", behavior: "neither progress marks nor a summary are added beside the chosen formatter", layer: "integration" }
     it "adds neither progress marks nor a summary" do
       expect(run.stdout).not_to include("3 examples")
       expect(run.stdout).not_to include("Failures:")
     end
 
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit failures choice", behavior: "the failures-only run still captures its telemetry and leaves the exit status alone", layer: "integration" }
     it "still captures its telemetry and leaves the exit status alone" do
       expect(run.lines.length).to eq(1)
       expect(run.payload["specs"].length).to eq(3)
@@ -906,6 +934,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     let(:run) { @run }
 
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit documentation choice", behavior: "a suite that chose format documentation prints documentation output", layer: "integration" }
     it "prints documentation output" do
       expect(run.stdout).to include("can order an item")
     end
@@ -915,6 +944,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # failing and pending ones in its "Failures:" and "Pending:" sections, so
     # counting those would assert about documentation's own layout rather than
     # about how many formatters are attached.
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit documentation choice", behavior: "each example name prints exactly once", layer: "integration" }
     it "prints each example's name exactly once" do
       expect(run.stdout.scan("can order an item").length).to eq(1)
       expect(run.stdout.scan("3 examples, 1 failure, 1 pending").length).to eq(1)
@@ -933,6 +963,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # line printed after an example that progress would have marked, and
     # `(FAILED - 1)` picks it out from documentation's listing without also
     # matching the "Failures:" section's own restatement of the same name.
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit documentation choice", behavior: "no progress dots appear alongside the documentation output", layer: "integration" }
     it "does not add progress dots alongside it" do
       listing = run.stdout.lines.grep(/\(FAILED - 1\)/)
 
@@ -940,6 +971,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       expect(listing.first).to eq("    cannot order an item that is out of stock (FAILED - 1)\n")
     end
 
+    # @intent: { entity: "RSpecFormatter chosen formatter", action: "respect an explicit documentation choice", behavior: "the documentation run captures its telemetry and leaves the exit status alone", layer: "integration" }
     it "captures its telemetry and leaves the exit status alone" do
       expect(run.lines.length).to eq(1)
       expect(run.payload["specs"].length).to eq(3)
@@ -959,17 +991,20 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     def status_of(name) = by_name.fetch("user #{name}")["status"]
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "run the shape suite", behavior: "the six-example suite covering every annotation shape runs to completion", layer: "integration" }
     it "runs all six examples" do
       expect(run.stdout).to include("6 examples, 0 failures")
       expect(specs.length).to eq(6)
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "resolve the comment form", behavior: "an example with a comment annotation on the line above ships annotated", layer: "integration" }
     it "annotates an example from the comment line above it" do
       expect(status_of("can order an item")).to eq("annotated")
       expect(by_name.fetch("user can order an item")["intent"])
         .to include("entity" => "Order", "action" => "checkout", "layer" => "request")
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "resolve the trailing form", behavior: "an example with a trailing annotation on its own line ships annotated", layer: "integration" }
     it "annotates an example from a trailing annotation on its own line" do
       expect(status_of("surfaces the decline reason")).to eq("annotated")
       expect(by_name.fetch("user surfaces the decline reason")["intent"]).to include("action" => "refund")
@@ -977,11 +1012,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # `metadata[:line_number]` is the `it` line however deeply the example is
     # nested, so a context adds no offset to reason about.
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "resolve nested examples", behavior: "an example nested inside a context resolves its annotation by lookback", layer: "integration" }
     it "annotates an example nested inside a context" do
       expect(by_name.fetch("user when signed in can cancel an order"))
         .to include("status" => "annotated", "line_number" => 27)
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "mark the unannotated", behavior: "an example with no annotation reports unannotated", layer: "integration" }
     it "reports an example with no annotation as unannotated" do
       expect(status_of("has no annotation")).to eq("unannotated")
       expect(by_name.fetch("user has no annotation")["intent"]).to be_nil
@@ -989,16 +1026,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # Criterion 3, end to end. Both of these are annotations the *linter* exits
     # 1 over. Here they cost their own example's metadata and nothing else.
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "downgrade malformed ones", behavior: "a malformed annotation downgrades to unannotated rather than shipping or failing the run", layer: "integration" }
     it "downgrades a malformed annotation rather than shipping or failing on it" do
       expect(by_name.fetch("user has a malformed annotation"))
         .to include("status" => "unannotated", "intent" => nil, "outcome" => "passed")
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "downgrade malformed ones", behavior: "a schema-invalid annotation downgrades the same way", layer: "integration" }
     it "downgrades a schema-invalid annotation the same way" do
       expect(by_name.fetch("user has a schema-invalid annotation"))
         .to include("status" => "unannotated", "intent" => nil, "outcome" => "passed")
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "downgrade malformed ones", behavior: "a downgraded example still ships its name, duration and outcome", layer: "integration" }
     it "still ships the name, duration and outcome of a downgraded example" do
       downgraded = by_name.fetch("user has a malformed annotation")
 
@@ -1006,6 +1046,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       expect(downgraded["line_number"]).to eq(16)
     end
 
+    # @intent: { entity: "RSpecFormatter annotation shapes", action: "keep quiet through it all", behavior: "the whole shape suite produces no stderr output", layer: "integration" }
     it "keeps quiet about all of it" do
       expect(run.stderr).to be_empty
       expect(run.exit_status).to eq(0)
@@ -1015,16 +1056,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # per entry rather than as a single count, so a failure names the spec and
     # the rule instead of moving a total from 6 to 5.
     describe "the platform's ingest contract" do
+      # @intent: { entity: "RSpecFormatter ingest contract", action: "satisfy the platform", behavior: "every example produces a spec entry the platform ingest accepts", layer: "integration" }
       it "produces a spec entry the platform accepts, for every example" do
         violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
 
         expect(violations).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter ingest contract", action: "satisfy the platform", behavior: "every spec status is one the platform enum admits", layer: "integration" }
       it "gives every spec a status the platform's enum admits" do
         expect(specs.map { |spec| spec["status"] } - IngestContract::STATUSES).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter ingest contract", action: "satisfy the platform", behavior: "annotated specs carry an intent object and unannotated ones carry none", layer: "integration" }
       it "gives every annotated spec an intent object, and every unannotated one none" do
         annotated, unannotated = specs.partition { |spec| spec["status"] == "annotated" }
 
@@ -1037,6 +1081,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # (`Ingest::Payload#test_run_attributes`), and the reason `status` is
       # load-bearing rather than informational: this ratio is the headline
       # dashboard metric.
+      # @intent: { entity: "RSpecFormatter ingest contract", action: "satisfy the platform", behavior: "the rows support the annotated ratio the platform derives rather than a vacuous full coverage", layer: "integration" }
       it "supports the annotated ratio the platform derives, rather than a vacuous 100%" do
         annotated = specs.count { |spec| spec["status"] == "annotated" }
 
@@ -1056,6 +1101,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     let(:run) { @run }
     let(:specs) { run.payload["specs"] }
 
+    # @intent: { entity: "RSpecFormatter table-driven loop", action: "report every iteration", behavior: "a loop producing three examples from one definition runs all three", layer: "integration" }
     it "runs all three examples" do
       expect(run.stdout).to include("3 examples, 0 failures")
       expect(specs.length).to eq(3)
@@ -1064,6 +1110,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # The defect, stated as the measurement. All three are written on line 3 —
     # that is what the loop *is* — so the coordinate has one distinct value for
     # three examples.
+    # @intent: { entity: "RSpecFormatter table-driven loop", action: "report every iteration", behavior: "all three report the one shared definition coordinate", layer: "integration" }
     it "reports one shared definition coordinate for all three" do
       expect(specs.map { |spec| spec["line_number"] }).to all(eq(3))
       expect(specs.map { |spec| [spec["file_path"], spec["line_number"]] }.uniq.length).to eq(1)
@@ -1071,6 +1118,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # Criterion 1. Three rows, three identities — so a per-example duration and
     # a per-example outcome each have somewhere to live.
+    # @intent: { entity: "RSpecFormatter table-driven loop", action: "report every iteration", behavior: "each of the three still gets an id of its own", layer: "integration" }
     it "still gives each of the three an id of its own" do
       expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(3)
     end
@@ -1078,11 +1126,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # RSpec's own re-run argument, verbatim: `rspec './loop_spec.rb[1:2]'` runs
     # exactly the second case and nothing else. Keeping the `./` prefix is the
     # point — it is what makes the value paste-able rather than merely unique.
+    # @intent: { entity: "RSpecFormatter table-driven loop", action: "report every iteration", behavior: "each id is the argument that re-runs exactly that one example", layer: "integration" }
     it "makes each id the argument that re-runs that one example" do
       expect(specs.map { |spec| spec["id"] })
         .to eq(["./sample_spec.rb[1:1]", "./sample_spec.rb[1:2]", "./sample_spec.rb[1:3]"])
     end
 
+    # @intent: { entity: "RSpecFormatter table-driven loop", action: "report every iteration", behavior: "each example is still distinctly named and every row is still accepted", layer: "integration" }
     it "still names each example distinctly, and still accepts every row" do
       expect(specs.map { |spec| spec["name"] }).to eq(
         ["Order returns 200 for a visa card",
@@ -1100,6 +1150,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     let(:run) { @run }
     let(:specs) { run.payload["specs"] }
 
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "a shared group included from two files runs both files worth of examples", layer: "integration" }
     it "runs both files' worth of examples" do
       expect(run.stdout).to include("4 examples, 0 failures")
       expect(specs.length).to eq(4)
@@ -1108,12 +1159,14 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # The defect, again as a measurement. Four examples, two coordinates — and
     # both coordinates name a file the linter never even scans, because
     # `spec/support/shared.rb` is not a `*_spec.rb`.
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "all four report the shared support file as their definition site", layer: "integration" }
     it "reports every one of them as defined in the shared support file" do
       expect(specs.map { |spec| spec["file_path"] }).to all(eq("spec/support/shared.rb"))
       expect(specs.map { |spec| [spec["file_path"], spec["line_number"]] }.uniq.length).to eq(2)
     end
 
     # Criterion 2, first half.
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "each of the four still gets an id of its own", layer: "integration" }
     it "still gives each of the four an id of its own" do
       expect(specs.map { |spec| spec["id"] }.uniq.length).to eq(4)
     end
@@ -1122,12 +1175,14 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # separate field. Without it the two files that actually ran these tests
     # appear nowhere in the payload, so a duration-by-file report attributes all
     # four to a `spec/support/` helper.
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "the including spec file is named as the file that ran each example", layer: "integration" }
     it "names the including spec file as the file that ran each example" do
       expect(specs.map { |spec| spec["spec_file_path"] })
         .to contain_exactly("spec/orders_spec.rb", "spec/orders_spec.rb",
                             "spec/users_spec.rb", "spec/users_spec.rb")
     end
 
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "each id roots at the including file so re-running one is unambiguous", layer: "integration" }
     it "roots each id at the including file too, so re-running one is unambiguous" do
       expect(specs.map { |spec| spec["id"] }).to contain_exactly(
         "./spec/orders_spec.rb[1:1:1]", "./spec/orders_spec.rb[1:1:2]",
@@ -1135,12 +1190,14 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       )
     end
 
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "all four entries still satisfy the platform ingest contract", layer: "integration" }
     it "still produces a spec entry the platform accepts, for all four" do
       violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
 
       expect(violations).to be_empty
     end
 
+    # @intent: { entity: "RSpecFormatter shared example group", action: "report every inclusion", behavior: "the suite exit status is kept and stderr stays empty", layer: "integration" }
     it "keeps the suite's own exit status and says nothing on stderr" do
       expect(run.exit_status).to eq(0)
       expect(run.stderr).to be_empty
@@ -1157,11 +1214,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     let(:specs) { run.payload["specs"] }
     let(:by_name) { specs.to_h { |spec| [spec["name"], spec] } }
 
+    # @intent: { entity: "RSpecFormatter one-liner suite", action: "run the one-liners", behavior: "both one-line examples in the suite run", layer: "integration" }
     it "runs both examples" do
       expect(run.stdout).to include("2 examples, 0 failures")
       expect(specs.length).to eq(2)
     end
 
+    # @intent: { entity: "RSpecFormatter one-liner suite", action: "scope trailing annotations", behavior: "the trailing annotation belongs to the example it was written on", layer: "integration" }
     it "annotates the example the annotation was written on" do
       expect(by_name.fetch("Order is expected to eq 1"))
         .to include("status" => "annotated", "line_number" => 4)
@@ -1169,6 +1228,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # The defect this fixture exists for: line 5 declared nothing, and a payload
     # that says otherwise is not a gap in the data, it is wrong data.
+    # @intent: { entity: "RSpecFormatter one-liner suite", action: "scope trailing annotations", behavior: "that annotation is not lent to the example on the next line", layer: "integration" }
     it "does not lend that annotation to the example on the next line" do
       expect(by_name.fetch("Order is expected to be positive"))
         .to include("status" => "unannotated", "intent" => nil, "line_number" => 5)
@@ -1176,10 +1236,12 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # Stated as the number the dashboard reads, because that is where the
     # inflation would show up: 2 of 2 annotated for a file with one annotation.
+    # @intent: { entity: "RSpecFormatter one-liner suite", action: "scope trailing annotations", behavior: "the run reports exactly one annotated example, not two", layer: "integration" }
     it "reports one annotated example, not two" do
       expect(specs.count { |spec| spec["status"] == "annotated" }).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter one-liner suite", action: "satisfy the platform", behavior: "both entries still satisfy the platform ingest contract", layer: "integration" }
     it "still produces a spec entry the platform accepts, for both examples" do
       violations = specs.each_with_index.flat_map { |spec, index| IngestContract.errors_for(spec, index) }
 
@@ -1188,6 +1250,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
   end
 
   describe "the run envelope" do
+    # @intent: { entity: "RSpecFormatter run envelope", action: "read the environment", behavior: "a child run takes its commit and branch from the environment it was handed", layer: "integration" }
     it "takes the commit and branch from the environment" do
       run = run_rspec(FormatterRunHelpers::GREEN_SUITE, prepare: lambda { |_root|
         { "SPECGUARD_COMMIT_SHA" => "abc123", "SPECGUARD_BRANCH" => "feature/x" }
@@ -1198,6 +1261,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
     # SPGD-810: a keyless run writes the local sink, so this is the path the
     # gem must honour for it.
+    # @intent: { entity: "RSpecFormatter run envelope", action: "honour the local path", behavior: "a configured local output path is honoured by the child run", layer: "integration" }
     it "honours a configured local output path" do
       run = run_rspec(FormatterRunHelpers::GREEN_SUITE,
                       prepare: ->(_root) { { "SPECGUARD_LOCAL_OUTPUT_PATH" => "tmp/telemetry.jsonl" } })
@@ -1218,21 +1282,25 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       @red = run_rspec(FormatterRunHelpers::MIXED_SUITE, prepare: blocked_sink)
     end
 
+    # @intent: { entity: "RSpecFormatter unwritable sink", action: "never redden a green suite", behavior: "an unwritable sink still exits zero for a green child suite", layer: "integration" }
     it "still exits 0 for a green suite" do
       expect(@green.stdout).to include("1 example, 0 failures")
       expect(@green.exit_status).to eq(0)
     end
 
+    # @intent: { entity: "RSpecFormatter unwritable sink", action: "never touch a red one", behavior: "an unwritable sink still exits one for a failing child suite", layer: "integration" }
     it "still exits 1 for a failing suite" do
       expect(@red.stdout).to include("3 examples, 1 failure, 1 pending")
       expect(@red.exit_status).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter unwritable sink", action: "warn once off stdout", behavior: "the sink failure warns once on stderr while stdout stays the human formatter own", layer: "integration" }
     it "warns once on stderr, and leaves stdout to the human formatter" do
       expect(@green.stderr.scan(/SpecGuard: test telemetry failed/).length).to eq(1)
       expect(@green.stdout).not_to include("SpecGuard:")
     end
 
+    # @intent: { entity: "RSpecFormatter unwritable sink", action: "write nothing partial", behavior: "a failing sink writes nothing at all rather than a partial line somewhere else", layer: "integration" }
     it "writes nothing at all rather than a partial line somewhere else" do
       expect(@green.lines).to be_empty
     end
@@ -1260,16 +1328,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       let(:request) { @requests.first }
 
       # Criterion 1.
+      # @intent: { entity: "RSpecFormatter delivery", action: "POST once on success", behavior: "an accepted run POSTs exactly once to the endpoint", layer: "integration" }
       it "POSTs the run exactly once" do
         expect(@requests.length).to eq(1)
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "POST once on success", behavior: "the POST targets the platform path with a bearer key and a JSON body", layer: "integration" }
       it "posts to the platform's path, with a Bearer key and a JSON body" do
         expect(request.path).to eq("/api/v1/ingest")
         expect(request.headers["authorization"]).to eq("Bearer sgk_abc123")
         expect(request.headers["content-type"]).to eq("application/json")
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "POST once on success", behavior: "the whole run, envelope and every example, goes in one body", layer: "integration" }
       it "sends the whole run, envelope and every example" do
         expect(request.json).to include("commit_sha" => "0d4a1f2c9b8e7d6a5f4c3b2a1908f7e6d5c4b3a2",
                                         "branch" => "main")
@@ -1280,6 +1351,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # The delivered body is the *whole* claim of this slice: it is what
       # produces a 202 rather than a 400, and it is transcribed from the
       # platform's own validator (see {IngestContract}) rather than assumed.
+      # @intent: { entity: "RSpecFormatter delivery", action: "satisfy the ingest contract", behavior: "the body sent is one the platform ingest contract accepts", layer: "integration" }
       it "sends a body the platform's ingest contract accepts" do
         violations = request.json["specs"].each_with_index.flat_map do |spec, index|
           IngestContract.errors_for(spec, index)
@@ -1292,6 +1364,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # are `Ingest::Payload`'s own (`validate_commit_sha`, `validate_branch`,
       # `validate_duration_seconds`, `validate_specs`), and every one of them
       # rejects the *whole run* rather than one row.
+      # @intent: { entity: "RSpecFormatter delivery", action: "satisfy the ingest contract", behavior: "the envelope sent is one the platform ingest contract accepts", layer: "integration" }
       it "sends an envelope the platform's ingest contract accepts" do
         body = request.json
 
@@ -1303,14 +1376,17 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       # The local file is the fallback, not a second copy: writing both would
       # double a shared CI sink's contents on every successful run.
+      # @intent: { entity: "RSpecFormatter delivery", action: "stay clean on success", behavior: "a delivered run writes no local file", layer: "integration" }
       it "writes no local file when the run was delivered" do
         expect(run.lines).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "stay clean on success", behavior: "a delivered run says nothing on stderr", layer: "integration" }
       it "says nothing on stderr" do
         expect(run.stderr).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter delivery", action: "stay clean on success", behavior: "the delivered run still leaves the suite exit status alone", layer: "integration" }
       it "leaves the suite's own exit status alone" do
         expect(run.stdout).to include("3 examples, 1 failure, 1 pending")
         expect(run.exit_status).to eq(1)
@@ -1335,11 +1411,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
           end
         end
 
+        # @intent: { entity: "RSpecFormatter refused delivery", action: "never redden a green suite", behavior: "a refused delivery still exits zero for a green suite", layer: "integration" }
         it "still exits 0 for a green suite" do
           expect(@green.stdout).to include("1 example, 0 failures")
           expect(@green.exit_status).to eq(0)
         end
 
+        # @intent: { entity: "RSpecFormatter refused delivery", action: "never touch a red one", behavior: "a refused delivery still exits one for a failing suite", layer: "integration" }
         it "still exits 1 for a failing suite" do
           expect(@red.stdout).to include("3 examples, 1 failure, 1 pending")
           expect(@red.exit_status).to eq(1)
@@ -1348,17 +1426,20 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         # Naming the status is the requirement, not decoration: a 401 means
         # "rotate the key" and a 400 means "this gem built a body the platform
         # refused". Those are different people's problems.
+        # @intent: { entity: "RSpecFormatter refused delivery", action: "warn once naming the status", behavior: "the refusal warns once on stderr naming the status code", layer: "integration" }
         it "warns once on stderr, naming the status code" do
           expect(@green.stderr.scan(/SpecGuard:/).length).to eq(1)
           expect(@green.stderr).to include("HTTP #{status}")
         end
 
+        # @intent: { entity: "RSpecFormatter refused delivery", action: "leave stdout alone", behavior: "stdout stays the human formatter own through a refusal", layer: "integration" }
         it "leaves stdout to the human formatter" do
           expect(@green.stdout).not_to include("SpecGuard:")
         end
 
         # Silent loss becomes recoverable loss. The suite is over by the time
         # anyone reads the warning, so a run discarded here cannot be re-run.
+        # @intent: { entity: "RSpecFormatter refused delivery", action: "keep the run", behavior: "the refused payload is written to the local fallback rather than dropped", layer: "integration" }
         it "writes the payload to the local fallback rather than dropping it" do
           expect(@green.lines.length).to eq(1)
           expect(@red.payload["specs"].length).to eq(3)
@@ -1383,21 +1464,25 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         })
       end
 
+      # @intent: { entity: "RSpecFormatter undeliverable request", action: "never redden a green suite", behavior: "a refused connection still exits zero for a green suite", layer: "integration" }
       it "still exits 0 for a green suite when the connection is refused" do
         expect(@refused.stdout).to include("1 example, 0 failures")
         expect(@refused.exit_status).to eq(0)
       end
 
+      # @intent: { entity: "RSpecFormatter undeliverable request", action: "never touch a red one", behavior: "an unresolvable host still exits one for a failing suite", layer: "integration" }
       it "still exits 1 for a failing suite when the host does not resolve" do
         expect(@unresolvable.stdout).to include("3 examples, 1 failure, 1 pending")
         expect(@unresolvable.exit_status).to eq(1)
       end
 
+      # @intent: { entity: "RSpecFormatter undeliverable request", action: "warn and name the cause", behavior: "the undeliverable request warns once naming the underlying error", layer: "integration" }
       it "warns once and names the underlying error" do
         expect(@refused.stderr.scan(/SpecGuard:/).length).to eq(1)
         expect(@refused.stderr).to match(/Errno::|SocketError/)
       end
 
+      # @intent: { entity: "RSpecFormatter undeliverable request", action: "keep the run", behavior: "both undeliverable shapes fall back to the local file", layer: "integration" }
       it "falls back to the local file, for both of them" do
         expect(@refused.lines.length).to eq(1)
         expect(@unresolvable.payload["specs"].length).to eq(3)
@@ -1408,6 +1493,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # added to every CI run against a hung endpoint, which is squarely against
     # "a 20,000-example run must not be meaningfully slowed". The budget is
     # asserted as wall clock, because that is the thing being promised.
+    # @intent: { entity: "RSpecFormatter silent endpoint", action: "honour the timeout budget", behavior: "an endpoint that never answers is given up on within the configured budget", layer: "integration" }
     it "gives up on an endpoint that never answers, within the configured budget" do
       StubIngestEndpoint.run(hang: true) do |server|
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -1439,19 +1525,23 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         end
       end
 
+      # @intent: { entity: "RSpecFormatter unknown commit", action: "stay off the wire", behavior: "a run whose commit cannot be determined issues no POST at all", layer: "integration" }
       it "issues no POST at all" do
         expect(@requests).to be_empty
       end
 
+      # @intent: { entity: "RSpecFormatter unknown commit", action: "take the fallback", behavior: "the unknown-commit run takes the fallback sink instead", layer: "integration" }
       it "takes the fallback sink instead" do
         expect(@run.lines.length).to eq(1)
         expect(@run.payload["commit_sha"]).to be_nil
       end
 
+      # @intent: { entity: "RSpecFormatter unknown commit", action: "say why", behavior: "the warning says why rather than leaving the operator to guess", layer: "integration" }
       it "says why, rather than leaving the operator to guess" do
         expect(@run.stderr).to include("the commit could not be determined")
       end
 
+      # @intent: { entity: "RSpecFormatter unknown commit", action: "keep the exit status", behavior: "the run still exits on the suite own terms", layer: "integration" }
       it "still exits on the suite's own terms" do
         expect(@run.exit_status).to eq(0)
       end
@@ -1461,6 +1551,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # Asserted against a live stub rather than by stubbing `Transport`, because
     # "nothing arrived at a real socket" is the claim, and a subprocess is not
     # somewhere a double can reach anyway.
+    # @intent: { entity: "RSpecFormatter keyless run", action: "stay offline without a key", behavior: "with no api key the child run attempts no HTTP call and writes the local file as before", layer: "integration" }
     it "attempts no HTTP call when there is no API key, and writes the file as before" do
       StubIngestEndpoint.run(status: 202) do |server|
         run = run_rspec(FormatterRunHelpers::GREEN_SUITE,
@@ -1507,6 +1598,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       # The control, first: identical environment, identical suite, flag
       # removed. If this ever goes empty the assertions below are vacuous.
+      # @intent: { entity: "RSpecFormatter dry run", action: "deliver the same suite without the flag", behavior: "the same suite in the same environment without the dry-run flag delivers normally", layer: "integration" }
       it "delivers the same suite in the same environment without the flag" do
         expect(@normal_requests.length).to eq(1)
         expect(@normal_requests.first.json["specs"].length).to eq(3)
@@ -1514,16 +1606,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       # SPGD-154 criterion 1: "`rspec --dry-run` with SPECGUARD_API_KEY and
       # SPECGUARD_ENDPOINT set issues zero HTTP requests".
+      # @intent: { entity: "RSpecFormatter dry run", action: "refuse to deliver", behavior: "a dry run with a key and endpoint in scope issues no HTTP request at all", layer: "integration" }
       it "issues no HTTP request at all" do
         expect(@dry_requests).to be_empty
       end
 
       # ...and the child really did run, with the flag really taking effect —
       # so "no request" is a refusal rather than a process that never started.
+      # @intent: { entity: "RSpecFormatter dry run", action: "refuse to deliver", behavior: "the dry run still runs, reporting the dry-run own all-green summary", layer: "integration" }
       it "still ran the suite, reporting the dry run's own all-green summary" do
         expect(@dry.stdout).to include("3 examples, 0 failures")
       end
 
+      # @intent: { entity: "RSpecFormatter dry run", action: "refuse to deliver", behavior: "a dry run writes no local fallback either, a refusal not being a delivery failure", layer: "integration" }
       it "writes no local fallback either — a refusal is not a delivery failure" do
         expect(@dry.lines).to be_empty
       end
@@ -1536,6 +1631,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       end
 
       # Control again: this suite, this harness, this sink, without the flag.
+      # @intent: { entity: "RSpecFormatter dry run", action: "keep the sink empty", behavior: "the same suite without the flag appends its line to the sink as usual", layer: "integration" }
       it "appends a line for the same suite without the flag" do
         expect(@normal.lines.length).to eq(1)
       end
@@ -1544,6 +1640,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # line to log/test_results.jsonl (absent, or byte-identical to before)".
       # A .jsonl of zero-duration all-green runs is the same
       # corruption as a delivered one, deferred until something replays it.
+      # @intent: { entity: "RSpecFormatter dry run", action: "keep the sink empty", behavior: "the dry run appends nothing to the local sink", layer: "integration" }
       it "appends nothing to log/test_results.jsonl" do
         expect(@dry.lines).to be_empty
       end
@@ -1551,6 +1648,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # ...and the child really did run, with the flag really taking effect —
       # so "nothing was written" is a refusal rather than a process that never
       # started.
+      # @intent: { entity: "RSpecFormatter dry run", action: "keep the sink empty", behavior: "the dry run still runs, reporting the all-green summary", layer: "integration" }
       it "still ran the suite, reporting the dry run's own all-green summary" do
         expect(@dry.stdout).to include("1 example, 0 failures")
       end
@@ -1559,6 +1657,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # separate example: `lines` is `[]` for an absent sink *and* for an empty
       # one, so only `sink_exists` can distinguish "never appended" from
       # "appended nothing". `#append` is never reached at all.
+      # @intent: { entity: "RSpecFormatter dry run", action: "keep the sink empty", behavior: "the dry run does not even create the sink file", layer: "integration" }
       it "does not even create the sink" do
         expect(@dry.sink_exists).to be(false)
         expect(@normal.sink_exists).to be(true)
@@ -1574,15 +1673,18 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         @dry = run_rspec(FormatterRunHelpers::MIXED_SUITE, dry_run: true)
       end
 
+      # @intent: { entity: "RSpecFormatter dry run refusal contract", action: "keep the exit status", behavior: "the dry-run refusal leaves the dry run own exit status alone", layer: "integration" }
       it "leaves the dry run's own exit status alone" do
         expect(@dry.exit_status).to eq(0)
       end
 
+      # @intent: { entity: "RSpecFormatter dry run refusal contract", action: "say it once", behavior: "the refusal is said once on stderr rather than leaving the user to wonder", layer: "integration" }
       it "says so once on stderr, rather than leaving the user to wonder" do
         expect(@dry.stderr.scan(/SpecGuard:/).length).to eq(1)
         expect(@dry.stderr).to include("dry run")
       end
 
+      # @intent: { entity: "RSpecFormatter dry run refusal contract", action: "leave stdout alone", behavior: "stdout stays the human formatter own through the refusal", layer: "integration" }
       it "leaves stdout to the human formatter" do
         expect(@dry.stdout).not_to include("SpecGuard:")
       end
@@ -1604,6 +1706,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
         @normal = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE)
       end
 
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "name the numbers", behavior: "the report names the denominator, the numerator and the gap between them", layer: "integration" }
       it "names the denominator, the numerator and the gap" do
         expect(@dry.stderr).to include("6 examples, 3 annotated, 3 unannotated (50% annotated)")
       end
@@ -1613,6 +1716,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # exactly not the three that are annotated. A report that listed the
       # malformed ones as annotated, or skipped them, would be the same defect
       # the payload's `status` field exists to prevent.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "list the gap", behavior: "precisely the unannotated examples are listed, each by its definition site", layer: "integration" }
       it "lists precisely the unannotated examples, by definition site" do
         worklist = @dry.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
 
@@ -1628,6 +1732,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # local list and the server's `latest_run.unannotated_examples` have the
       # same shape — and the nested example proves the description is the
       # example's own and not the file's.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "carry the names", behavior: "each example full description travels alongside its site", layer: "integration" }
       it "carries each example's full description alongside its site" do
         expect(@dry.stderr).to include("user has no annotation")
       end
@@ -1635,6 +1740,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # A fact about the working tree, not about the last delivered run. Those
       # legitimately differ the moment a spec is edited, which is the entire
       # point, so the line must not read as the dashboard's headline.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "scope the claim", behavior: "the report says which tree it measured and does not claim to speak for the repository", layer: "integration" }
       it "says which tree it measured, and does not claim to speak for the repository" do
         expect(@dry.stderr).to include("this working tree")
         expect(@dry.stderr).not_to include("your repository")
@@ -1644,6 +1750,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # recomputed here from a payload captured by a *normal* run of the same
       # fixture, using the platform's own predicate (`annotated_specs` rejects
       # "unannotated"). Two counters over one source-derived field.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "agree with the payload", behavior: "the report counts agree with the payload a normal run of the same tree produces", layer: "integration" }
       it "agrees with the payload a normal run of the same tree produces" do
         specs = JSON.parse(@normal.lines.fetch(0)).fetch("specs")
         unannotated = specs.reject { |spec| spec["status"] == "annotated" }
@@ -1657,12 +1764,14 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       # SPGD-154 criteria 1 and 2, re-asserted against the suite that now has
       # something to say. A third destination was added; neither sink moved.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "publish nothing", behavior: "the dry-run report publishes nothing, no POST, no sink line, not even a file", layer: "integration" }
       it "still publishes nothing — no POST, no line, not even a sink" do
         expect(@dry.lines).to be_empty
         expect(@dry.sink_exists).to be(false)
         expect(@normal.sink_exists).to be(true)
       end
 
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "stay off the outputs", behavior: "the report leaves the exit status and stdout alone", layer: "integration" }
       it "still leaves the exit status and stdout alone" do
         expect(@dry.exit_status).to eq(0)
         expect(@dry.stdout).to include("6 examples, 0 failures")
@@ -1670,6 +1779,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       end
 
       # One `SpecGuard:` voice per run, however many lines the report needs.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "stay under one header", behavior: "the whole report stays under a single SpecGuard-prefixed header", layer: "integration" }
       it "keeps the whole report under a single SpecGuard-prefixed header" do
         expect(@dry.stderr.scan(/SpecGuard:/).length).to eq(1)
         expect(@dry.stderr.lines.length).to eq(5)
@@ -1677,6 +1787,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
 
       # The control that stops all of the above being vacuously green: without
       # the flag, this same suite says none of it and writes its line as usual.
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "stay silent on normal runs", behavior: "none of the report appears on a normal run, which delivers as before", layer: "integration" }
       it "says none of this on a normal run, which delivers as before" do
         expect(@normal.stderr).to be_empty
         expect(@normal.lines.length).to eq(1)
@@ -1691,6 +1802,7 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       # implementation that emitted the list as captured fails here. (Under the
       # file's default defined ordering the two orders coincide, which is why
       # none of the examples above can make this claim.)
+      # @intent: { entity: "RSpecFormatter local coverage report", action: "order the worklist", behavior: "the unannotated worklist is ordered by site even when RSpec ran the examples shuffled", layer: "integration" }
       it "orders the worklist by site even when RSpec ran the examples shuffled" do
         shuffled = run_rspec(FormatterRunHelpers::ANNOTATED_SUITE, dry_run: true, order: :random)
         worklist = shuffled.stderr.lines.grep(/sample_spec\.rb:/).map(&:strip)
@@ -1713,16 +1825,19 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
       @red = run_rspec(FormatterRunHelpers::MIXED_SUITE, sabotage: true)
     end
 
+    # @intent: { entity: "RSpecFormatter broken scanner", action: "never redden a green suite", behavior: "a scanner that blows up still exits zero for a green suite", layer: "integration" }
     it "still exits 0 for a green suite" do
       expect(@green.stdout).to include("1 example, 0 failures")
       expect(@green.exit_status).to eq(0)
     end
 
+    # @intent: { entity: "RSpecFormatter broken scanner", action: "never touch a red one", behavior: "the broken scanner still exits one for a failing suite", layer: "integration" }
     it "still exits 1 for a failing suite" do
       expect(@red.stdout).to include("3 examples, 1 failure, 1 pending")
       expect(@red.exit_status).to eq(1)
     end
 
+    # @intent: { entity: "RSpecFormatter broken scanner", action: "survive the blow-up", behavior: "the blow-up is survived with the run still recorded", layer: "integration" }
     it "warns once on stderr, and leaves stdout to the human formatter" do
       expect(@red.stderr.scan(/SpecGuard: test telemetry failed/).length).to eq(1)
       expect(@red.stdout).not_to include("SpecGuard:")
@@ -1731,11 +1846,13 @@ RSpec.describe "SpecGuard::RSpecFormatter in a real rspec run" do
     # The distinction the inner rescue exists for. A failure this deep must cost
     # the run its *annotations*, not its examples — a payload of zero specs
     # would be indistinguishable from a suite nobody ran.
+    # @intent: { entity: "RSpecFormatter broken scanner", action: "survive the blow-up", behavior: "the affected examples are reported unannotated rather than lost", layer: "integration" }
     it "still records every example, as unannotated" do
       expect(@red.payload["specs"].length).to eq(3)
       expect(@red.payload["specs"].map { |spec| spec["status"] }).to all(eq("unannotated"))
     end
 
+    # @intent: { entity: "RSpecFormatter broken scanner", action: "stay quiet", behavior: "the scanner failure says nothing that would pollute the run output", layer: "integration" }
     it "still produces a payload the platform would accept" do
       violations = @red.payload["specs"].each_with_index.flat_map do |spec, index|
         IngestContract.errors_for(spec, index)

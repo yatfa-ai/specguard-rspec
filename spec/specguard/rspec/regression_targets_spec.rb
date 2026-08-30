@@ -32,6 +32,7 @@ RSpec.describe "permissive-syntax regression targets" do
   # order_spec.rb:32 — the `\'` must be unescaped into a plain `'` rather than
   # ending the string early. `\'` is meaningless in JSON, so re-emitting it
   # verbatim would produce an invalid escape.
+  # @intent: { entity: "PayloadNormalizer", action: "unescape quoted apostrophes", behavior: "the escaped apostrophe in the order fixture line thirty-two unescapes to a plain one instead of ending the string early", layer: "unit" }
   it "unescapes \\' inside a single-quoted value (:32)" do
     line = %q{  # @intent: { entity: 'Order', action: 'checkout', behavior: 'reports the card\'s expiry date in the decline notice', layer: 'request' }}
 
@@ -40,6 +41,7 @@ RSpec.describe "permissive-syntax regression targets" do
 
   # order_spec.rb:41 — PROTOCOL.md §1 allows same-line placement. Neither the
   # `}` nor the `'` inside the quoted value may terminate the payload early.
+  # @intent: { entity: "AnnotationScanner", action: "extract same-line annotations", behavior: "the annotation placed after code on order fixture line forty-one extracts whole, with neither the brace nor apostrophe terminating it", layer: "unit" }
   it "extracts an annotation placed after code on the same line (:41)" do
     line = %q{  it "surfaces the decline reason" do # @intent: { entity: "Order", action: "checkout", behavior: "renders the gateway's decline reason in the {error} slot", layer: "request" }}
 
@@ -52,6 +54,7 @@ RSpec.describe "permissive-syntax regression targets" do
   #
   # NOTE the `%q(...)` delimiter: this line cannot be written with `%q{...}`
   # precisely because the brace it is testing is unbalanced.
+  # @intent: { entity: "AnnotationScanner", action: "ignore unbalanced braces in values", behavior: "the unbalanced brace inside the quoted value on line forty-nine is ignored by the string-aware scan that plain brace counting would get wrong", layer: "unit" }
   it "ignores an unbalanced { inside a quoted value (:49)" do
     line = %q(  # @intent: { entity: "Order", action: "checkout", behavior: "returns 400 when the JSON body is truncated after the opening {", layer: "request" })
 
@@ -60,6 +63,7 @@ RSpec.describe "permissive-syntax regression targets" do
 
   # order_spec.rb:57 — capture stops at the *matching* brace, so trailing prose
   # (braces and all) is not swallowed into the payload.
+  # @intent: { entity: "AnnotationScanner", action: "stop at the matching brace", behavior: "capture ends at the brace that matches the opener, leaving trailing prose with its own braces out of the payload", layer: "unit" }
   it "stops at the matching brace and ignores trailing prose containing braces (:57)" do
     line = %q{  # @intent: { entity: "Order", action: "refund", behavior: "restores stock levels when a paid order is refunded", layer: "unit" } — see ADR-14 {§3} for why this is unit, not request.}
 
@@ -75,14 +79,17 @@ RSpec.describe "permissive-syntax regression targets" do
   # word in value position must survive normalization unquoted so it still
   # fails — quoting it here would silently turn an invalid annotation valid.
   describe "the bare-word rule" do
+    # @intent: { entity: "PayloadNormalizer", action: "apply the bare-word rule", behavior: "a bare word in key position gains quotes during normalization", layer: "unit" }
     it "quotes a bare word in key position" do
       expect(SpecGuard::RSpec::PayloadNormalizer.normalize('{entity: "Order"}')).to eq('{"entity": "Order"}')
     end
 
+    # @intent: { entity: "PayloadNormalizer", action: "apply the bare-word rule", behavior: "a bare word in value position stays unquoted, since the protocol relaxes keys and quote style but never value quoting", layer: "unit" }
     it "leaves a bare word in value position unquoted" do
       expect(SpecGuard::RSpec::PayloadNormalizer.normalize("{layer: request}")).to eq('{"layer": request}')
     end
 
+    # @intent: { entity: "PayloadNormalizer", action: "apply the bare-word rule", behavior: "an unquoted value therefore surfaces as a parse finding rather than being silently accepted as valid", layer: "unit" }
     it "so an unquoted value is reported as a parse problem, not accepted" do
       findings = SpecGuard::RSpec::Scanner.scan_text("# @intent: {layer: request}", file: "example_spec.rb")
 
@@ -94,6 +101,7 @@ RSpec.describe "permissive-syntax regression targets" do
 
   # The payload is text from a comment in someone's spec file — i.e. it is
   # attacker-controllable. It must only ever reach JSON.parse, never eval.
+  # @intent: { entity: "Scanner", action: "never evaluate payloads", behavior: "interpolation syntax planted in a payload reaches only the JSON parser and comes back as literal text, never as executed code", layer: "unit" }
   it "never evaluates the payload" do
     line = %q{# @intent: { entity: "#{raise 'code executed'}", action: 'x', behavior: 'y', layer: 'unit' }}
 
@@ -159,11 +167,13 @@ RSpec.describe "the default output path, byte for byte" do
       "— it reports enforcing the schema this gem vendors, loaded from <embedded schema>\n"
   end
 
+  # @intent: { entity: "specguard-lint default output", action: "pin the working directory", behavior: "the byte-locked runs execute from the gem root where their relative fixture paths resolve", layer: "unit" }
   it "is running where the relative fixture paths resolve" do
     expect(%w[spec/fixtures/order_spec.rb spec/fixtures/broken_intent_spec.rb])
       .to all(satisfy { |path| File.file?(path) })
   end
 
+  # @intent: { entity: "specguard-lint default output", action: "pin the clean report", behavior: "a clean file prints exactly the ratified stdout bytes, provenance line and summary included", layer: "unit" }
   it "prints exactly this for a clean file" do
     stdout, stderr, code = run("spec/fixtures/order_spec.rb")
 
@@ -175,6 +185,7 @@ RSpec.describe "the default output path, byte for byte" do
     expect(code).to eq(0)
   end
 
+  # @intent: { entity: "specguard-lint default output", action: "pin the malformed report", behavior: "the malformed corpus prints exactly the ratified FAIL blocks and summary bytes", layer: "unit" }
   it "prints exactly this for the malformed corpus" do
     stdout, stderr, code = run("spec/fixtures/order_spec.rb", "spec/fixtures/broken_intent_spec.rb")
 
@@ -196,6 +207,7 @@ RSpec.describe "the default output path, byte for byte" do
     expect(code).to eq(1)
   end
 
+  # @intent: { entity: "specguard-lint default output", action: "pin the unread-file report", behavior: "a file that cannot be read prints exactly the ratified line-less FAIL and summary bytes", layer: "unit" }
   it "prints exactly this for a file it could not read" do
     stdout, stderr, code = run("spec/fixtures/gone_spec.rb")
 
@@ -313,6 +325,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     SpecGuard::RSpec::IngestCLI.new(stdout: stdout, stderr: stderr, env: env)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the mixed delivery report", behavior: "a delivery hitting every status at once prints exactly the ratified per-run verdict bytes", layer: "unit" }
   it "prints exactly this for a delivery of every status at once" do
     stdout, stderr, code = run([sink], responses: [accepted, accepted, refusal, boom])
 
@@ -329,6 +342,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     expect(code).to eq(2)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the listing report", behavior: "a listing prints exactly the ratified table bytes with no endpoint needed", layer: "unit" }
   it "prints exactly this for a listing" do
     stdout, stderr, code = run(["--list", sink])
 
@@ -344,6 +358,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     expect(code).to eq(0)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the from-line report", behavior: "selecting delivery from a line prints exactly the ratified warning bytes that name the skipped count", layer: "unit" }
   it "prints exactly this for --from-line" do
     stdout, stderr, code = run(["--from-line", "3", sink], responses: [accepted, refusal, boom])
 
@@ -358,6 +373,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     expect(code).to eq(2)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the lines report", behavior: "selecting delivery by line range prints exactly the ratified warning bytes", layer: "unit" }
   it "prints exactly this for --lines" do
     stdout, stderr, code = run(["--lines", "1,3", sink], responses: [accepted, accepted])
 
@@ -371,6 +387,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     expect(code).to eq(0)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the selector report", behavior: "a list run with a line selector prints exactly the ratified warning bytes naming the lines not selected", layer: "unit" }
   it "prints exactly this for --list with a selector" do
     stdout, stderr, code = run(["--list", "--lines", "3,5", sink])
 
@@ -392,6 +409,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
   # back rather than counted as blank. That is the existing branch order, pinned
   # here because both clauses are built from the same `Source` the document now
   # also reads.
+  # @intent: { entity: "specguard-ingest default output", action: "pin the empty-selection warning", behavior: "a selector naming nothing the file holds warns on stderr with the exact not-selected count while stdout stays empty", layer: "unit" }
   it "prints exactly this when a selector named nothing the file has" do
     stdout, stderr, code = run(["--list", "--lines", "99", sink])
 
@@ -401,6 +419,7 @@ RSpec.describe "the specguard-ingest default output path, byte for byte" do
     expect(code).to eq(0)
   end
 
+  # @intent: { entity: "specguard-ingest default output", action: "pin the empty-file warning", behavior: "delivering an empty sink file warns on stderr with the exact bytes and exits zero", layer: "unit" }
   it "prints exactly this for a delivery of an empty file" do
     path = File.join(@dir, "empty.jsonl")
     File.write(path, "")

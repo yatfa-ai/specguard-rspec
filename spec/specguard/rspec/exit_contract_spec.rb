@@ -28,6 +28,7 @@ RSpec.describe "the specguard-lint exit contract" do
   before { allow(SpecGuard::RSpec::ValidatorBackend::Installer).to receive(:obtain).and_return(ValidatorStub.install_stubbable) }
 
   describe "0 — clean" do
+    # @intent: { entity: "specguard-lint exit contract", action: "exit clean", behavior: "a file whose annotations are all valid exits zero", layer: "unit" }
     it "exits 0 on a file whose annotations are all valid" do
       expect(cli.run([fixture_path("order_spec.rb")])).to eq(0)
     end
@@ -35,6 +36,7 @@ RSpec.describe "the specguard-lint exit contract" do
     # "Lint, don't require": a file with no @intent: at all is not an error.
     # This is the one thing the contract will NOT let the exit code express,
     # which is why the empty selection is loud on stderr instead.
+    # @intent: { entity: "specguard-lint exit contract", action: "exit clean", behavior: "a spec file carrying no annotations at all also exits zero, since linting does not require annotating", layer: "unit" }
     it "exits 0 on a spec file carrying no annotations at all" do
       Dir.mktmpdir do |dir|
         File.write(File.join(dir, "bare_spec.rb"), "RSpec.describe(Order) { it('works') {} }\n")
@@ -43,6 +45,7 @@ RSpec.describe "the specguard-lint exit contract" do
       end
     end
 
+    # @intent: { entity: "specguard-lint exit contract", action: "exit clean", behavior: "an empty selection exits zero while stderr says zero spec files were selected, so vacuous green stays visible", layer: "unit" }
     it "exits 0 when nothing at all was selected, but says so on stderr" do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { expect(cli.run([])).to eq(0) }
@@ -59,6 +62,7 @@ RSpec.describe "the specguard-lint exit contract" do
     # offline replay of recordings, and a temp file would be answered by no
     # recording at all. The fixture's line-15 annotation is the truncated
     # behavior this criterion is about.
+    # @intent: { entity: "specguard-lint exit contract", action: "report a malformed annotation", behavior: "a truncated behavior exits one and names the file, line and the schema violation", layer: "unit" }
     it "exits 1 on a truncated behavior, naming file, line and the violation" do
       path = fixture_path("broken_intent_spec.rb")
 
@@ -68,6 +72,7 @@ RSpec.describe "the specguard-lint exit contract" do
     end
 
     # Line 34 of the same recorded corpus is the extraction failure shape.
+    # @intent: { entity: "specguard-lint exit contract", action: "report a malformed annotation", behavior: "an annotation that could not be extracted at all exits one and names the no-payload line", layer: "unit" }
     it "exits 1 on an annotation that could not be extracted at all" do
       expect(cli.run([fixture_path("broken_intent_spec.rb")])).to eq(1)
       expect(out).to include(":34 — no '{...}' object literal")
@@ -76,6 +81,7 @@ RSpec.describe "the specguard-lint exit contract" do
     # Criterion 8. Stopping at the first would turn this one file into five CI
     # round-trips; the reference reports all five, and the report-all
     # divergence from SPGD-12 §1 step 4's "first" wording is ratified.
+    # @intent: { entity: "specguard-lint exit contract", action: "report a malformed annotation", behavior: "all five failing annotations in the corpus are reported in one run, not one per CI round-trip", layer: "unit" }
     it "reports every failing annotation, not the first" do
       expect(cli.run([fixture_path("broken_intent_spec.rb")])).to eq(1)
 
@@ -83,6 +89,7 @@ RSpec.describe "the specguard-lint exit contract" do
       expect(out.scan(/^FAIL  \S+:(\d+)/).flatten).to eq(%w[9 15 21 28 34])
     end
 
+    # @intent: { entity: "specguard-lint exit contract", action: "report a malformed annotation", behavior: "every schema reason for a single annotation is listed, not just the first violation", layer: "unit" }
     it "reports every reason for a single annotation, not the first" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -93,6 +100,7 @@ RSpec.describe "the specguard-lint exit contract" do
       expect(reasons_per_block).to eq([2, 1, 2, 0, 0])
     end
 
+    # @intent: { entity: "specguard-lint exit contract", action: "report a malformed annotation", behavior: "the summary states checked and malformed totals so a run that checked nothing cannot read as clean", layer: "unit" }
     it "states the totals so a run that checked nothing cannot read as a clean one" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -102,11 +110,13 @@ RSpec.describe "the specguard-lint exit contract" do
 
   describe "2 — the linter could not do its job" do
     # Criterion 3. THE case: uncaught, OptionParser::InvalidOption is a 1.
+    # @intent: { entity: "specguard-lint exit contract", action: "exit misuse", behavior: "an unknown flag exits two rather than accusing an annotation", layer: "unit" }
     it "exits 2 on an unknown flag rather than accusing an annotation" do
       expect(cli.run(["--bogus"])).to eq(2)
       expect(err).to include("invalid option: --bogus")
     end
 
+    # @intent: { entity: "specguard-lint exit contract", action: "exit misuse", behavior: "a typo of a real flag exits two like any unknown flag", layer: "unit" }
     it "exits 2 on a typo of a real flag" do
       expect(cli.run(["--chnaged"])).to eq(2)
     end
@@ -115,6 +125,7 @@ RSpec.describe "the specguard-lint exit contract" do
     # the exit code alone does not prove the flag was recognised AS misuse.
     # A user who mistypes a flag must be told they mistyped a flag, not that
     # the linter has a bug.
+    # @intent: { entity: "specguard-lint exit contract", action: "exit misuse", behavior: "a bad flag is reported as usage misuse on stderr, not as an internal error", layer: "unit" }
     it "reports a bad flag as misuse rather than as an internal error" do
       cli.run(["--bogus"])
 
@@ -123,6 +134,7 @@ RSpec.describe "the specguard-lint exit contract" do
     end
 
     # Criterion 4.
+    # @intent: { entity: "specguard-lint exit contract", action: "exit misuse", behavior: "changed mode outside a git repository exits two with the reason on stderr", layer: "unit" }
     it "exits 2 when --changed is used outside a git repository" do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { expect(cli.run(["--changed"])).to eq(2) }
@@ -131,6 +143,7 @@ RSpec.describe "the specguard-lint exit contract" do
       expect(err).to include("--changed requires a git repository")
     end
 
+    # @intent: { entity: "specguard-lint exit contract", action: "exit misuse", behavior: "combining changed mode with explicit files exits two", layer: "unit" }
     it "exits 2 when --changed is combined with explicit files" do
       expect(cli.run(["--changed", fixture_path("order_spec.rb")])).to eq(2)
       expect(out).not_to include("checked")
@@ -150,10 +163,12 @@ RSpec.describe "the specguard-lint exit contract" do
                                          "could not obtain validate-intent: no network")
       end
 
+      # @intent: { entity: "specguard-lint exit contract", action: "exit misuse on a missing validator", behavior: "a validator binary that cannot be obtained exits two rather than one", layer: "unit" }
       it "exits 2 when no binary can be obtained" do
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
 
+      # @intent: { entity: "specguard-lint exit contract", action: "exit misuse on a missing validator", behavior: "the unobtainable validator is named on stderr with the error prefix", layer: "unit" }
       it "says so on stderr" do
         cli.run([fixture_path("order_spec.rb")])
 
@@ -164,6 +179,7 @@ RSpec.describe "the specguard-lint exit contract" do
       # scans first and only then discovers it has no validator could report
       # "0 malformed" over a file full of violations — this project's signature
       # vacuous-green defect, arrived at from the other side.
+      # @intent: { entity: "specguard-lint exit contract", action: "exit misuse on a missing validator", behavior: "the validator failure happens before any checking, so no vacuous clean run can be reported over a violating file", layer: "unit" }
       it "fails before it validates anything, rather than reporting a vacuous clean run" do
         cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -174,12 +190,14 @@ RSpec.describe "the specguard-lint exit contract" do
 
     # Criterion 6. The backstop: whatever breaks, it is never a 1.
     describe "an unexpected internal exception" do
+      # @intent: { entity: "specguard-lint exit contract", action: "contain internal errors", behavior: "an unexpected exception maps to exit two rather than letting the Ruby default one stand", layer: "unit" }
       it "exits 2 rather than letting Ruby's default 1 stand" do
         allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise("boom")
 
         expect(cli.run([fixture_path("order_spec.rb")])).to eq(2)
       end
 
+      # @intent: { entity: "specguard-lint exit contract", action: "contain internal errors", behavior: "an internal exception is labelled an internal error on stderr and never printed as a FAIL block", layer: "unit" }
       it "reports it as an internal error, not as a malformed annotation" do
         allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise("boom")
         cli.run([fixture_path("order_spec.rb")])
@@ -188,6 +206,7 @@ RSpec.describe "the specguard-lint exit contract" do
         expect(out).not_to include("FAIL")
       end
 
+      # @intent: { entity: "specguard-lint exit contract", action: "contain internal errors", behavior: "a NoMethodError raised from deep inside the pipeline is caught and mapped to two", layer: "unit" }
       it "catches a NoMethodError from deep inside the pipeline too" do
         allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(NoMethodError, "undefined method")
 
@@ -196,6 +215,7 @@ RSpec.describe "the specguard-lint exit contract" do
 
       # ScriptError is not a StandardError, so a bare `rescue` misses it and
       # Ruby exits 1 again.
+      # @intent: { entity: "specguard-lint exit contract", action: "contain internal errors", behavior: "a ScriptError, which a bare rescue misses, is still caught and mapped to two", layer: "unit" }
       it "catches a ScriptError, which a bare rescue would miss" do
         allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(NotImplementedError, "nope")
 
@@ -204,6 +224,7 @@ RSpec.describe "the specguard-lint exit contract" do
 
       # Ctrl-C must stay Ctrl-C. Mapping a signal onto "the linter is broken"
       # would be its own small lie, and would make the tool un-interruptible.
+      # @intent: { entity: "specguard-lint exit contract", action: "contain internal errors", behavior: "an interrupt is re-raised rather than swallowed, keeping ctrl-c working", layer: "unit" }
       it "does NOT swallow an interrupt" do
         allow(SpecGuard::RSpec::ValidatorBackend).to receive(:resolve).and_raise(Interrupt)
 
@@ -242,6 +263,7 @@ RSpec.describe "the specguard-lint exit contract" do
       "--changed combined with explicit files" => [2, ["--changed", ORDER], false],
       "--changed outside a git repository" => [2, ["--changed"], true]
     }.each do |name, (expected, argv, in_tmpdir)|
+      # @intent: { entity: "specguard-lint exit contract", action: "stay renderer-indifferent", behavior: "each exit-code class comes out identically with and without the json renderer flag", layer: "unit" }
       it "exits #{expected} either way on #{name}" do
         plain = code_for(argv, chdir: in_tmpdir)
         json = code_for(["--json", *argv], chdir: in_tmpdir)
@@ -253,6 +275,7 @@ RSpec.describe "the specguard-lint exit contract" do
 
     # `--require-validator` is the one exit-2 path that is about the run rather
     # than the arguments, and it is reached before any renderer is chosen.
+    # @intent: { entity: "specguard-lint exit contract", action: "stay renderer-indifferent", behavior: "an unmet validator requirement exits two the same way with and without the json flag", layer: "unit" }
     it "exits 2 on an unmet --require-validator with and without the flag" do
       plain = SpecGuard::RSpec::CLI.new(stdout: StringIO.new, stderr: StringIO.new, env: {})
                                    .run(["--require-validator", fixture_path("order_spec.rb")])
@@ -276,6 +299,7 @@ RSpec.describe "the specguard-lint exit contract" do
       ["--"],
       ["-x"]
     ].each do |argv|
+      # @intent: { entity: "specguard-lint exit contract", action: "never raise", behavior: "every argv shape with a plausible path to an exception returns a code between zero and two instead of raising", layer: "unit" }
       it "returns 0, 1 or 2 for #{argv.inspect}" do
         code = nil
         Dir.mktmpdir { |dir| Dir.chdir(dir) { expect { code = cli.run(argv) }.not_to raise_error } }
@@ -294,18 +318,22 @@ RSpec.describe "the specguard-lint exit contract" do
       status.exitstatus
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "exit clean end to end", behavior: "running the real bin script on a clean file hands the shell exit zero", layer: "integration" }
     it "exits 0 on a clean file" do
       expect(lint(fixture_path("order_spec.rb"))).to eq(0)
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "report malformed end to end", behavior: "running the real bin script on malformed annotations hands the shell exit one", layer: "integration" }
     it "exits 1 on malformed annotations" do
       expect(lint(fixture_path("broken_intent_spec.rb"))).to eq(1)
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "exit misuse end to end", behavior: "running the real bin script with an unknown flag hands the shell exit two", layer: "integration" }
     it "exits 2 on an unknown flag" do
       expect(lint("--bogus")).to eq(2)
     end
 
+    # @intent: { entity: "specguard-lint executable", action: "exit misuse end to end", behavior: "the real bin script under changed mode outside a repository hands the shell exit two", layer: "integration" }
     it "exits 2 on --changed outside a git repository" do
       Dir.mktmpdir { |dir| expect(lint("--changed", chdir: dir)).to eq(2) }
     end
@@ -313,6 +341,7 @@ RSpec.describe "the specguard-lint exit contract" do
     # The library returning the same code under --json is necessary but not
     # sufficient for the same reason the rest of this section exists: what CI
     # reads is the process's exit status.
+    # @intent: { entity: "specguard-lint executable", action: "stay renderer-indifferent end to end", behavior: "the real bin script produces exit zero, one and two identically under the json flag, which is what CI reads", layer: "integration" }
     it "exits 0, 1 and 2 identically under --json" do
       expect(lint("--json", fixture_path("order_spec.rb"))).to eq(0)
       expect(lint("--json", fixture_path("broken_intent_spec.rb"))).to eq(1)

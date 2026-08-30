@@ -36,6 +36,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
   describe "honest reporting of what was checked" do
     # "checked 12 files, found no annotations" must never be confusable with
     # "checked 0 files". Reporting the count is what makes them distinguishable.
+    # @intent: { entity: "CLI report", action: "state what was checked", behavior: "the report states how many spec files the run checked", layer: "unit" }
     it "states how many files it checked" do
       cli.run([fixture_path("order_spec.rb")])
 
@@ -46,6 +47,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # checked the same count must not read identically — before the scope
     # clause they were byte-identical, and a silently widened scan (an empty
     # glob expansion) was indistinguishable from "the files you named".
+    # @intent: { entity: "CLI report", action: "state what was checked", behavior: "a recursive selection names the directory that was scanned", layer: "unit" }
     it "names the directory a recursive :all selection scanned" do
       Dir.mktmpdir do |dir|
         FileUtils.cp(fixture_path("order_spec.rb"), dir)
@@ -55,6 +57,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     end
 
     # The regression guard: same file count on both sides, different stdout.
+    # @intent: { entity: "CLI report", action: "state what was checked", behavior: "an all-files run and an explicit run over the same file count are told apart in the report", layer: "unit" }
     it "distinguishes a :all run from a :explicit run over the same file count" do
       Dir.mktmpdir do |dir|
         FileUtils.cp(fixture_path("order_spec.rb"), dir)
@@ -74,6 +77,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI report", action: "warn on an empty selection", behavior: "an empty selection warns loudly on stderr instead of passing silently", layer: "unit" }
     it "warns loudly on stderr when the selection is empty" do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { cli.run([]) }
@@ -82,12 +86,14 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(err).to include("warning", "selected 0 spec files")
     end
 
+    # @intent: { entity: "CLI report", action: "warn on an empty selection", behavior: "the empty-selection warning stays off stdout so a pipe cannot swallow it", layer: "unit" }
     it "does not put the empty-selection warning on stdout, where it could be piped away" do
       Dir.mktmpdir { |dir| Dir.chdir(dir) { cli.run([]) } }
 
       expect(out).not_to include("warning")
     end
 
+    # @intent: { entity: "CLI report", action: "warn on an empty selection", behavior: "a misuse is reported on stderr rather than crashing the process", layer: "unit" }
     it "reports a misuse on stderr rather than crashing" do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { cli.run(["--changed"]) }
@@ -96,6 +102,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(err).to include("--changed requires a git repository")
     end
 
+    # @intent: { entity: "CLI report", action: "summarise the run", behavior: "the summary states how many annotations were checked and how many were malformed", layer: "unit" }
     it "summarises how many annotations it checked and how many failed" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -104,6 +111,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     # An annotation-free run states its zero explicitly. Silence would be
     # indistinguishable from "the linter never ran".
+    # @intent: { entity: "CLI report", action: "summarise the run", behavior: "a checked file carrying no annotations still states the zero rather than omitting the summary", layer: "unit" }
     it "states the zero when a checked file carries no annotations" do
       Dir.mktmpdir do |dir|
         path = File.join(dir, "bare_spec.rb")
@@ -114,6 +122,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).to include("checked 0 @intent annotations, 0 malformed")
     end
 
+    # @intent: { entity: "CLI report", action: "print findings", behavior: "each malformed annotation is printed at its own file and line location", layer: "unit" }
     it "prints each malformed annotation at its own file:line" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -121,6 +130,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(out).to include(":34 — no '{...}' object literal")
     end
 
+    # @intent: { entity: "CLI report", action: "print findings", behavior: "a fully valid run prints nothing per-annotation, leaving the summary as the only stdout line", layer: "unit" }
     it "prints nothing per-annotation when every annotation is valid" do
       cli.run([fixture_path("order_spec.rb")])
 
@@ -146,6 +156,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       path
     end
 
+    # @intent: { entity: "CLI report", action: "flag stacked annotations", behavior: "a stacked comment pair exits one and names the upper line as its own finding at its file and line", layer: "unit" }
     it "exits 1 and names the UPPER line's file:line for a stacked pair" do
       Dir.mktmpdir do |dir|
         path = write_spec(dir, <<~RUBY)
@@ -164,6 +175,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI report", action: "flag stacked annotations", behavior: "the canonical one comment above one example form still exits zero", layer: "unit" }
     it "still exits 0 for the canonical one-comment-above-one-it form" do
       Dir.mktmpdir do |dir|
         path = write_spec(dir, <<~RUBY)
@@ -178,6 +190,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI report", action: "flag stacked annotations", behavior: "adjacent one-liners carrying same-line annotations are not flagged as stacked", layer: "unit" }
     it "does not flag trailing same-line annotations on adjacent one-liners" do
       Dir.mktmpdir do |dir|
         path = write_spec(dir, <<~RUBY)
@@ -190,6 +203,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI report", action: "flag stacked annotations", behavior: "the unreachable kind carries through the json renderer and the run still exits one", layer: "unit" }
     it "carries the unreachable kind through --json and still exits 1" do
       Dir.mktmpdir do |dir|
         path = write_spec(dir, <<~RUBY)
@@ -211,6 +225,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI report", action: "flag stacked annotations", behavior: "a run with no stacked pairs keeps the ordinary zero one two exit contract untouched", layer: "unit" }
     it "leaves the 0/1/2 exit contract untouched for a run with no stacked pairs" do
       # Canonical fixtures, recorded real-binary verdicts: exit 0 file stays 0,
       # broken file stays 1 with its own kinds, nothing gains a finding.
@@ -222,17 +237,20 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
 
   describe "options" do
+    # @intent: { entity: "specguard-lint options", action: "print the version", behavior: "the version flag prints the gem version and exits without linting", layer: "unit" }
     it "prints the version" do
       expect(cli.run(["--version"])).to eq(0)
       expect(out).to include("specguard-ruby #{SpecGuard::VERSION}")
     end
 
+    # @intent: { entity: "specguard-lint options", action: "print usage", behavior: "the help flag prints the usage text and exits cleanly", layer: "unit" }
     it "prints usage" do
       cli.run(["--help"])
 
       expect(out).to include("Usage: specguard-lint")
     end
 
+    # @intent: { entity: "specguard-lint options", action: "print the version", behavior: "a version-only run scans nothing on its way to the exit", layer: "unit" }
     it "does not scan anything when only printing the version" do
       cli.run(["--version"])
 
@@ -243,6 +261,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # always-on (a run that cannot resolve a validator exits 2 outright), so
     # the flag has no meaning left and passing it is a usage error rather
     # than a silently-unasserted no-op.
+    # @intent: { entity: "specguard-lint options", action: "retire removed flags", behavior: "the removed validator flag is refused as the unknown flag it now is", layer: "unit" }
     it "refuses --require-validator as the unknown flag it now is" do
       expect(cli.run(["--require-validator", fixture_path("order_spec.rb")])).to eq(2)
       expect(err).to include("invalid option")
@@ -265,6 +284,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
     def findings_for(*argv) = run_json(*argv).fetch("findings")
 
+    # @intent: { entity: "CLI json renderer", action: "emit one document", behavior: "the json flag produces exactly one JSON document on stdout", layer: "unit" }
     it "emits exactly one JSON document on stdout" do
       run_json(fixture_path("broken_intent_spec.rb"))
 
@@ -275,6 +295,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # The prose renderer's whole output has to LEAVE, not be joined by a
     # document. A consumer piping stdout into a parser gets a syntax error the
     # moment either survives.
+    # @intent: { entity: "CLI json renderer", action: "emit one document", behavior: "none of the human report leaks onto stdout in json mode", layer: "unit" }
     it "puts none of the human report on stdout" do
       run_json(fixture_path("broken_intent_spec.rb"))
 
@@ -286,6 +307,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # #report_selection and a trailing annotation count from #summary_line. The
     # open-test-intent's own linter warns that handling only
     # the trailing one is the trap here, so both are asserted gone.
+    # @intent: { entity: "CLI json renderer", action: "emit one document", behavior: "both checked-count lines are removed in json mode, the leading one included", layer: "unit" }
     it "removes BOTH `checked ...` lines, the leading one as well as the trailing" do
       run_json(fixture_path("order_spec.rb"))
 
@@ -296,12 +318,14 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # the trailing one summary.annotations, computed once by the CLI and handed
     # to whichever renderer runs. A document that quietly dropped them would let
     # "checked nothing" read as "all clean" — in structured form.
+    # @intent: { entity: "CLI json renderer", action: "emit one document", behavior: "the file and annotation counts move into the document summary rather than being dropped", layer: "unit" }
     it "carries both counts into the document instead of dropping them" do
       report = run_json(fixture_path("order_spec.rb"), fixture_path("broken_intent_spec.rb"))
 
       expect(report["summary"]).to eq("files" => 2, "annotations" => 12, "failed" => 5)
     end
 
+    # @intent: { entity: "CLI json renderer", action: "declare the protocol", behavior: "the document names the protocol it validated against and the mode the port calls this", layer: "unit" }
     it "names the protocol it validated against, and the mode the port calls this" do
       report = run_json(fixture_path("order_spec.rb"))
 
@@ -310,6 +334,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     end
 
     # The document must not be able to name a schema the gem does not carry.
+    # @intent: { entity: "CLI json renderer", action: "declare the protocol", behavior: "the document declares the schema revision the gem actually vendors", layer: "unit" }
     it "declares the schema it actually vendors" do
       expect(SpecGuard::RSpec::JSONReporter::SCHEMA_ID)
         .to eq(File.basename(SpecGuard::RSpec::SCHEMA_PATH))
@@ -330,6 +355,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
           [File.join(dir, "gone_spec.rb")]
       end
 
+      # @intent: { entity: "CLI json renderer", action: "preserve result fields", behavior: "a finding of each of the four kinds carries its kind through the document", layer: "unit" }
       it "sets `kind` on a finding of each of the four kinds" do
         findings = findings_for(fixture_path("broken_intent_spec.rb"), File.join(Dir.mktmpdir, "gone_spec.rb"))
 
@@ -346,6 +372,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # it (Linter::Result#location); the document has to drop it too, or every
       # CI annotation and editor quickfix built on this points at a line that
       # does not exist.
+      # @intent: { entity: "CLI json renderer", action: "preserve result fields", behavior: "a read failure is given a null line rather than the zero sentinel", layer: "unit" }
       it "gives a read failure a null line rather than the 0 sentinel" do
         Dir.mktmpdir do |dir|
           finding = findings_for(File.join(dir, "gone_spec.rb")).first
@@ -355,12 +382,14 @@ RSpec.describe SpecGuard::RSpec::CLI do
         end
       end
 
+      # @intent: { entity: "CLI json renderer", action: "preserve result fields", behavior: "findings that have a line number keep it through the document", layer: "unit" }
       it "keeps the line number on findings that have one" do
         finding = findings_for(fixture_path("broken_intent_spec.rb")).first
 
         expect(finding["line"]).to eq(9)
       end
 
+      # @intent: { entity: "CLI json renderer", action: "preserve result fields", behavior: "the file path is echoed back exactly as it was given on the command line", layer: "unit" }
       it "echoes the file path back exactly as it was given" do
         Dir.mktmpdir do |dir|
           path = File.join(dir, "gone_spec.rb")
@@ -369,6 +398,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
         end
       end
 
+      # @intent: { entity: "CLI json renderer", action: "preserve result fields", behavior: "a passing annotation is reported as a finding with no kind set", layer: "unit" }
       it "reports a passing annotation as a finding with no kind" do
         finding = findings_for(fixture_path("order_spec.rb")).first
 
@@ -381,6 +411,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # `reasons` (a list) mutually exclusive, so this is the one place the two
     # collapse — and the collapse must not leak either shape.
     describe "`errors` is always a list of strings" do
+      # @intent: { entity: "CLI json renderer", action: "shape the errors list", behavior: "every schema reason for a finding is carried, not only the first", layer: "unit" }
       it "carries every schema reason, not the first" do
         errors = findings_for(fixture_path("broken_intent_spec.rb")).first["errors"]
 
@@ -390,6 +421,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
                              ])
       end
 
+      # @intent: { entity: "CLI json renderer", action: "shape the errors list", behavior: "a single problem sentence is wrapped in a list instead of emitted as a bare string", layer: "unit" }
       it "wraps a single `problem` sentence in a list rather than emitting a bare string" do
         finding = findings_for(fixture_path("broken_intent_spec.rb")).find { |f| f["line"] == 34 }
 
@@ -397,6 +429,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
         expect(finding["errors"]).to eq(["no '{...}' object literal follows the @intent: token"])
       end
 
+      # @intent: { entity: "CLI json renderer", action: "shape the errors list", behavior: "a passing finding reports an empty errors list, never null", layer: "unit" }
       it "is an empty list, never null, on a passing finding" do
         findings = findings_for(fixture_path("order_spec.rb"))
 
@@ -411,6 +444,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # being true in the direction nobody notices, since a consumer reading the
     # port's document and then this one finds a key missing rather than wrong.
     describe "`intent` — what the payload parsed to" do
+      # @intent: { entity: "CLI json renderer", action: "carry the intent", behavior: "a passing finding carries the parsed annotation in the document", layer: "unit" }
       it "carries the parsed annotation on a passing finding" do
         finding = findings_for(fixture_path("order_spec.rb")).first
 
@@ -421,6 +455,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
       # Same rule as the port's: `ok` says whether it is good, `intent` says
       # what it is, and a schema-rejected annotation still says something.
+      # @intent: { entity: "CLI json renderer", action: "carry the intent", behavior: "a schema-rejected finding carries its parsed payload too, alongside the reasons", layer: "unit" }
       it "carries it on a schema-rejected finding too" do
         finding = findings_for(fixture_path("broken_intent_spec.rb")).first
 
@@ -429,6 +464,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
         expect(finding["intent"]).to be_a(Hash)
       end
 
+      # @intent: { entity: "CLI json renderer", action: "carry the intent", behavior: "a finding with no payload reports null for the intent, the key still present", layer: "unit" }
       it "is null, and present, where there was no payload" do
         finding = findings_for(fixture_path("broken_intent_spec.rb"))[3]
 
@@ -439,6 +475,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # Key ORDER, not just presence: the claim is key-for-key with a document
       # whose order is positional, and Ruby preserves insertion order, so this
       # is assertable rather than merely hoped for.
+      # @intent: { entity: "CLI json renderer", action: "carry the intent", behavior: "intent is the last key of its finding, matching the port field order", layer: "unit" }
       it "is the last key, matching the port's order" do
         finding = findings_for(fixture_path("order_spec.rb")).first
 
@@ -450,11 +487,13 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # `ok` is derived from the exit code the text path would also have
       # produced rather than recomputed from the findings, following
       # report.go:84-89, so the two renderers cannot disagree about the verdict.
+      # @intent: { entity: "CLI json renderer", action: "stay self-consistent", behavior: "the document ok flag mirrors the exit code the same run returns", layer: "unit" }
       it "mirrors the exit code in `ok`" do
         expect(cli.run(["--json", fixture_path("order_spec.rb")])).to eq(0)
         expect(JSON.parse(out)["ok"]).to be(true)
       end
 
+      # @intent: { entity: "CLI json renderer", action: "stay self-consistent", behavior: "a run that exits one reports ok false in the document", layer: "unit" }
       it "reports ok: false for the run that exits 1" do
         expect(cli.run(["--json", fixture_path("broken_intent_spec.rb")])).to eq(1)
         expect(JSON.parse(out)["ok"]).to be(false)
@@ -465,6 +504,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # consumer would find with "ok" => false. It is deliberately NOT the text
       # summary's "M malformed", which excludes unread files and reports them in
       # its own clause.
+      # @intent: { entity: "CLI json renderer", action: "stay self-consistent", behavior: "the summary failed count equals the number of failing findings in the document", layer: "unit" }
       it "makes summary.failed equal the number of failing findings" do
         Dir.mktmpdir do |dir|
           report = run_json(fixture_path("broken_intent_spec.rb"), File.join(dir, "gone_spec.rb"))
@@ -478,6 +518,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # An unreadable file contributed no annotation site, in the document for
       # the same reason it gets its own clause in the text summary: counting it
       # would report annotations that were never read.
+      # @intent: { entity: "CLI json renderer", action: "stay self-consistent", behavior: "an unread file is not counted as an annotation site in the summary", layer: "unit" }
       it "does not count an unread file as an annotation site" do
         Dir.mktmpdir do |dir|
           report = run_json(File.join(dir, "a_spec.rb"), File.join(dir, "b_spec.rb"))
@@ -491,6 +532,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # line and every warning stay on stderr, byte for byte. A document on stdout
     # is a report about the CODE, not a reason to relocate the commentary.
     describe "stderr is untouched" do
+      # @intent: { entity: "CLI json renderer", action: "leave stderr intact", behavior: "json mode still writes exactly one provenance line naming the validator implementation", layer: "unit" }
       it "still writes exactly one provenance line naming the implementation" do
         described_class.new(stdout: stdout, stderr: stderr, env: {}).run(["--json", fixture_path("order_spec.rb")])
 
@@ -499,6 +541,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
         expect(err).to include("(SPECGUARD_VALIDATE_INTENT)")
       end
 
+      # @intent: { entity: "CLI json renderer", action: "leave stderr intact", behavior: "the loud empty-selection warning still reaches stderr in json mode", layer: "unit" }
       it "still warns loudly about an empty selection" do
         Dir.mktmpdir { |dir| Dir.chdir(dir) { cli.run(["--json"]) } }
 
@@ -508,6 +551,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       # A run that selected nothing still owes stdout a document — a consumer
       # parsing stdout must not get an empty string, which is the one thing it
       # cannot tell apart from a crash.
+      # @intent: { entity: "CLI json renderer", action: "leave stderr intact", behavior: "an empty selection still emits a document, so nothing selected stays distinguishable from nothing checked", layer: "unit" }
       it "still emits a document when nothing was selected" do
         Dir.mktmpdir { |dir| Dir.chdir(dir) { cli.run(["--json"]) } }
 
@@ -524,6 +568,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # a schema wrapped round it. The prose goes to stderr, where diagnostics
     # about the linter already live, and the exit code says the rest.
     describe "a run that could not produce verdicts emits no document" do
+      # @intent: { entity: "CLI json renderer", action: "fail without a document", behavior: "misused flags say nothing on stdout, since no run happened to report", layer: "unit" }
       it "says nothing on stdout when the flags are misused" do
         expect(cli.run(["--json", "--changed", fixture_path("order_spec.rb")])).to eq(2)
 
@@ -533,6 +578,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
 
       # SPGD-867: the run-level exit-2 path is now "no validator could be
       # resolved" — the always-on form `--require-validator` used to gate.
+      # @intent: { entity: "CLI json renderer", action: "fail without a document", behavior: "an unresolvable validator is reported as prose on stderr, not as a json document", layer: "unit" }
       it "reports an unresolvable validator as prose on stderr, not as a document" do
         allow(SpecGuard::RSpec::ValidatorBackend::Installer)
           .to receive(:obtain).and_raise(SpecGuard::RSpec::ValidatorError, "could not obtain validate-intent")
@@ -544,6 +590,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "specguard-lint options", action: "document itself", behavior: "the usage text mentions the json flag so the renderer is discoverable", layer: "unit" }
     it "documents itself in the usage text" do
       cli.run(["--help"])
 
@@ -552,6 +599,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
   end
 
   describe "reading files" do
+    # @intent: { entity: "CLI", action: "read files", behavior: "an unreadable file is reported as its own failure without aborting the rest of the run", layer: "unit" }
     it "reports an unreadable file rather than aborting the whole run" do
       Dir.mktmpdir do |dir|
         missing = File.join(dir, "gone_spec.rb")
@@ -570,6 +618,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # open-test-intent, cmd/validate-intent/report.go: "`line` is null where a
     # finding is not line-scoped"), and this is the one output shape the suite
     # did not pin to the byte, which is how `:0` shipped.
+    # @intent: { entity: "CLI", action: "read files", behavior: "an unreadable file is named without a line number, since it has none", layer: "unit" }
     it "names the file WITHOUT a line number, which it does not have" do
       Dir.mktmpdir do |dir|
         missing = File.join(dir, "gone_spec.rb")
@@ -580,6 +629,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI", action: "read files", behavior: "findings that do have a line keep it beside the file name", layer: "unit" }
     it "keeps the line number for findings that DO have one" do
       cli.run([fixture_path("broken_intent_spec.rb")])
 
@@ -591,6 +641,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # KIND_READ — the validator's own name for it — so the decision to
     # nonetheless fail the run (reference parity: `FAIL ... — could not read
     # file`, exit 1) is visible and reversible in one place.
+    # @intent: { entity: "CLI", action: "read files", behavior: "an unreadable file is classified as a read failure, not as a malformed annotation", layer: "unit" }
     it "classifies it as a read failure, not as a malformed annotation" do
       Dir.mktmpdir do |dir|
         finding = SpecGuard::RSpec::Scanner.scan_file(File.join(dir, "gone_spec.rb")).first
@@ -603,6 +654,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # overstate what was inspected. A file that could not be opened contributed
     # no annotation: counting its Result as one turns "12 files, none of them
     # read" into "checked 12 @intent annotations, 12 malformed".
+    # @intent: { entity: "CLI", action: "read files", behavior: "an unread file is not counted among the annotations the run checked", layer: "unit" }
     it "does not count an unread file as an annotation it checked" do
       Dir.mktmpdir do |dir|
         cli.run([File.join(dir, "a_spec.rb"), File.join(dir, "b_spec.rb")])
@@ -611,6 +663,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       end
     end
 
+    # @intent: { entity: "CLI", action: "read files", behavior: "annotations beside the unread file are still checked and counted in the same run", layer: "unit" }
     it "still counts the annotations it did check alongside the unread file" do
       Dir.mktmpdir do |dir|
         cli.run([fixture_path("broken_intent_spec.rb"), File.join(dir, "gone_spec.rb")])
@@ -622,6 +675,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # Pinned against the RECORDED real-binary report (utf8-divergence.json):
     # the binary classifies a non-UTF-8 file as `read` and the CLI renders it
     # as a read failure rather than letting the bytes raise inside Ruby.
+    # @intent: { entity: "CLI", action: "read files", behavior: "invalid UTF-8 in a file becomes a reported read failure rather than an exception reaching the shell", layer: "unit" }
     it "does not let invalid UTF-8 reach the shell as an exception" do
       path = fixture_path("invalid_utf8_spec.rb")
 
@@ -634,18 +688,21 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # Honouring the files and dropping --changed without a word is the same
     # class of quiet no-op the slice exists to remove: --changed appears to have
     # been applied when it was not.
+    # @intent: { entity: "CLI", action: "refuse conflicting modes", behavior: "combining changed mode with explicit files is refused rather than silently ignoring the flag", layer: "unit" }
     it "refuses the combination rather than silently ignoring --changed" do
       cli.run(["--changed", fixture_path("order_spec.rb")])
 
       expect(err).to include("--changed cannot be combined with explicit files")
     end
 
+    # @intent: { entity: "CLI", action: "refuse conflicting modes", behavior: "the refused combination checks nothing at all", layer: "unit" }
     it "checks nothing when it refuses" do
       cli.run(["--changed", fixture_path("order_spec.rb")])
 
       expect(out).not_to include("checked")
     end
 
+    # @intent: { entity: "CLI", action: "refuse conflicting modes", behavior: "the refusal uses the misuse exit code rather than accusing an annotation", layer: "unit" }
     it "exits 2, the misuse code, rather than accusing an annotation" do
       expect(cli.run(["--changed", fixture_path("order_spec.rb")])).to eq(2)
     end
@@ -681,6 +738,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       FileUtils.remove_entry(dir) if dir
     end
 
+    # @intent: { entity: "CLI", action: "explain an empty changed selection", behavior: "a spec changed elsewhere in the repo is not reported as nothing having matched", layer: "unit" }
     it "does not claim nothing matched when a spec changed elsewhere in the repo" do
       repo_with_nested_spec do |dir|
         Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
@@ -691,6 +749,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
       expect(err).to include("outside")
     end
 
+    # @intent: { entity: "CLI", action: "explain an empty changed selection", behavior: "the warning says how many changed spec files were excluded as outside the directory", layer: "unit" }
     it "says how many changed spec files were excluded for being outside the directory" do
       repo_with_nested_spec do |dir|
         Dir.chdir(File.join(dir, "sub")) { cli.run(["--changed"]) }
@@ -705,6 +764,7 @@ RSpec.describe SpecGuard::RSpec::CLI do
     # so the reader concludes the remaining one was checked. It was not. The
     # unreadable file is the reason the run linted nothing, and it has to
     # appear alongside the other cause, not behind it.
+    # @intent: { entity: "CLI", action: "explain an empty changed selection", behavior: "when both filters emptied the selection the unreadable files are named too, in one ordered shape", layer: "unit" }
     it "names the unreadable files too when both filters emptied the selection" do
       repo_with_nested_spec do |dir|
         # A symlink to a missing target: git tracks it (so it survives

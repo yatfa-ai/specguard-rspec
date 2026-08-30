@@ -22,10 +22,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     let(:env) { {} }
 
     context "with nothing set at all" do
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "with nothing set the commit reports unknown rather than raising", layer: "unit" }
       it "reports an unknown commit rather than raising" do
         expect(configuration.commit_sha).to be_nil
       end
 
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "with nothing set the branch reports unknown rather than raising", layer: "unit" }
       it "reports an unknown branch rather than raising" do
         expect(configuration.branch).to be_nil
       end
@@ -33,6 +35,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # A laptop run has no build to belong to, and that is not a
       # misconfiguration — the platform reads a nil run id as "this run is its
       # own run" and gives it a `TestRun` of its own, exactly as before.
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "with nothing set the run id reports unknown rather than raising", layer: "unit" }
       it "reports an unknown run id rather than raising" do
         expect(configuration.run_id).to be_nil
       end
@@ -40,12 +43,14 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # The one field that cannot be nil: with no path there is no sink, and a
       # run that captured everything and wrote it nowhere is the failure mode
       # this whole slice exists to avoid.
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "the replay queue output path keeps its default with nothing set", layer: "unit" }
       it "still knows where to write" do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
       end
 
       # The keyless branch's sink is its own file, so the replay queue never
       # accumulates a laptop's ordinary local runs.
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "the keyless local sink defaults to a path apart from the replay queue", layer: "unit" }
       it "defaults the local sink apart from the replay queue" do
         expect(configuration.local_output_path).to eq("log/test_results.local.jsonl")
       end
@@ -55,10 +60,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # self-hostable, so there is no address that is right for everybody, and
       # guessing one means a misconfigured project POSTing its test names to
       # whatever answers at that name.
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "with no endpoint and key the configuration speaks to nobody", layer: "unit" }
       it "speaks to nobody until an endpoint and a key are supplied" do
         expect(configuration).to have_attributes(endpoint: nil, api_key: nil)
       end
 
+      # @intent: { entity: "Configuration", action: "seed from an empty environment", behavior: "the delivery timeout keeps its budget rather than inheriting the http default of sixty seconds", layer: "unit" }
       it "still has a timeout budget, so the default is never Net::HTTP's 60s" do
         expect(configuration.timeout).to eq(10)
       end
@@ -67,16 +74,19 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     context "in a GitHub Actions job" do
       let(:env) { { "GITHUB_SHA" => "9f8e7d6", "GITHUB_REF_NAME" => "main", "GITHUB_RUN_ID" => "1234567890" } }
 
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "in a job the commit and branch come from the workflow own variables", layer: "unit" }
       it "takes the commit and branch from the job's own variables" do
         expect(configuration).to have_attributes(commit_sha: "9f8e7d6", branch: "main")
       end
 
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "the run id comes from the run id variable every shard of the job shares", layer: "unit" }
       it "takes the run id from GITHUB_RUN_ID, which every shard of the job shares" do
         expect(configuration.run_id).to eq("1234567890")
       end
 
       # The whole point of the field. Two matrix legs of one workflow run are
       # one run.
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "every shard of one workflow run derives the same run id", layer: "unit" }
       it "gives every shard of one workflow run the same id" do
         shards = Array.new(4) { |index| described_class.new(env: env.merge("TEST_ENV_NUMBER" => index.to_s), git: no_git) }
 
@@ -94,6 +104,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # This is the real behaviour, and it is wanted: a re-run keeps the run id,
       # so a retried shard lands back on the run it belongs to rather than
       # forming a new run holding only the shards that were retried.
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "a re-run of the same workflow keeps the same run id because the attempt is not part of it", layer: "unit" }
       it "keeps the run id across a re-run of the same workflow run, because the attempt is not part of it" do
         attempt_two = described_class.new(env: env.merge("GITHUB_RUN_ATTEMPT" => "2"), git: no_git)
 
@@ -102,6 +113,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       # The other half of that: it is `shard_id`, not the run id, that lets the
       # platform tell a re-delivery from a new slice.
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "each shard keeps a stable shard id across a re-run so a retried shard replaces itself", layer: "unit" }
       it "keeps each shard's own id stable across that re-run, so a retried shard replaces itself" do
         first = described_class.new(env: env.merge("SPECGUARD_SHARD_ID" => "3"), git: no_git)
         retried = described_class.new(
@@ -113,6 +125,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       # A genuinely different run — a nightly, a later push — gets a different
       # id from GitHub, which is the case the run id really does separate.
+      # @intent: { entity: "Configuration", action: "read GitHub Actions", behavior: "a different workflow run derives a different run id", layer: "unit" }
       it "gives a different workflow run a different id" do
         nightly = described_class.new(env: env.merge("GITHUB_RUN_ID" => "1234567891"), git: no_git)
 
@@ -121,6 +134,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     end
 
     describe "the shard identity" do
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "with nothing sharding the suite the shard id stays nil", layer: "unit" }
       it "is nil when nothing shards the suite" do
         expect(described_class.new(env: {}, git: no_git).shard_id).to be_nil
       end
@@ -131,10 +145,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # anonymous while its siblings are named. That shard alone then
       # double-counts on a re-run: a denominator wrong by a fifth of the suite,
       # pointing at nothing.
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "the blank first process of parallel tests reads as shard one rather than absent", layer: "unit" }
       it "reads the blank first process of parallel_tests as shard 1 rather than as absent" do
         expect(described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git).shard_id).to eq("1")
       end
 
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "every parallel tests process number yields its own distinct shard id", layer: "unit" }
       it "gives every parallel_tests process a distinct shard id" do
         shards = ["", "2", "3", "4"].map do |number|
           described_class.new(env: { "TEST_ENV_NUMBER" => number }, git: no_git).shard_id
@@ -146,6 +162,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # `--first-is-1` / PARALLEL_TEST_FIRST_IS_1 make parallel_tests emit a
       # literal "1" for that process. Both configurations have to agree on what
       # shard 1 is called, or turning the flag on would split one shard in two.
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "the first-is-one flag lands on the same shard id the blank default produces", layer: "unit" }
       it "lands --first-is-1 on the same shard id as the blank default" do
         blank = described_class.new(env: { "TEST_ENV_NUMBER" => "" }, git: no_git)
         explicit = described_class.new(env: { "TEST_ENV_NUMBER" => "1" }, git: no_git)
@@ -158,11 +175,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         "CircleCI parallelism:" => "CIRCLE_NODE_INDEX",
         "Buildkite parallelism:" => "BUILDKITE_PARALLEL_JOB"
       }.each do |runner, key|
+        # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "each supported runner takes its shard index from that runner own variable", layer: "unit" }
         it "takes the shard index from #{key} on #{runner}" do
           expect(described_class.new(env: { key => "0" }, git: no_git).shard_id).to eq("0")
         end
       end
 
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "the explicit shard variable wins, which is how a matrix names its legs", layer: "unit" }
       it "lets SPECGUARD_SHARD_ID win, which is how a GitHub Actions matrix names its legs" do
         env = { "TEST_ENV_NUMBER" => "2", "SPECGUARD_SHARD_ID" => "matrix-leg-3" }
 
@@ -173,6 +192,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # of a matrix reads the same value. Were it in the key list, all N shards
       # would claim to be one shard and the run would keep only whichever
       # finished last — a *smaller* denominator than the bug this ticket fixes.
+      # @intent: { entity: "Configuration", action: "derive the shard identity", behavior: "the job variable is never mistaken for a shard index", layer: "unit" }
       it "does not mistake GITHUB_JOB for a shard index" do
         expect(described_class.new(env: { "GITHUB_JOB" => "rspec" }, git: no_git).shard_id).to be_nil
       end
@@ -193,10 +213,12 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       context "on #{provider}" do
         let(:env) { { keys[:sha] => "9f8e7d6", keys[:branch] => "release/2.0", keys[:run] => "build-77" } }
 
+        # @intent: { entity: "Configuration", action: "read other providers", behavior: "on each supported provider the commit resolves from that provider sha variable", layer: "unit" }
         it "resolves the commit from #{keys[:sha]}" do
           expect(configuration.commit_sha).to eq("9f8e7d6")
         end
 
+        # @intent: { entity: "Configuration", action: "read other providers", behavior: "on each supported provider the branch resolves from that provider branch variable", layer: "unit" }
         it "resolves the branch from #{keys[:branch]}" do
           expect(configuration.branch).to eq("release/2.0")
         end
@@ -205,6 +227,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         # run, and a 20,000-example suite lands as one `TestRun` per shard —
         # each holding a fraction of the denominator, and the dashboard picking
         # whichever finished last.
+        # @intent: { entity: "Configuration", action: "read other providers", behavior: "on each supported provider the run id resolves from that provider run variable", layer: "unit" }
         it "resolves the run id from #{keys[:run]}" do
           expect(configuration.run_id).to eq("build-77")
         end
@@ -219,6 +242,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     context "when several providers' variables are present at once" do
       let(:env) { { "GITHUB_SHA" => "github", "CI_COMMIT_SHA" => "gitlab", "CIRCLE_SHA1" => "circle" } }
 
+      # @intent: { entity: "Configuration", action: "read other providers", behavior: "when several providers variables are present at once the documented order decides, not chance", layer: "unit" }
       it "resolves them in the documented order rather than at random" do
         expect(configuration.commit_sha).to eq("github")
       end
@@ -237,6 +261,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         }
       end
 
+      # @intent: { entity: "Configuration", action: "honour overrides", behavior: "the specguard-prefixed variable beats the provider own variable", layer: "unit" }
       it "prefers the SPECGUARD_ variable over the provider's" do
         expect(configuration).to have_attributes(commit_sha: "deadbeef", branch: "release/2.0")
       end
@@ -244,14 +269,17 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # The escape hatch that matters most here: a runner that shards a suite
       # itself, or one on a provider not in the list, can still tell the
       # platform which shards belong together.
+      # @intent: { entity: "Configuration", action: "honour overrides", behavior: "an explicitly supplied run id beats the provider one", layer: "unit" }
       it "prefers an explicitly supplied run id over the provider's" do
         expect(configuration.run_id).to eq("our-own-build-id")
       end
 
+      # @intent: { entity: "Configuration", action: "honour overrides", behavior: "a configured output path is honoured over the default", layer: "unit" }
       it "honours a configured output path" do
         expect(configuration.output_path).to eq("tmp/specguard.jsonl")
       end
 
+      # @intent: { entity: "Configuration", action: "honour overrides", behavior: "a configured local sink path is honoured without disturbing the replay queue path", layer: "unit" }
       it "honours a configured local output path without disturbing the replay queue" do
         local = described_class.new(env: env.merge("SPECGUARD_LOCAL_OUTPUT_PATH" => "tmp/local.jsonl"), git: no_git)
 
@@ -271,6 +299,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         }
       end
 
+      # @intent: { entity: "Configuration", action: "read transport settings", behavior: "the endpoint, key and timeout all read from the environment", layer: "unit" }
       it "reads the endpoint, the key and the timeout from the environment" do
         expect(configuration).to have_attributes(
           endpoint: "https://specguard.example.com",
@@ -284,6 +313,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       # that silently never delivers anything, which is the exact failure this
       # slice exists to remove.
       ["ten", "0", "-5", "  ", "NaN"].each do |value|
+        # @intent: { entity: "Configuration", action: "read transport settings", behavior: "an unparseable timeout value falls back to the default rather than being trusted", layer: "unit" }
         it "falls back to the default rather than trusting #{value.inspect}" do
           configuration = described_class.new(env: env.merge("SPECGUARD_TIMEOUT" => value), git: no_git)
 
@@ -291,6 +321,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
         end
       end
 
+      # @intent: { entity: "Configuration", action: "read transport settings", behavior: "a nonsense timeout never raises during configuration", layer: "unit" }
       it "does not raise on a nonsense timeout, whatever else it does" do
         expect { described_class.new(env: { "SPECGUARD_TIMEOUT" => "ten" }, git: no_git) }
           .not_to raise_error
@@ -304,14 +335,17 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     context "when a variable is exported but blank" do
       let(:env) { { "SPECGUARD_COMMIT_SHA" => "  ", "GITHUB_SHA" => "9f8e7d6", "SPECGUARD_OUTPUT_PATH" => "" } }
 
+      # @intent: { entity: "Configuration", action: "treat blank exports as unset", behavior: "a variable exported but blank falls through to the next source like an unset one", layer: "unit" }
       it "treats blank as unset and falls through to the next source" do
         expect(configuration.commit_sha).to eq("9f8e7d6")
       end
 
+      # @intent: { entity: "Configuration", action: "treat blank exports as unset", behavior: "a blank output path falls back to the default rather than writing to an empty name", layer: "unit" }
       it "falls back to the default path rather than writing to \"\"" do
         expect(configuration.output_path).to eq("log/test_results.jsonl")
       end
 
+      # @intent: { entity: "Configuration", action: "treat blank exports as unset", behavior: "a blank local path falls back to its default rather than writing to an empty name", layer: "unit" }
       it "falls back to the default local path rather than writing to \"\"" do
         blank_local = described_class.new(env: { "SPECGUARD_LOCAL_OUTPUT_PATH" => "" }, git: no_git)
 
@@ -320,6 +354,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
       # An empty run id is worse than none: it is a *key*, and every unrelated
       # run exporting the same empty string would accumulate onto one row.
+      # @intent: { entity: "Configuration", action: "treat blank exports as unset", behavior: "a blank run id is treated as no run id at all", layer: "unit" }
       it "treats a blank run id as no run id at all" do
         expect(described_class.new(env: { "GITHUB_RUN_ID" => "" }, git: no_git).run_id).to be_nil
       end
@@ -331,11 +366,13 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     context "when the API key is exported but blank" do
       let(:env) { { "SPECGUARD_API_KEY" => "", "SPECGUARD_ENDPOINT" => "https://specguard.example.com" } }
 
+      # @intent: { entity: "Configuration", action: "treat blank exports as unset", behavior: "an api key exported but blank is treated as no key at all", layer: "unit" }
       it "treats it as no key at all" do
         expect(configuration.api_key).to be_nil
       end
     end
 
+    # @intent: { entity: "Configuration", action: "normalise values", behavior: "surrounding whitespace a shell heredoc adds is stripped from values", layer: "unit" }
     it "strips surrounding whitespace, which a shell here-doc adds easily" do
       configuration = described_class.new(env: { "SPECGUARD_BRANCH" => "  main\n" }, git: no_git)
 
@@ -351,16 +388,19 @@ RSpec.describe SpecGuard::RSpec::Configuration do
   describe "the git fallback" do
     let(:git) { object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "cafebabe", branch: "release/2.0") }
 
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "when no variable named the commit the checkout is asked", layer: "unit" }
     it "asks the checkout when no variable named the commit" do
       expect(described_class.new(env: {}, git: git).commit_sha).to eq("cafebabe")
     end
 
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "when no variable named the branch the checkout is asked", layer: "unit" }
     it "asks the checkout when no variable named the branch" do
       expect(described_class.new(env: {}, git: git).branch).to eq("release/2.0")
     end
 
     # The subprocess is the expensive thing here, and it is pure loss when a CI
     # provider already published the answer.
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "a variable that already answered the commit stops git being asked", layer: "unit" }
     it "does not ask when a variable already answered" do
       described_class.new(env: { "GITHUB_SHA" => "9f8e7d6" }, git: git)
 
@@ -369,12 +409,14 @@ RSpec.describe SpecGuard::RSpec::Configuration do
 
     # The same, for the field this fallback was added to. Both halves of the
     # `||` matter: the left one answers, and the right one must not even run.
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "a variable that already answered the branch stops git being asked", layer: "unit" }
     it "does not ask for the branch when a variable already answered" do
       described_class.new(env: { "GITHUB_REF_NAME" => "main" }, git: git)
 
       expect(git).not_to have_received(:branch)
     end
 
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "when git has no commit answer either the commit reports unknown", layer: "unit" }
     it "reports an unknown commit when git has no answer either" do
       expect(described_class.new(env: {}, git: no_git).commit_sha).to be_nil
     end
@@ -382,16 +424,19 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     # A detached checkout reaches here as a nil from {GitCheckout.branch}, and
     # nil is what the envelope should carry. See the detached-HEAD example in
     # the `GitCheckout` block below for why that is not the string "HEAD".
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "when git has no branch answer either the branch reports unknown", layer: "unit" }
     it "reports an unknown branch when git has no answer either" do
       expect(described_class.new(env: {}, git: no_git).branch).to be_nil
     end
 
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "a blank answer from git counts as no answer for the commit", layer: "unit" }
     it "treats a blank answer from git as no answer" do
       blank = object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "  \n", branch: "  \n")
 
       expect(described_class.new(env: {}, git: blank).commit_sha).to be_nil
     end
 
+    # @intent: { entity: "Configuration", action: "fall back to git", behavior: "a blank answer from git counts as no branch", layer: "unit" }
     it "treats a blank branch from git as no branch" do
       blank = object_double(SpecGuard::RSpec::GitCheckout, commit_sha: "  \n", branch: "  \n")
 
@@ -436,6 +481,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     # `#initialize` alongside the others, is invisible to that example and to
     # every other one in this file — so the *set of lists* is a claim in its
     # own right, and the cheapest half of "and no others" to hold.
+    # @intent: { entity: "Configuration", action: "disclose the env surface", behavior: "no key is read beyond the ones the readme accounts for", layer: "unit" }
     it "reads no key list beyond the ones the README accounts for" do
       expect(described_class.constants.grep(/_KEYS\z/).sort).to eq(
         %i[API_KEY_KEYS BRANCH_KEYS COMMIT_SHA_KEYS ENDPOINT_KEYS
@@ -443,6 +489,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
       )
     end
 
+    # @intent: { entity: "Configuration", action: "disclose the env surface", behavior: "exactly the variables the readme discloses are read, and no others", layer: "unit" }
     it "reads exactly the variables the README discloses, and no others" do
       expect(
         "commit_sha" => described_class::COMMIT_SHA_KEYS,
@@ -477,6 +524,7 @@ RSpec.describe SpecGuard::RSpec::Configuration do
     # checkout report `null` instead of the string `HEAD`, which is the
     # behaviour the same cell promises — so the disclosed command is pinned
     # with it.
+    # @intent: { entity: "Configuration", action: "disclose the env surface", behavior: "the git fallback uses exactly the commands the readme discloses", layer: "unit" }
     it "falls back to exactly the git commands the README discloses" do
       expect(
         "commit_sha" => SpecGuard::RSpec::GitCheckout::COMMIT_SHA_COMMAND,
@@ -497,10 +545,12 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
 
   after { described_class.reset! }
 
+  # @intent: { entity: "GitProbe", action: "read the checkout", behavior: "the probe reports the commit the checkout is on", layer: "unit" }
   it "reports the commit this checkout is on" do
     expect(described_class.commit_sha).to match(/\A[0-9a-f]{40}\z/)
   end
 
+  # @intent: { entity: "GitProbe", action: "read the checkout", behavior: "the reported commit agrees with what git itself prints", layer: "unit" }
   it "agrees with git itself" do
     expect(described_class.commit_sha).to eq(`git rev-parse HEAD`.strip)
   end
@@ -508,6 +558,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
   # One subprocess per process, not one per read. `Configuration.new` is built
   # lazily and rebuilt by every `reset_configuration!`, so an unmemoized answer
   # would fork git on a schedule nobody controls.
+  # @intent: { entity: "GitProbe", action: "memoize answers", behavior: "the commit question is asked once and the answer remembered", layer: "unit" }
   it "asks git once and remembers the answer" do
     allow(IO).to receive(:popen).and_call_original
 
@@ -516,6 +567,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     expect(IO).to have_received(:popen).once
   end
 
+  # @intent: { entity: "GitProbe", action: "memoize answers", behavior: "the branch question is asked once and remembered separately", layer: "unit" }
   it "asks git once for the branch and remembers that answer too" do
     allow(IO).to receive(:popen).and_call_original
 
@@ -527,6 +579,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
   # The two questions need two commands and two memo slots. Sharing either
   # would make whichever was asked first answer for both — silently, and with a
   # value of the wrong shape.
+  # @intent: { entity: "GitProbe", action: "memoize answers", behavior: "each question keeps its own memo so one answer never stands in for both", layer: "unit" }
   it "keeps a memo per question rather than one answer standing in for both" do
     allow(IO).to receive(:popen).and_call_original
 
@@ -536,6 +589,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     expect(IO).to have_received(:popen).twice
   end
 
+  # @intent: { entity: "GitProbe", action: "memoize answers", behavior: "a nil commit answer is remembered rather than retried", layer: "unit" }
   it "remembers a nil answer too, rather than retrying a question that failed" do
     allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "git")
 
@@ -545,6 +599,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     expect(IO).to have_received(:popen).once
   end
 
+  # @intent: { entity: "GitProbe", action: "memoize answers", behavior: "a nil branch answer is remembered rather than retried", layer: "unit" }
   it "remembers a nil branch too, rather than retrying a question that failed" do
     allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "git")
 
@@ -558,6 +613,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
   # examples below chdir into a directory that is not a checkout, and a branch
   # memoized inside *this* repository would survive the move and be asserted
   # against there.
+  # @intent: { entity: "GitProbe", action: "reset the memos", behavior: "a reset clears both memos so the next read really re-asks", layer: "unit" }
   it "clears both memos, so a reset really does re-ask" do
     allow(IO).to receive(:popen).and_call_original
     described_class.commit_sha
@@ -577,10 +633,12 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
 
     # Not a `git init`'d directory: mktmpdir lands under /tmp, which is not
     # inside this repository, so `git rev-parse` really does fail here.
+    # @intent: { entity: "GitProbe", action: "survive a missing checkout", behavior: "outside a git checkout the commit answers nil rather than raising", layer: "unit" }
     it "answers nil rather than raising" do
       expect(described_class.commit_sha).to be_nil
     end
 
+    # @intent: { entity: "GitProbe", action: "survive a missing checkout", behavior: "outside a git checkout the branch answers nil rather than raising", layer: "unit" }
     it "answers nil for the branch rather than raising" do
       expect(described_class.branch).to be_nil
     end
@@ -589,10 +647,12 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     # git's, and a telemetry tool that graffitis somebody's CI log with it has
     # already failed. Captured at the file-descriptor level because the child
     # process writes to fd 2 directly — reassigning `$stderr` would not see it.
+    # @intent: { entity: "GitProbe", action: "survive a missing checkout", behavior: "a failing commit lookup says nothing at all on stderr", layer: "unit" }
     it "says nothing at all on stderr while failing" do
       expect { described_class.commit_sha }.not_to output.to_stderr_from_any_process
     end
 
+    # @intent: { entity: "GitProbe", action: "survive a missing checkout", behavior: "a failing branch lookup says nothing at all on stderr", layer: "unit" }
     it "says nothing at all on stderr while failing to name a branch" do
       expect { described_class.branch }.not_to output.to_stderr_from_any_process
     end
@@ -627,10 +687,12 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
     # Whatever `git init` chose to call the initial branch is renamed above, so
     # this asserts a name the example itself set rather than a default that
     # moved from `master` to `main` between git versions.
+    # @intent: { entity: "GitProbe", action: "read a real checkout", behavior: "in a real checkout the probe reports the branch the checkout is on", layer: "unit" }
     it "reports the branch the checkout is on" do
       expect(described_class.branch).to eq("release/2.0")
     end
 
+    # @intent: { entity: "GitProbe", action: "read a real checkout", behavior: "in a real checkout the commit still resolves, though a different command answers it", layer: "unit" }
     it "still reports the commit, which is asked with a different command" do
       expect(described_class.commit_sha).to match(/\A[0-9a-f]{40}\z/)
     end
@@ -650,6 +712,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
         described_class.reset!
       end
 
+      # @intent: { entity: "GitProbe", action: "read a real checkout", behavior: "a detached checkout reports no branch at all rather than the literal head string", layer: "unit" }
       it "reports no branch at all, rather than the literal string \"HEAD\"" do
         expect(described_class.branch).to be_nil
       end
@@ -657,6 +720,7 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
       # Guards the assertion above against passing vacuously: it would also read
       # `nil` if the fixture were not a checkout at all, or if `git` were
       # missing — in which case it would be pinning nothing.
+      # @intent: { entity: "GitProbe", action: "read a real checkout", behavior: "the detached checkout genuinely still knows its commit, proving the branch nil is real", layer: "unit" }
       it "is genuinely a detached checkout that still knows its commit" do
         expect(described_class.commit_sha).to match(/\A[0-9a-f]{40}\z/)
       end
@@ -671,24 +735,28 @@ RSpec.describe SpecGuard::RSpec::GitCheckout do
 
   # `Errno::ENOENT` is raised by `IO.popen` itself, before any child exists —
   # the shape a `$?.success?` check alone would sail straight past.
+  # @intent: { entity: "GitProbe", action: "survive a missing binary", behavior: "with no git binary at all the commit answers nil", layer: "unit" }
   it "answers nil when there is no git binary at all" do
     allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "No such file or directory - git")
 
     expect(described_class.commit_sha).to be_nil
   end
 
+  # @intent: { entity: "GitProbe", action: "survive a missing binary", behavior: "with no git binary at all the branch answers nil", layer: "unit" }
   it "answers nil for the branch when there is no git binary at all" do
     allow(IO).to receive(:popen).and_raise(Errno::ENOENT, "No such file or directory - git")
 
     expect(described_class.branch).to be_nil
   end
 
+  # @intent: { entity: "GitProbe", action: "survive a missing binary", behavior: "a lookup blowing up in a way a bare rescue would miss still answers nil for the commit", layer: "unit" }
   it "answers nil when the lookup blows up in a way a bare rescue would miss" do
     allow(IO).to receive(:popen).and_raise(NotImplementedError, "nope")
 
     expect(described_class.commit_sha).to be_nil
   end
 
+  # @intent: { entity: "GitProbe", action: "survive a missing binary", behavior: "the same non-standard failure answers nil for the branch too", layer: "unit" }
   it "answers nil for the branch when the lookup blows up in a way a bare rescue would miss" do
     allow(IO).to receive(:popen).and_raise(NotImplementedError, "nope")
 
@@ -700,16 +768,19 @@ RSpec.describe SpecGuard::RSpec do
   after { described_class.reset_configuration! }
 
   describe ".configure" do
+    # @intent: { entity: "SpecGuard::RSpec.configure", action: "hand over the configuration", behavior: "the configure block receives the configuration object to set fields on", layer: "unit" }
     it "hands the block the configuration to set" do
       described_class.configure { |config| config.branch = "feature/telemetry" }
 
       expect(described_class.configuration.branch).to eq("feature/telemetry")
     end
 
+    # @intent: { entity: "SpecGuard::RSpec.configure", action: "hand over the configuration", behavior: "calling configure with no block returns the configuration so it can be read", layer: "unit" }
     it "returns the configuration, so it can be read without a block" do
       expect(described_class.configure).to equal(described_class.configuration)
     end
 
+    # @intent: { entity: "SpecGuard::RSpec.configure", action: "hand over the configuration", behavior: "calling configure with no block at all does not raise", layer: "unit" }
     it "does not raise when called with no block at all" do
       expect { described_class.configure }.not_to raise_error
     end
@@ -717,6 +788,7 @@ RSpec.describe SpecGuard::RSpec do
     # One configuration per process. Two objects would mean a `spec_helper.rb`
     # configuring one while the formatter reads the other — the settings would
     # simply be ignored, silently.
+    # @intent: { entity: "SpecGuard::RSpec.configure", action: "hand over the configuration", behavior: "successive configure calls keep configuring the same object", layer: "unit" }
     it "keeps configuring the same object across calls" do
       described_class.configure { |config| config.commit_sha = "abc" }
       described_class.configure { |config| config.branch = "main" }
@@ -726,6 +798,7 @@ RSpec.describe SpecGuard::RSpec do
   end
 
   describe ".reset_configuration!" do
+    # @intent: { entity: "SpecGuard::RSpec.configure", action: "reset the configuration", behavior: "dropping the memoized configuration makes the next read re-seed from the environment", layer: "unit" }
     it "drops the memoized configuration so the next read re-seeds from ENV" do
       described_class.configure { |config| config.branch = "throwaway" }
 
