@@ -10,6 +10,17 @@ require "fileutils"
 # minitest-only consumer's machine.
 require_relative "../rspec/configuration"
 
+# The annotation lookup is the third framework-free half: what counts as a
+# test's annotation is a property of the source line, not of the framework
+# that ran it, so the Minitest reporter asks the same {AnnotationLookup} the
+# RSpec formatter does rather than carrying a second extractor (whose header
+# already warns that a second extractor guarantees scanner and reporter
+# eventually disagree about what an annotation is). Requiring it pulls the
+# linter's chain — the same direction-safe require the formatter itself makes;
+# `specguard/rspec` does not require `rspec/core`, so a minitest-only machine
+# stays loadable.
+require_relative "../rspec/annotation_lookup"
+
 # The Minitest half of `specguard-ruby`. Everything the RSpec formatter knows
 # about the platform — the envelope's field names, the transport's
 # never-raise contract, the switch that a missing key is — is framework-free
@@ -18,7 +29,10 @@ require_relative "../rspec/configuration"
 # ship first, neither containing any RSpec). This adapter contributes only the
 # part that is genuinely Minitest's: turning `Minitest::Result` objects into
 # the same row shape the RSpec formatter emits, at the moment Minitest hands
-# them to a reporter.
+# them to a reporter — and attaching each test's annotation the same way the
+# formatter does, through the shared {SpecGuard::RSpec::AnnotationLookup} and
+# its one-line lookback (SPGD-12 §2), so a Minitest row carries the same
+# `status` / `intent` pair a RSpec row does.
 #
 # It is a duck-typed Minitest reporter (`start` / `record` / `report` /
 # `passed?`) rather than a subclass of `Minitest::AbstractReporter`, because
@@ -36,6 +50,12 @@ require_relative "../rspec/configuration"
 module SpecGuard
   module Minitest
     class Reporter
+      # `Ingest::Payload::STATUSES`, restated — the same call the RSpec
+      # formatter makes. The platform validates every row against this pair,
+      # so they are the contract and not a local naming choice.
+      STATUS_ANNOTATED = "annotated"
+      STATUS_UNANNOTATED = "unannotated"
+
       # Rows with no usable location are dropped rather than mangled: a row
       # whose file cannot be named fits no by-file aggregate on the platform
       # and would surface as noise. The RSpec formatter's `capture` makes the
@@ -51,12 +71,14 @@ module SpecGuard
 
       def initialize(configuration: SpecGuard::RSpec.configuration,
                      transport: nil, output: $stderr,
+                     annotations: SpecGuard::RSpec::AnnotationLookup.new,
                      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
         @configuration = configuration
         # Injected for the specs; the real thing is built the same way the
         # RSpec formatter builds it, from the same configuration object.
         @transport = transport
         @output = output
+        @annotations = annotations
         @clock = clock
         @rows = []
         @started_at = nil
@@ -175,6 +197,8 @@ module SpecGuard
 
         file = relative_path(file)
         name = "#{result.klass}##{result.name}"
+        line_number = line&.to_i
+        intent = annotation_for(file, line_number)
         {
           # Minitest has no RSpec-style rerun path or nested ids, so the
           # definition site is the identity: stable across runs (which is
@@ -183,7 +207,7 @@ module SpecGuard
           "id" => "#{file}:#{line}",
           "spec_file_path" => file,
           "file_path" => file,
-          "line_number" => line&.to_i,
+          "line_number" => line_number,
           "name" => name,
           "duration" => result.time,
           # The platform's three outcomes, mapped from Minitest's questions:
@@ -192,8 +216,35 @@ module SpecGuard
           # Minitest distinguishes assertion failures from exceptions, the
           # wire contract does not, and inventing a fourth outcome here would
           # be a lie the schema refuses.
-          "outcome" => outcome_for(result)
+          "outcome" => outcome_for(result),
+          # The RSpec formatter's rationale, restated: the key is written
+          # explicitly because a present key says "we looked", where an absent
+          # key is indistinguishable from "this producer does not report
+          # annotations" — and without it the platform refuses the whole run
+          # (`Ingest::Payload` requires `status` on EVERY row). `intent` is
+          # likewise explicit: null when unannotated, which is exactly what
+          # the platform demands of an unannotated row.
+          "status" => intent.nil? ? STATUS_UNANNOTATED : STATUS_ANNOTATED,
+          "intent" => intent
         }
+      end
+
+      # The lookup, inside its own envelope. `record`'s rescue would drop the
+      # whole row — example, duration, outcome and all — to learn one row's
+      # annotation, which is the trade the RSpec formatter already refused:
+      # its annotation lookup runs inside a nested guard so a blow-up costs
+      # the row only its annotation. The lookup degrades verdicts it could
+      # not reach to nil itself (an unusable validator ships unannotated by
+      # design); this envelope is for what escapes it anyway — file reads the
+      # lookup does not expect, encoding faults, anything else — and it
+      # routes through {#warn_once}, so the operator hears about it exactly
+      # once however many rows are affected.
+      def annotation_for(file, line)
+        @annotations.intent_for(file: file, line: line)
+      rescue ScriptError, StandardError => e
+        warn_once("could not resolve annotations (#{e.class}: #{e.message}). " \
+                  "Rows continue unannotated. The test run is unaffected.")
+        nil
       end
 
       def outcome_for(result)

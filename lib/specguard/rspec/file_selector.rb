@@ -6,8 +6,15 @@ module SpecGuard
   module RSpec
     # Chooses which spec files the linter reads.
     #
-    # Two modes: every `*_spec.rb` under the working directory (the default), or
-    # only those in the current diff (`--changed`).
+    # Two modes: every Ruby test file under the working directory (the
+    # default), or only those in the current diff (`--changed`). Both modes
+    # recognize the two Ruby test-framework naming conventions — RSpec's
+    # `*_spec.rb` and Minitest's `*_test.rb` — so a suite is visible to the
+    # linter whichever framework wrote it. The default walk scopes Minitest
+    # files to `test/` (the directory both Rails and `minitest` own as the
+    # convention), while `--changed` filters on the file-name suffix alone: a
+    # diff names paths, not directories, and a changed test file is a test
+    # file wherever the author put it.
     #
     # == Why `--changed` is not `git diff --name-only`
     #
@@ -41,9 +48,10 @@ module SpecGuard
     # found no annotations" from "checked 0 files" — {Selection} carries the
     # count, the emptiness, and {Stats} explaining *which* filter emptied it, so
     # the CLI can say so on stderr, accurately. A confidently wrong reason is
-    # worse than a quiet one: a human who reads "nothing in the diff matched
-    # *_spec.rb" stops looking. The exit code is not the lever: the spec fixes 0
-    # for "no annotations".
+    # worse than a quiet one: a human who reads "nothing in the diff matched a
+    # test file" stops looking — and on a Minitest-only repository the silence
+    # must not be explained in RSpec vocabulary the tree does not use. The exit
+    # code is not the lever: the spec fixes 0 for "no annotations".
     #
     # == Scope: `--changed` selects changed specs **under `root`**
     #
@@ -74,7 +82,20 @@ module SpecGuard
     # clean checkout of a commit) that cannot arise; locally the loud empty
     # selection is what surfaces it.
     module FileSelector
-      DEFAULT_GLOB = "**/*_spec.rb"
+      # `test/**/*_test.rb` rather than `**/*_test.rb`: the `test/` directory
+      # is where both Rails and Minitest itself put Minitest files, and
+      # keeping the second convention scoped stops the walk from adopting
+      # unrelated `*_test.rb` files elsewhere in the tree (fixture generators,
+      # vendored code). `*_spec.rb` stays unscoped because `spec/` already has
+      # no competitor convention to fence against.
+      DEFAULT_GLOB = ["**/*_spec.rb", "test/**/*_test.rb"].freeze
+
+      # The `--changed` counterparts of {DEFAULT_GLOB}: git hands back paths,
+      # so the filter is a match over the whole path rather than a glob walk,
+      # and the suffix alone decides. Deliberately not directory-scoped — a
+      # changed Minitest file outside `test/` is still this client's business
+      # in the one mode that answers "what did this branch touch".
+      CHANGED_PATTERNS = ["*_spec.rb", "*_test.rb"].freeze
 
       # Ordered probes for the default branch when no explicit base is given.
       DEFAULT_BRANCH_REFS = %w[origin/HEAD origin/main origin/master main master].freeze
@@ -116,8 +137,9 @@ module SpecGuard
         changed ? select_changed(base: base, root: root) : select_all(root: root)
       end
 
-      # Every `*_spec.rb` under `root`, recursively. Hidden directories are not
-      # traversed (no `File::FNM_DOTMATCH`), so `.git` and friends are skipped.
+      # Every test file under `root`, recursively, in either naming
+      # convention. Hidden directories are not traversed (no
+      # `File::FNM_DOTMATCH`), so `.git` and friends are skipped.
       def select_all(root: Dir.pwd)
         files = Dir.glob(DEFAULT_GLOB, base: root).select { |f| File.file?(File.join(root, f)) }.sort
         Selection.new(files: files, mode: :all)
@@ -146,7 +168,7 @@ module SpecGuard
       # @return [[Array<String>, Stats]]
       def changed_files(base, root)
         names = diff_names(base, root)
-        specs = names.select { |name| File.fnmatch?("*_spec.rb", name) }
+        specs = names.select { |name| CHANGED_PATTERNS.any? { |pattern| File.fnmatch?(pattern, name) } }
 
         top = toplevel(root)
         prefix = directory_prefix(top.empty? ? root : top)
