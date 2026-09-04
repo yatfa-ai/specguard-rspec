@@ -4,6 +4,7 @@ require "json"
 require "open3"
 require "socket"
 require "tmpdir"
+require_relative "../../support/validator_stub"
 
 # The end-to-end chain the unit specs in reporter_spec.rb deliberately avoid:
 # a real `minitest` run in a real child process, the plugin attached the way
@@ -90,7 +91,15 @@ RSpec.describe "the minitest plugin" do
         # which minitest to activate (the newest installed versus the one this
         # suite's lockfile pins), and die before running a single test — a
         # failure that has nothing to do with the plugin under test.
-        child_env = ENV.to_h.except("RUBYOPT", "BUNDLE_GEMFILE", "BUNDLER_VERSION", "RUBYLIB").merge!(env)
+        # The validator is pointed at the offline replay stub for the same
+        # reason the formatter-run specs stub resolution: the default-on
+        # installer would otherwise touch the network from inside a child,
+        # and an E2E spec must not depend on whether a release binary is
+        # already cached on the machine running it.
+        child_env = ENV.to_h.except("RUBYOPT", "BUNDLE_GEMFILE", "BUNDLER_VERSION", "RUBYLIB")
+                         .merge!(env)
+                         .merge(ValidatorStub.stub_env)
+                         .merge("SPECGUARD_VALIDATE_INTENT" => ValidatorStub.install_stubbable)
 
         reader = Thread.new { server.drain }
         # `-e` runs with the fixture as ARGV[0]: attach the plugin explicitly
@@ -129,9 +138,16 @@ RSpec.describe "the minitest plugin" do
           "shard_id" => nil,
           "duration_seconds" => a_kind_of(Numeric),
           "specs" => array_including(
-            hash_including("name" => "TelemetryProbeTest#test_passes", "outcome" => "passed"),
-            hash_including("name" => "TelemetryProbeTest#test_fails", "outcome" => "failed"),
-            hash_including("name" => "TelemetryProbeTest#test_skips", "outcome" => "pending")
+            hash_including("name" => "TelemetryProbeTest#test_passes", "outcome" => "passed",
+                           "status" => "unannotated", "intent" => nil),
+            hash_including("name" => "TelemetryProbeTest#test_annotated", "outcome" => "passed",
+                           "status" => "annotated",
+                           "intent" => hash_including("entity" => "TelemetryProbe",
+                                                      "action" => "prove attachment")),
+            hash_including("name" => "TelemetryProbeTest#test_fails", "outcome" => "failed",
+                           "status" => "unannotated", "intent" => nil),
+            hash_including("name" => "TelemetryProbeTest#test_skips", "outcome" => "pending",
+                           "status" => "unannotated", "intent" => nil)
           )
         )
         expect(File.exist?(env["SPECGUARD_OUTPUT_PATH"])).to be(false)

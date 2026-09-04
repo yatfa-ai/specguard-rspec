@@ -77,6 +77,40 @@ RSpec.describe SpecGuard::RSpec::FileSelector do
       expect(selection).to be_empty
       expect(selection.count).to eq(0)
     end
+
+    # @intent: { entity: "FileSelector", action: "select test files", behavior: "the default walk returns both rspec spec files and minitest test files from a mixed repository", layer: "unit" }
+    it "returns both *_spec.rb and test/**/*_test.rb files on a mixed repository" do
+      write(root, "spec/models/order_spec.rb")
+      write(root, "test/models/user_test.rb")
+      write(root, "test/controllers/deeply/nested/checkout_test.rb")
+
+      expect(described_class.select(root: root).files).to eq(
+        ["spec/models/order_spec.rb", "test/controllers/deeply/nested/checkout_test.rb",
+         "test/models/user_test.rb"]
+      )
+    end
+
+    # `test/**` is the scope, not the whole tree: Rails and Minitest both own
+    # `test/` as the convention, and adopting every `*_test.rb` in the tree
+    # would pull in fixture generators and vendored code.
+    # @intent: { entity: "FileSelector", action: "select test files", behavior: "a minitest named file outside the test directory is not selected by the default walk", layer: "unit" }
+    it "does not adopt *_test.rb files from outside test/ in the default walk" do
+      write(root, "lib/generators/order_test.rb")
+      write(root, "test/models/user_test.rb")
+
+      expect(described_class.select(root: root).files).to eq(["test/models/user_test.rb"])
+    end
+
+    # A Minitest-only repository is exactly the cold start the widening is
+    # for: the walk must find its files with no `*_spec.rb` anywhere.
+    # @intent: { entity: "FileSelector", action: "select test files", behavior: "a minitest only repository is fully selected by the default walk", layer: "unit" }
+    it "selects a Minitest-only repository's test files in the default walk" do
+      write(root, "test/test_helper.rb")
+      write(root, "test/models/user_test.rb")
+      write(root, "app/models/user.rb")
+
+      expect(described_class.select(root: root).files).to eq(["test/models/user_test.rb"])
+    end
   end
 
   describe "--changed" do
@@ -123,6 +157,37 @@ RSpec.describe SpecGuard::RSpec::FileSelector do
       commit(root, "change both")
 
       expect(described_class.select(changed: true, root: root).files).to eq(["spec/order_spec.rb"])
+    end
+
+    # @intent: { entity: "FileSelector", action: "select changed files", behavior: "a changed minitest test file under test is selected beside rspec spec files", layer: "unit" }
+    it "selects changed Minitest test files alongside RSpec spec files" do
+      init_repo(root)
+      write(root, "spec/orders_spec.rb")
+      write(root, "test/users_test.rb")
+      commit(root, "base")
+      git("checkout", "-q", "-b", "feature", chdir: root)
+      write(root, "test/models/user_test.rb")
+      write(root, "test/users_test.rb", "# edited\n")
+      commit(root, "touch minitest files")
+
+      expect(described_class.select(changed: true, root: root).files)
+        .to eq(["test/models/user_test.rb", "test/users_test.rb"])
+    end
+
+    # The suffix decides in this mode, not the directory: `--changed` answers
+    # "what did this branch touch", and a changed test file is this client's
+    # business wherever the author put it.
+    # @intent: { entity: "FileSelector", action: "select changed files", behavior: "a changed minitest named file outside the test directory is still selected because the changed mode filters on the suffix alone", layer: "unit" }
+    it "selects a changed *_test.rb outside test/, because the suffix decides" do
+      init_repo(root)
+      write(root, "README.md", "hello\n")
+      commit(root, "base")
+      git("checkout", "-q", "-b", "feature", chdir: root)
+      write(root, "lib/generators/order_test.rb")
+      commit(root, "add a test outside test/")
+
+      expect(described_class.select(changed: true, root: root).files)
+        .to eq(["lib/generators/order_test.rb"])
     end
 
     # `git diff --name-only` lists deleted paths, which then fail to open.

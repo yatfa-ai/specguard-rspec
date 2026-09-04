@@ -787,5 +787,47 @@ RSpec.describe SpecGuard::RSpec::CLI do
         /2 changed spec files against \S+, but 1 is outside \S+ \(--changed selects only files under the current directory\) and 1 could not be read/
       )
     end
+
+    # AC honesty across frameworks: on a Minitest-only repository the silence
+    # must not be explained in `*_spec.rb` vocabulary the tree does not use —
+    # that message reads as a conclusion and stops the reader looking.
+    # @intent: { entity: "CLI", action: "explain an empty default selection", behavior: "on a minitest only repository the empty selection names both naming conventions the walk recognizes", layer: "unit" }
+    it "names the real filter when a Minitest-only repository selects nothing" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "test/models"))
+        File.write(File.join(dir, "test/test_helper.rb"), "# helper\n")
+
+        Dir.chdir(dir) { cli.run([]) }
+      end
+
+      expect(err).to include("selected 0 spec files")
+      expect(err).to include("no *_spec.rb or *_test.rb file found under")
+      expect(err).not_to include("no *_spec.rb found under")
+    end
+
+    # @intent: { entity: "CLI", action: "explain an empty changed selection", behavior: "a diff with no test files names both naming conventions rather than only the rspec one", layer: "unit" }
+    it "names both conventions when nothing in the diff matched either" do
+      dir = Dir.mktmpdir("specguard-cli")
+      begin
+        git("init", "-q", "--initial-branch=main", chdir: dir)
+        git("config", "user.email", "t@example.com", chdir: dir)
+        git("config", "user.name", "T", chdir: dir)
+        File.write(File.join(dir, "README.md"), "hello\n")
+        git("add", "-A", chdir: dir)
+        git("commit", "-q", "-m", "base", chdir: dir)
+        git("checkout", "-q", "-b", "feature", chdir: dir)
+        File.write(File.join(dir, "README.md"), "edited\n")
+        git("add", "-A", chdir: dir)
+        git("commit", "-q", "-m", "docs only", chdir: dir)
+
+        Dir.chdir(dir) { cli.run(["--changed"]) }
+      ensure
+        FileUtils.remove_entry(dir) if dir
+      end
+
+      expect(err).to include("selected 0 spec files")
+      expect(err).to include("1 file changed against")
+      expect(err).to include("none matching *_spec.rb or *_test.rb")
+    end
   end
 end

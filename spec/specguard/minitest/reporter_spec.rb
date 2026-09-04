@@ -6,6 +6,7 @@ require "minitest"
 
 require "specguard/rspec/transport"
 require "specguard/minitest/reporter"
+require_relative "../../support/validator_stub"
 
 # The Minitest adapter's unit contract: what a `::Minitest::Result` becomes on
 # the wire, and what never happens (a raise, a red suite, a second warning).
@@ -80,7 +81,9 @@ module SpecGuard
             "line_number" => 12,
             "name" => "FooTest#test_bar",
             "duration" => 1.5,
-            "outcome" => "passed"
+            "outcome" => "passed",
+            "status" => "unannotated",
+            "intent" => nil
           )
         end
 
@@ -124,6 +127,190 @@ module SpecGuard
           reporter.report
 
           expect(reporter.instance_variable_get(:@rows)).to be_empty
+        end
+      end
+
+      describe "annotations" do
+        # The real lookup against the real offline validator stub — not a
+        # double — because what is under test is precisely the delegation:
+        # that the reporter hands the definition-site coordinates to
+        # AnnotationLookup and ships whatever verdict comes back. A double
+        # here would agree with the reporter by construction.
+        def stub_validator_annotations
+          SpecGuard::RSpec::AnnotationLookup.new(
+            env: { "SPECGUARD_VALIDATE_INTENT" => ValidatorStub.install_stubbable }
+              .merge(ValidatorStub.stub_env)
+          )
+        end
+
+        def annotated_suite(source)
+          file = File.join(Dir.mktmpdir, "suite_test.rb")
+          File.write(file, source)
+          file
+        end
+
+        # @intent: { entity: "Minitest Reporter", action: "attach annotations", behavior: "a comment form annotation on the line above the definition marks the row annotated with the parsed intent", layer: "unit" }
+        it "attaches a comment-form annotation from the line above the definition" do
+          file = annotated_suite(<<~RUBY)
+            class OrdersTest < Minitest::Test
+              # @intent: { entity: "Order", action: "refund stock", behavior: "a refund restores the stock the order consumed", layer: "unit" }
+              def test_restores_stock
+                assert_equal 1, 1
+              end
+
+              def test_unannotated
+                assert_equal 1, 1
+              end
+            end
+          RUBY
+          line = File.readlines(file).index { |l| l.include?("def test_restores_stock") } + 1
+
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: recording_transport.first, output: StringIO.new,
+                                  annotations: stub_validator_annotations)
+          reporter.record(result(:passed, location: [file, line]))
+          reporter.report
+
+          row = reporter.instance_variable_get(:@rows).first
+          expect(row["status"]).to eq("annotated")
+          expect(row["intent"]).to eq(
+            "entity" => "Order", "action" => "refund stock",
+            "behavior" => "a refund restores the stock the order consumed", "layer" => "unit"
+          )
+        end
+
+        # @intent: { entity: "Minitest Reporter", action: "attach annotations", behavior: "a trailing form annotation on the definition line itself marks the row annotated", layer: "unit" }
+        it "attaches a trailing annotation written on the definition line itself" do
+          file = annotated_suite(<<~RUBY)
+            class OrdersTest < Minitest::Test
+              def test_surfaces_decline # @intent: { entity: "Order", action: "surface decline", behavior: "a declined order surfaces the decline reason to the buyer", layer: "unit" }
+                assert_equal 1, 1
+              end
+            end
+          RUBY
+          line = File.readlines(file).index { |l| l.include?("def test_surfaces_decline") } + 1
+
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: recording_transport.first, output: StringIO.new,
+                                  annotations: stub_validator_annotations)
+          reporter.record(result(:passed, location: [file, line]))
+          reporter.report
+
+          row = reporter.instance_variable_get(:@rows).first
+          expect(row["status"]).to eq("annotated")
+          expect(row["intent"]).to include("entity" => "Order", "action" => "surface decline")
+        end
+
+        # Criterion 3, at the row level: a malformed annotation is a verdict
+        # of nil (the lookup's own downgrade — the linter, not the telemetry,
+        # is the tool that fails a build over it), so the row ships
+        # unannotated and the suite's verdict is untouched.
+        # @intent: { entity: "Minitest Reporter", action: "downgrade malformed annotations", behavior: "a malformed annotation on a row downgrades that row to unannotated and never affects the suite verdict", layer: "unit" }
+        it "downgrades a malformed annotation to unannotated and keeps the suite green" do
+          file = annotated_suite(<<~RUBY)
+            class OrdersTest < Minitest::Test
+              # @intent: { entity: "Order",
+              def test_typo
+                assert_equal 1, 1
+              end
+            end
+          RUBY
+          line = File.readlines(file).index { |l| l.include?("def test_typo") } + 1
+
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: recording_transport.first, output: StringIO.new,
+                                  annotations: stub_validator_annotations)
+          reporter.record(result(:passed, location: [file, line]))
+          reporter.report
+
+          row = reporter.instance_variable_get(:@rows).first
+          expect(row["status"]).to eq("unannotated")
+          expect(row["intent"]).to be_nil
+          expect(reporter.passed?).to be(true)
+        end
+
+        # The nested envelope: the outer `record` rescue would drop the whole
+        # row to learn one annotation, so the lookup runs inside its own and
+        # a blow-up costs the row only its annotation.
+        # @intent: { entity: "Minitest Reporter", action: "survive lookup failure", behavior: "a failing annotation lookup costs the row its annotation only, warns once, and never affects the suite verdict", layer: "unit" }
+        it "ships the row unannotated when the annotation lookup raises" do
+          broken = SpecGuard::RSpec::AnnotationLookup.new
+          allow(broken).to receive(:intent_for).and_raise(IOError, "spec file vanished")
+          output = StringIO.new
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: recording_transport.first, output: output,
+                                  annotations: broken)
+          reporter.record(result(:passed))
+          reporter.report
+
+          row = reporter.instance_variable_get(:@rows).first
+          expect(row["status"]).to eq("unannotated")
+          expect(row["intent"]).to be_nil
+          expect(reporter.passed?).to be(true)
+          expect(output.string.scan("SpecGuard:").length).to eq(1)
+        end
+
+        # The lookup is asked in the platform's own file vocabulary — the
+        # relativized path the row ships — with the definition-site line.
+        # @intent: { entity: "Minitest Reporter", action: "delegate coordinates", behavior: "the reporter asks the lookup with the relativized file path and the integer line the row carries", layer: "unit" }
+        it "asks the lookup with the same file and line the row carries" do
+          annotations = instance_double(SpecGuard::RSpec::AnnotationLookup, intent_for: nil)
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: recording_transport.first, output: StringIO.new,
+                                  annotations: annotations)
+          reporter.record(result(:passed))
+          reporter.report
+
+          expect(annotations).to have_received(:intent_for)
+            .with(file: "spec/foo_test.rb", line: 12)
+        end
+      end
+
+      describe "the ingestible floor" do
+        # The platform rejects a payload whose rows omit `status`
+        # (`Ingest::Payload#validate_status` runs per row, and
+        # `STATUSES.include?(nil)` is false), and its own E2E capture server
+        # cannot see that 400 — so the floor is pinned here, against the
+        # envelope the transport is actually handed: every row carries the
+        # full nine-key contract, an unannotated row's intent is explicitly
+        # null, and status is always the platform's own vocabulary.
+        # @intent: { entity: "Minitest Reporter", action: "pin the wire contract", behavior: "every row of a zero annotation envelope carries the full key set with status unannotated and an explicit null intent", layer: "unit" }
+        it "carries status and an explicit null intent on every row of an annotation-free envelope" do
+          transport, captured = recording_transport
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: transport, output: StringIO.new)
+          reporter.start
+          reporter.record(result(:passed))
+          reporter.record(result(:skipped))
+          reporter.record(result(:assertion_failed))
+          reporter.report
+
+          rows = captured.call["specs"]
+          expect(rows.map { |row| row.keys })
+            .to all(contain_exactly("id", "spec_file_path", "file_path", "line_number",
+                                    "name", "duration", "outcome", "status", "intent"))
+          expect(rows.map { |row| row["status"] }).to all(eq("unannotated"))
+          expect(rows.map { |row| row["intent"] }).to all(be_nil)
+        end
+
+        # The annotated side of the same envelope: `intent` present and
+        # schema-valid exactly when status says annotated.
+        # @intent: { entity: "Minitest Reporter", action: "pin the wire contract", behavior: "an annotated row carries status annotated with the intent the lookup returned", layer: "unit" }
+        it "carries the annotated status and intent together on an annotated row" do
+          annotations = instance_double(SpecGuard::RSpec::AnnotationLookup)
+          intent = { "entity" => "Order", "action" => "refund stock",
+                     "behavior" => "a refund restores the stock the order consumed", "layer" => "unit" }
+          allow(annotations).to receive(:intent_for).and_return(intent)
+          transport, captured = recording_transport
+          reporter = Reporter.new(configuration: configuration(base_env),
+                                  transport: transport, output: StringIO.new,
+                                  annotations: annotations)
+          reporter.start
+          reporter.record(result(:passed))
+          reporter.report
+
+          row = captured.call["specs"].first
+          expect(row).to include("status" => "annotated", "intent" => intent)
         end
       end
 

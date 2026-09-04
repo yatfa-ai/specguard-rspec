@@ -244,25 +244,28 @@ module SpecGuard
       def empty_reason(selection)
         case selection.mode
         when :changed then changed_empty_reason(selection)
-        else "no *_spec.rb found under #{Dir.pwd}"
+        else "no *_spec.rb or *_test.rb file found under #{Dir.pwd}"
         end
       end
 
       # Names the filter that actually emptied the selection. Saying "nothing in
-      # the diff matched *_spec.rb" when a spec file demonstrably changed —
+      # the diff matched" when a test file demonstrably changed —
       # just not under this directory — is worse than saying nothing: it reads
-      # as a conclusion and stops the reader looking.
+      # as a conclusion and stops the reader looking. Both naming conventions
+      # are named because either would have been selected; a Minitest-only
+      # repository must not be told the silence is about `*_spec.rb` files it
+      # does not have.
       def changed_empty_reason(selection)
         stats = selection.stats
         base = selection.base
 
-        return "nothing in the diff against #{base} matched *_spec.rb" if stats.nil?
+        return "nothing in the diff against #{base} matched a *_spec.rb or *_test.rb file" if stats.nil?
 
         if stats.changed.zero?
           "nothing changed against #{base}"
         elsif stats.spec_matches.zero?
           "#{stats.changed} file#{'s' unless stats.changed == 1} changed against #{base}, " \
-            "none matching *_spec.rb"
+            "none matching *_spec.rb or *_test.rb"
         else
           changed_excluded_reason(stats, base)
         end
